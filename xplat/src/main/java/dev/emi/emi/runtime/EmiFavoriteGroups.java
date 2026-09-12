@@ -1,0 +1,1096 @@
+package dev.emi.emi.runtime;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.jetbrains.annotations.Nullable;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+
+import dev.emi.emi.api.recipe.EmiPlayerInventory;
+import dev.emi.emi.api.recipe.EmiRecipe;
+import dev.emi.emi.api.stack.EmiIngredient;
+import dev.emi.emi.api.stack.EmiStack;
+import dev.emi.emi.config.SidebarType;
+import dev.emi.emi.screen.EmiScreenManager;
+import net.minecraft.util.Identifier;
+import net.minecraft.util.JsonHelper;
+
+public final class EmiFavoriteGroups {
+	private static final List<Group> GROUPS = new ArrayList<>();
+	private static final EmiFavorite SIDEBAR_SPACER = new EmiFavorite(EmiStack.EMPTY, null);
+	private static List<EmiFavorite> visibleFavorites = List.of();
+	private static boolean visibilityDirty = true;
+
+	private EmiFavoriteGroups() {
+	}
+
+	public static List<Group> groups() {
+		return GROUPS;
+	}
+
+	public static JsonArray save() {
+		JsonArray result = new JsonArray();
+		for (Group group : GROUPS) {
+			normalizeGroup(group);
+			if (group.members.size() < 2) {
+				continue;
+			}
+			JsonObject object = new JsonObject();
+			JsonArray members = new JsonArray();
+			JsonArray bases = new JsonArray();
+			for (EmiFavorite favorite : group.members) {
+				int index = identityIndexOf(EmiFavorites.favorites, favorite);
+				if (index >= 0) {
+					members.add(index);
+					bases.add(group.baseAmount(favorite));
+				}
+			}
+			if (members.size() < 2) {
+				continue;
+			}
+			object.add("members", members);
+			object.add("base_amounts", bases);
+			object.addProperty("collapsed", group.collapsed);
+			object.addProperty("group_mode", group.groupMode);
+			object.addProperty("crafting_chain", group.craftingChain);
+			object.addProperty("quantity", group.quantity);
+			JsonObject recipeQuantities = new JsonObject();
+			for (Map.Entry<Identifier, Long> entry : group.recipeQuantities.entrySet()) {
+				if (entry.getKey() != null && entry.getValue() != null && entry.getValue() > 1L) {
+					recipeQuantities.addProperty(entry.getKey().toString(), entry.getValue());
+				}
+			}
+			if (recipeQuantities.size() > 0) {
+				object.add("recipe_quantities", recipeQuantities);
+			}
+			result.add(object);
+		}
+		return result;
+	}
+
+	public static void load(JsonArray array) {
+		GROUPS.clear();
+		for (JsonElement element : array) {
+			if (!element.isJsonObject()) {
+				continue;
+			}
+			JsonObject object = element.getAsJsonObject();
+			if (!JsonHelper.hasArray(object, "members")) {
+				continue;
+			}
+			JsonArray membersJson = JsonHelper.getArray(object, "members");
+			JsonArray basesJson = JsonHelper.getArray(object, "base_amounts", new JsonArray());
+			List<EmiFavorite> members = new ArrayList<>();
+			List<Long> bases = new ArrayList<>();
+			for (int i = 0; i < membersJson.size(); i++) {
+				try {
+					int index = membersJson.get(i).getAsInt();
+					if (index >= 0 && index < EmiFavorites.favorites.size()) {
+						EmiFavorite favorite = EmiFavorites.favorites.get(index);
+						if (!containsIdentity(members, favorite)) {
+							members.add(favorite);
+							long base = i < basesJson.size() ? Math.max(1L, basesJson.get(i).getAsLong()) : Math.max(1L, favorite.getAmount());
+							bases.add(base);
+						}
+					}
+				} catch (Throwable ignored) {
+				}
+			}
+			if (members.size() < 2) {
+				continue;
+			}
+			Group group = new Group(members);
+			for (int i = 0; i < members.size(); i++) {
+				group.baseAmounts.put(members.get(i), bases.get(i));
+			}
+			group.collapsed = JsonHelper.getBoolean(object, "collapsed", false);
+			group.groupMode = JsonHelper.getBoolean(object, "group_mode", false);
+			group.craftingChain = JsonHelper.getBoolean(object, "crafting_chain", false);
+			group.quantity = Math.max(1L, JsonHelper.getLong(object, "quantity", 1L));
+			if (object.has("recipe_quantities") && object.get("recipe_quantities").isJsonObject()) {
+				JsonObject recipeQuantities = object.getAsJsonObject("recipe_quantities");
+				for (Map.Entry<String, JsonElement> entry : recipeQuantities.entrySet()) {
+					try {
+						Identifier id = new Identifier(entry.getKey());
+						long quantity = Math.max(1L, entry.getValue().getAsLong());
+						group.recipeQuantities.put(id, quantity);
+					} catch (Throwable ignored) {
+					}
+				}
+			}
+			GROUPS.add(group);
+			applyQuantity(group);
+		}
+		normalizeAll();
+	}
+
+	public static void onFavoritesChanged() {
+		normalizeAll();
+		visibilityDirty = true;
+	}
+
+	public static List<EmiFavorite> visibleFavorites() {
+		if (!visibilityDirty) {
+			return visibleFavorites;
+		}
+		List<EmiFavorite> result = new ArrayList<>();
+		for (EmiFavorite favorite : EmiFavorites.favorites) {
+			Group group = groupFor(favorite);
+			if (group != null && group.collapsed && group.firstMember() != favorite) {
+				continue;
+			}
+			result.add(favorite);
+		}
+		visibleFavorites = List.copyOf(result);
+		visibilityDirty = false;
+		return visibleFavorites;
+	}
+
+	public static int visibleFavoriteCount() {
+		return visibleFavorites().size();
+	}
+
+	public static @Nullable EmiFavorite visibleFavorite(int index) {
+		List<EmiFavorite> visible = visibleFavorites();
+		if (index < 0 || index >= visible.size()) {
+			return null;
+		}
+		return visible.get(index);
+	}
+
+	public static int visibleIndexOf(EmiFavorite favorite) {
+		return identityIndexOf(visibleFavorites(), favorite);
+	}
+
+	public static List<EmiFavorite> sidebarFavorites() {
+		EmiScreenManager.SidebarPanel panel = EmiScreenManager.getPanelFor(SidebarType.FAVORITES);
+		if (panel == null || panel.space == null || panel.space.pageSize <= 0) {
+			return fallbackSidebarFavorites();
+		}
+		return buildSidebarLayout(panel.space);
+	}
+
+	private static List<EmiFavorite> fallbackSidebarFavorites() {
+		List<EmiFavorite> fallback = new ArrayList<>(visibleFavorites());
+		fallback.addAll(EmiFavorites.syntheticFavorites);
+		return fallback;
+	}
+
+	public static int sidebarFavoriteCount() {
+		return sidebarFavorites().size();
+	}
+
+	public static @Nullable EmiFavorite sidebarFavorite(int index) {
+		List<EmiFavorite> sidebar = sidebarFavorites();
+		if (index < 0 || index >= sidebar.size()) {
+			return null;
+		}
+		EmiFavorite favorite = sidebar.get(index);
+		return favorite == SIDEBAR_SPACER || favorite.isEmpty() ? null : favorite;
+	}
+
+	public static boolean isSidebarSpacer(EmiFavorite favorite) {
+		return favorite == SIDEBAR_SPACER;
+	}
+
+	public static int rawInsertionIndexForSidebarEdge(int sidebarEdge) {
+		List<EmiFavorite> sidebar = sidebarFavorites();
+		if (sidebarEdge <= 0) {
+			return 0;
+		}
+		int edge = Math.min(sidebarEdge, sidebar.size());
+		for (int i = edge; i < sidebar.size(); i++) {
+			EmiFavorite favorite = sidebar.get(i);
+			int raw = identityIndexOf(EmiFavorites.favorites, favorite);
+			if (raw >= 0) {
+				return raw;
+			}
+		}
+		for (int i = edge - 1; i >= 0; i--) {
+			EmiFavorite favorite = sidebar.get(i);
+			int raw = identityIndexOf(EmiFavorites.favorites, favorite);
+			if (raw >= 0) {
+				return raw + 1;
+			}
+		}
+		return EmiFavorites.favorites.size();
+	}
+
+	private static List<EmiFavorite> buildSidebarLayout(EmiScreenManager.ScreenSpace space) {
+		int pageSize = space.pageSize;
+		if (pageSize <= 0 || space.th <= 0) {
+			return List.of();
+		}
+
+		List<EmiFavorite> normal = new ArrayList<>();
+		for (EmiFavorite favorite : EmiFavorites.favorites) {
+			if (groupFor(favorite) == null) {
+				normal.add(favorite);
+			}
+		}
+		normal.addAll(EmiFavorites.syntheticFavorites);
+		if (GROUPS.isEmpty()) {
+			return normal;
+		}
+
+		List<EmiFavorite> result = new ArrayList<>();
+		for (EmiFavorite favorite : normal) {
+			result.add(favorite);
+		}
+
+		padToNextRow(result, space);
+		for (Group group : GROUPS) {
+			normalizeGroup(group);
+			List<EmiFavorite> members;
+			if (group.collapsed) {
+				EmiFavorite first = group.firstMember();
+				members = first == null ? List.of() : List.of(first);
+			} else {
+				members = List.copyOf(group.members);
+			}
+			if (members.isEmpty()) {
+				continue;
+			}
+			appendGroupRows(result, members, space);
+			padToNextRow(result, space);
+		}
+
+		while (!result.isEmpty() && result.get(result.size() - 1) == SIDEBAR_SPACER) {
+			result.remove(result.size() - 1);
+		}
+		return result;
+	}
+
+	private static void appendGroupRows(List<EmiFavorite> result, List<EmiFavorite> members,
+			EmiScreenManager.ScreenSpace space) {
+		Identifier currentRecipe = null;
+		boolean inRecipeRow = false;
+		for (EmiFavorite member : members) {
+			EmiRecipe recipe = member.getRecipe();
+			Identifier recipeId = recipe == null ? null : recipe.getId();
+			if (recipeId != null) {
+				if (inRecipeRow && !recipeId.equals(currentRecipe)) {
+					padToNextRow(result, space);
+				}
+				currentRecipe = recipeId;
+				inRecipeRow = true;
+			} else if (inRecipeRow) {
+				padToNextRow(result, space);
+				currentRecipe = null;
+				inRecipeRow = false;
+			}
+			result.add(member);
+		}
+	}
+
+	private static void padToNextRow(List<EmiFavorite> result, EmiScreenManager.ScreenSpace space) {
+		if (result.isEmpty() || space.pageSize <= 0 || space.th <= 0) {
+			return;
+		}
+		int pageOffset = result.size() % space.pageSize;
+		if (pageOffset == 0) {
+			return;
+		}
+		int rowStart = 0;
+		for (int row = 0; row < space.th; row++) {
+			int width = space.getWidth(row);
+			int rowEnd = rowStart + width;
+			if (pageOffset <= rowEnd) {
+				int remaining = rowEnd - pageOffset;
+				for (int i = 0; i < remaining; i++) {
+					result.add(SIDEBAR_SPACER);
+				}
+				return;
+			}
+			rowStart = rowEnd;
+		}
+	}
+
+	private static List<EmiFavorite> spacerPage(int pageSize) {
+		return new ArrayList<>(Collections.nCopies(pageSize, SIDEBAR_SPACER));
+	}
+
+	public static int rawInsertionIndexForVisibleEdge(int visibleEdge) {
+		List<EmiFavorite> visible = visibleFavorites();
+		if (visibleEdge <= 0 || visible.isEmpty()) {
+			return 0;
+		}
+		if (visibleEdge >= visible.size()) {
+			return EmiFavorites.favorites.size();
+		}
+		return Math.max(0, identityIndexOf(EmiFavorites.favorites, visible.get(visibleEdge)));
+	}
+
+	public static @Nullable Group groupFor(EmiFavorite favorite) {
+		for (Group group : GROUPS) {
+			if (containsIdentity(group.members, favorite)) {
+				return group;
+			}
+		}
+		return null;
+	}
+
+	public static @Nullable Group createOrInclude(int rawStart, int rawEnd) {
+		if (EmiFavorites.favorites.size() < 2) {
+			return null;
+		}
+		int start = Math.max(0, Math.min(rawStart, rawEnd));
+		int end = Math.min(EmiFavorites.favorites.size() - 1, Math.max(rawStart, rawEnd));
+		if (end <= start) {
+			return null;
+		}
+		int mergedStart = start;
+		int mergedEnd = end;
+		List<Group> merged = new ArrayList<>();
+		boolean expanded;
+		do {
+			expanded = false;
+			for (Group group : GROUPS) {
+				if (merged.contains(group)) {
+					continue;
+				}
+				int gs = groupStart(group);
+				int ge = groupEnd(group);
+				if (gs <= mergedEnd && ge >= mergedStart) {
+					merged.add(group);
+					mergedStart = Math.min(mergedStart, gs);
+					mergedEnd = Math.max(mergedEnd, ge);
+					expanded = true;
+				}
+			}
+		} while (expanded);
+
+		Group group;
+		if (merged.isEmpty()) {
+			group = new Group(new ArrayList<>(EmiFavorites.favorites.subList(mergedStart, mergedEnd + 1)));
+		} else {
+			group = merged.get(0);
+			GROUPS.removeAll(merged);
+			List<EmiFavorite> members = new ArrayList<>(EmiFavorites.favorites.subList(mergedStart, mergedEnd + 1));
+			IdentityHashMap<EmiFavorite, Long> bases = new IdentityHashMap<>();
+			for (Group old : merged) {
+				for (EmiFavorite favorite : old.members) {
+					bases.put(favorite, old.baseAmount(favorite));
+				}
+			}
+			group.members.clear();
+			group.members.addAll(members);
+			group.baseAmounts.clear();
+			for (EmiFavorite favorite : members) {
+				group.baseAmounts.put(favorite, bases.getOrDefault(favorite, Math.max(1L, favorite.getAmount())));
+			}
+		}
+		GROUPS.add(group);
+		normalizeGroup(group);
+		applyQuantity(group);
+		changed();
+		return group;
+	}
+
+	public static @Nullable Group createGroupFromFavorites(List<EmiFavorite> favorites, boolean craftingChain) {
+		List<EmiFavorite> selected = new ArrayList<>();
+		for (EmiFavorite favorite : favorites) {
+			if (identityIndexOf(EmiFavorites.favorites, favorite) >= 0 && !containsIdentity(selected, favorite)) {
+				selected.add(favorite);
+			}
+		}
+		if (selected.size() < 2) {
+			return null;
+		}
+		for (Group old : new ArrayList<>(GROUPS)) {
+			for (EmiFavorite favorite : selected) {
+				if (containsIdentity(old.members, favorite)) {
+					GROUPS.remove(old);
+					break;
+				}
+			}
+		}
+		for (EmiFavorite favorite : selected) {
+			removeIdentity(EmiFavorites.favorites, favorite);
+		}
+		EmiFavorites.favorites.addAll(selected);
+		Group group = new Group(selected);
+		group.craftingChain = craftingChain;
+		GROUPS.add(group);
+		if (craftingChain) {
+			sortRecipeMembers(group);
+		}
+		applyQuantity(group);
+		changed();
+		return group;
+	}
+
+	public static void excludeRange(int rawStart, int rawEnd) {
+		if (GROUPS.isEmpty()) {
+			return;
+		}
+		int start = Math.max(0, Math.min(rawStart, rawEnd));
+		int end = Math.min(EmiFavorites.favorites.size() - 1, Math.max(rawStart, rawEnd));
+		Set<EmiFavorite> excluded = Collections.newSetFromMap(new IdentityHashMap<>());
+		for (int i = start; i <= end && i < EmiFavorites.favorites.size(); i++) {
+			excluded.add(EmiFavorites.favorites.get(i));
+		}
+		List<Group> replacement = new ArrayList<>();
+		for (Group group : new ArrayList<>(GROUPS)) {
+			boolean intersects = group.members.stream().anyMatch(excluded::contains);
+			if (!intersects) {
+				continue;
+			}
+			GROUPS.remove(group);
+			List<EmiFavorite> run = new ArrayList<>();
+			int lastIndex = -2;
+			for (EmiFavorite favorite : group.members) {
+				if (excluded.contains(favorite)) {
+					if (run.size() >= 2) {
+						replacement.add(groupFromRun(group, run));
+					}
+					run = new ArrayList<>();
+					lastIndex = -2;
+					continue;
+				}
+				int index = identityIndexOf(EmiFavorites.favorites, favorite);
+				if (!run.isEmpty() && index != lastIndex + 1) {
+					if (run.size() >= 2) {
+						replacement.add(groupFromRun(group, run));
+					}
+					run = new ArrayList<>();
+				}
+				run.add(favorite);
+				lastIndex = index;
+			}
+			if (run.size() >= 2) {
+				replacement.add(groupFromRun(group, run));
+			}
+		}
+		GROUPS.addAll(replacement);
+		changed();
+	}
+
+	public static void moveGroup(Group group, int rawInsertionIndex) {
+		normalizeGroup(group);
+		if (group.members.isEmpty()) {
+			return;
+		}
+		int start = groupStart(group);
+		int end = groupEnd(group);
+		if (rawInsertionIndex >= start && rawInsertionIndex <= end + 1) {
+			return;
+		}
+		List<EmiFavorite> moving = new ArrayList<>(group.members);
+		int before = 0;
+		for (EmiFavorite favorite : moving) {
+			int index = identityIndexOf(EmiFavorites.favorites, favorite);
+			if (index >= 0 && index < rawInsertionIndex) {
+				before++;
+			}
+		}
+		for (EmiFavorite favorite : moving) {
+			removeIdentity(EmiFavorites.favorites, favorite);
+		}
+		int target = Math.max(0, Math.min(EmiFavorites.favorites.size(), rawInsertionIndex - before));
+		EmiFavorites.favorites.addAll(target, moving);
+		normalizeAll();
+		changed();
+	}
+
+	public static void removeGroup(Group group) {
+		if (!GROUPS.remove(group)) {
+			return;
+		}
+		for (EmiFavorite favorite : new ArrayList<>(group.members)) {
+			removeIdentity(EmiFavorites.favorites, favorite);
+		}
+		changed();
+	}
+
+	public static void toggleCollapsed(Group group) {
+		group.collapsed = !group.collapsed;
+		changed();
+	}
+
+	public static void toggleGroupMode(Group group) {
+		group.groupMode = !group.groupMode;
+		if (group.groupMode) {
+			sortRecipeMembers(group);
+		}
+		changed();
+	}
+
+	public static void toggleCraftingChain(Group group) {
+		group.craftingChain = !group.craftingChain;
+		if (group.craftingChain) {
+			sortRecipeMembers(group);
+		}
+		applyQuantity(group);
+		changed();
+	}
+
+	public static void adjustQuantity(Group group, int direction, boolean stackStep) {
+		if (direction == 0) {
+			return;
+		}
+		group.quantity = stepQuantity(group.quantity, direction, stackStep);
+		applyQuantity(group);
+		changed();
+	}
+
+	public static void adjustRecipeQuantity(Group group, EmiRecipe recipe, int direction, boolean stackStep) {
+		if (group == null || recipe == null || recipe.getId() == null || direction == 0) {
+			return;
+		}
+		Identifier id = recipe.getId();
+		long next = stepQuantity(group.recipeQuantities.getOrDefault(id, 1L), direction, stackStep);
+		if (next <= 1L) {
+			group.recipeQuantities.remove(id);
+		} else {
+			group.recipeQuantities.put(id, next);
+		}
+		applyQuantity(group);
+		changed();
+	}
+
+	public static long recipeQuantity(Group group, @Nullable EmiRecipe recipe) {
+		if (group == null || recipe == null || recipe.getId() == null) {
+			return 1L;
+		}
+		return Math.max(1L, group.recipeQuantities.getOrDefault(recipe.getId(), 1L));
+	}
+
+	private static long stepQuantity(long current, int direction, boolean stackStep) {
+		current = Math.max(1L, current);
+		if (!stackStep) {
+			return Math.max(1L, safeAdd(current, direction));
+		}
+		if (direction > 0) {
+			long remainder = current % 64L;
+			long delta = remainder == 0L ? 64L : 64L - remainder;
+			return safeAdd(current, delta);
+		}
+		if (current <= 64L) {
+			return 1L;
+		}
+		long remainder = current % 64L;
+		return remainder == 0L ? current - 64L : current - remainder;
+	}
+
+	public static void applyQuantity(Group group) {
+		if (group.craftingChain) {
+			ChainPlan plan = calculatePlan(group, null);
+			for (EmiFavorite favorite : group.members) {
+				long amount = plan.requiredFavorites.getOrDefault(favorite, safeMultiply(group.baseAmount(favorite), group.quantity));
+				favorite.setAmount(Math.max(1L, amount));
+			}
+		} else {
+			for (EmiFavorite favorite : group.members) {
+				long rowQuantity = recipeQuantity(group, favorite.getRecipe());
+				long multiplier = safeMultiply(group.quantity, rowQuantity);
+				favorite.setAmount(safeMultiply(group.baseAmount(favorite), multiplier));
+			}
+		}
+	}
+
+	public static ChainPlan calculatePlan(Group group, @Nullable EmiPlayerInventory inventory) {
+		LinkedHashMap<Identifier, EmiRecipe> recipes = new LinkedHashMap<>();
+		for (EmiFavorite favorite : group.members) {
+			EmiRecipe recipe = favorite.getRecipe();
+			if (recipe != null && recipe.getId() != null && favorite.getRole() != EmiFavorite.Role.ITEM) {
+				recipes.putIfAbsent(recipe.getId(), recipe);
+			}
+		}
+		if (recipes.isEmpty()) {
+			List<AmountEntry> results = new ArrayList<>();
+			IdentityHashMap<EmiFavorite, Long> required = new IdentityHashMap<>();
+			for (EmiFavorite favorite : group.members) {
+				long amount = safeMultiply(group.baseAmount(favorite), group.quantity);
+				results.add(new AmountEntry(normalize(favorite.getStack()), amount));
+				required.put(favorite, amount);
+			}
+			return new ChainPlan(List.copyOf(results), List.of(), List.of(), required, new IdentityHashMap<>());
+		}
+
+		List<EmiRecipe> recipeList = new ArrayList<>(recipes.values());
+		List<EmiRecipe> roots = new ArrayList<>();
+		for (EmiRecipe candidate : recipeList) {
+			boolean consumed = false;
+			for (EmiRecipe other : recipeList) {
+				if (sameRecipe(candidate, other)) {
+					continue;
+				}
+				for (EmiIngredient input : other.getInputs()) {
+					if (anyOutputAccepted(candidate, input)) {
+						consumed = true;
+						break;
+					}
+				}
+				if (consumed) {
+					break;
+				}
+			}
+			if (!consumed) {
+				roots.add(candidate);
+			}
+		}
+		if (roots.isEmpty()) {
+			roots.add(recipeList.get(0));
+		}
+
+		Map<EmiIngredient, Long> ingredients = new LinkedHashMap<>();
+		Map<EmiIngredient, Long> results = new LinkedHashMap<>();
+		IdentityHashMap<EmiRecipe, Long> recipeBatches = new IdentityHashMap<>();
+		Set<Identifier> path = new LinkedHashSet<>();
+		for (EmiRecipe root : roots) {
+			long batches = safeMultiply(Math.max(1L, group.quantity), recipeQuantity(group, root));
+			for (EmiStack output : root.getOutputs()) {
+				if (output != null && !output.isEmpty()) {
+					mergeAmount(results, output, safeMultiply(Math.max(1L, output.getAmount()), batches));
+				}
+			}
+			expandRecipe(root, batches, recipeList, recipeBatches, ingredients, path);
+		}
+
+		IdentityHashMap<EmiFavorite, Long> required = new IdentityHashMap<>();
+		for (EmiFavorite favorite : group.members) {
+			EmiRecipe recipe = favorite.getRecipe();
+			long amount;
+			if (recipe != null && favorite.getRole() != EmiFavorite.Role.ITEM) {
+				long batches = batchesFor(recipeBatches, recipe);
+				if (batches <= 0) {
+					batches = safeMultiply(group.quantity, recipeQuantity(group, recipe));
+				}
+				amount = safeMultiply(group.baseAmount(favorite), batches);
+			} else {
+				amount = safeMultiply(group.baseAmount(favorite), group.quantity);
+			}
+			required.put(favorite, Math.max(1L, amount));
+		}
+
+		List<AmountEntry> resultList = toAmountList(results);
+		List<AmountEntry> ingredientList = toAmountList(ingredients);
+		List<AmountEntry> missing = new ArrayList<>();
+		if (inventory != null) {
+			for (AmountEntry entry : ingredientList) {
+				long available = available(inventory, entry.ingredient());
+				long amount = Math.max(0L, entry.amount() - available);
+				if (amount > 0) {
+					missing.add(new AmountEntry(entry.ingredient(), amount));
+				}
+			}
+		}
+		return new ChainPlan(List.copyOf(resultList), List.copyOf(ingredientList), List.copyOf(missing), required, recipeBatches);
+	}
+
+	private static void expandRecipe(EmiRecipe recipe, long batches, List<EmiRecipe> recipes,
+			IdentityHashMap<EmiRecipe, Long> recipeBatches, Map<EmiIngredient, Long> ingredients, Set<Identifier> path) {
+		if (recipe == null || recipe.getId() == null || batches <= 0) {
+			return;
+		}
+		recipeBatches.merge(recipe, batches, EmiFavoriteGroups::safeAdd);
+		if (!path.add(recipe.getId())) {
+			return;
+		}
+		try {
+			for (EmiIngredient input : recipe.getInputs()) {
+				if (input == null || input.isEmpty()) {
+					continue;
+				}
+				long needed = safeMultiply(Math.max(1L, input.getAmount()), batches);
+				EmiRecipe producer = findProducer(recipes, input, recipe);
+				if (producer == null || producer.getId() == null || path.contains(producer.getId())) {
+					mergeAmount(ingredients, input, needed);
+					continue;
+				}
+				long outputAmount = matchingOutputAmount(producer, input);
+				long producerBatches = ceilDiv(needed, Math.max(1L, outputAmount));
+				expandRecipe(producer, producerBatches, recipes, recipeBatches, ingredients, path);
+			}
+		} finally {
+			path.remove(recipe.getId());
+		}
+	}
+
+	private static @Nullable EmiRecipe findProducer(List<EmiRecipe> recipes, EmiIngredient input, EmiRecipe consumer) {
+		for (EmiRecipe recipe : recipes) {
+			if (sameRecipe(recipe, consumer)) {
+				continue;
+			}
+			if (anyOutputAccepted(recipe, input)) {
+				return recipe;
+			}
+		}
+		return null;
+	}
+
+	private static boolean anyOutputAccepted(EmiRecipe recipe, EmiIngredient input) {
+		if (input == null || input.isEmpty()) {
+			return false;
+		}
+		for (EmiStack output : recipe.getOutputs()) {
+			if (accepts(input, output)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static long matchingOutputAmount(EmiRecipe recipe, EmiIngredient input) {
+		long amount = 0L;
+		for (EmiStack output : recipe.getOutputs()) {
+			if (accepts(input, output)) {
+				amount = safeAdd(amount, Math.max(1L, output.getAmount()));
+			}
+		}
+		return Math.max(1L, amount);
+	}
+
+	private static boolean accepts(EmiIngredient ingredient, EmiStack output) {
+		if (ingredient == null || output == null || output.isEmpty()) {
+			return false;
+		}
+		for (EmiStack option : ingredient.getEmiStacks()) {
+			if (option.equals(output)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static void mergeAmount(Map<EmiIngredient, Long> map, EmiIngredient ingredient, long amount) {
+		EmiIngredient key = normalize(ingredient);
+		for (Map.Entry<EmiIngredient, Long> entry : map.entrySet()) {
+			if (EmiIngredient.areEqual(entry.getKey(), key)) {
+				entry.setValue(safeAdd(entry.getValue(), amount));
+				return;
+			}
+		}
+		map.put(key, amount);
+	}
+
+	private static List<AmountEntry> toAmountList(Map<EmiIngredient, Long> values) {
+		List<AmountEntry> list = new ArrayList<>();
+		for (Map.Entry<EmiIngredient, Long> entry : values.entrySet()) {
+			if (entry.getValue() > 0) {
+				list.add(new AmountEntry(entry.getKey(), entry.getValue()));
+			}
+		}
+		return list;
+	}
+
+	private static EmiIngredient normalize(EmiIngredient ingredient) {
+		try {
+			return ingredient.copy().setAmount(1).setChance(1);
+		} catch (Throwable ignored) {
+			return ingredient;
+		}
+	}
+
+	private static long available(EmiPlayerInventory inventory, EmiIngredient ingredient) {
+		long total = 0L;
+		for (EmiStack stack : inventory.inventory.values()) {
+			boolean matches = false;
+			for (EmiStack option : ingredient.getEmiStacks()) {
+				if (option.equals(stack)) {
+					matches = true;
+					break;
+				}
+			}
+			if (matches) {
+				total = safeAdd(total, Math.max(0L, stack.getAmount()));
+			}
+		}
+		return total;
+	}
+
+	private static long batchesFor(IdentityHashMap<EmiRecipe, Long> map, EmiRecipe recipe) {
+		Long direct = map.get(recipe);
+		if (direct != null) {
+			return direct;
+		}
+		for (Map.Entry<EmiRecipe, Long> entry : map.entrySet()) {
+			if (sameRecipe(entry.getKey(), recipe)) {
+				return entry.getValue();
+			}
+		}
+		return 0L;
+	}
+
+	private static boolean sameRecipe(EmiRecipe a, EmiRecipe b) {
+		if (a == b) {
+			return true;
+		}
+		if (a == null || b == null || a.getId() == null || b.getId() == null) {
+			return false;
+		}
+		return a.getId().equals(b.getId());
+	}
+
+	private static void sortRecipeMembers(Group group) {
+		normalizeGroup(group);
+		if (group.members.size() < 2) {
+			return;
+		}
+		int start = groupStart(group);
+		if (start < 0) {
+			return;
+		}
+		List<EmiFavorite> original = new ArrayList<>(group.members);
+		IdentityHashMap<EmiFavorite, Integer> originalOrder = new IdentityHashMap<>();
+		LinkedHashMap<Identifier, Integer> recipeOrder = new LinkedHashMap<>();
+		IdentityHashMap<EmiFavorite, Integer> itemOrder = new IdentityHashMap<>();
+		int nextOrder = 0;
+		for (int i = 0; i < original.size(); i++) {
+			EmiFavorite favorite = original.get(i);
+			originalOrder.put(favorite, i);
+			EmiRecipe recipe = favorite.getRecipe();
+			if (recipe != null && recipe.getId() != null) {
+				if (!recipeOrder.containsKey(recipe.getId())) {
+					recipeOrder.put(recipe.getId(), nextOrder++);
+				}
+			} else {
+				itemOrder.put(favorite, nextOrder++);
+			}
+		}
+		List<EmiFavorite> sorted = new ArrayList<>(original);
+		sorted.sort((a, b) -> {
+			int ao = sortBlock(a, recipeOrder, itemOrder);
+			int bo = sortBlock(b, recipeOrder, itemOrder);
+			if (ao != bo) {
+				return Integer.compare(ao, bo);
+			}
+			int ar = roleOrder(a.getRole());
+			int br = roleOrder(b.getRole());
+			if (ar != br) {
+				return Integer.compare(ar, br);
+			}
+			return Integer.compare(originalOrder.getOrDefault(a, 0), originalOrder.getOrDefault(b, 0));
+		});
+		if (sameIdentityOrder(sorted, original)) {
+			return;
+		}
+		for (EmiFavorite favorite : original) {
+			removeIdentity(EmiFavorites.favorites, favorite);
+		}
+		EmiFavorites.favorites.addAll(Math.min(start, EmiFavorites.favorites.size()), sorted);
+		group.members.clear();
+		group.members.addAll(sorted);
+		visibilityDirty = true;
+	}
+
+	private static int sortBlock(EmiFavorite favorite, Map<Identifier, Integer> recipeOrder,
+			IdentityHashMap<EmiFavorite, Integer> itemOrder) {
+		EmiRecipe recipe = favorite.getRecipe();
+		if (recipe != null && recipe.getId() != null) {
+			return recipeOrder.getOrDefault(recipe.getId(), Integer.MAX_VALUE - 1);
+		}
+		return itemOrder.getOrDefault(favorite, Integer.MAX_VALUE);
+	}
+
+	private static int roleOrder(EmiFavorite.Role role) {
+		return switch (role) {
+			case RESULT -> 0;
+			case INGREDIENT -> 1;
+			case ITEM -> 2;
+		};
+	}
+
+	private static void normalizeAll() {
+		for (Group group : new ArrayList<>(GROUPS)) {
+			normalizeGroup(group);
+			if (group.members.size() < 2) {
+				GROUPS.remove(group);
+			}
+		}
+		GROUPS.sort(Comparator.comparingInt(EmiFavoriteGroups::groupStart));
+		visibilityDirty = true;
+	}
+
+	private static void normalizeGroup(Group group) {
+		group.members.removeIf(favorite -> identityIndexOf(EmiFavorites.favorites, favorite) < 0);
+		group.members.sort(Comparator.comparingInt(favorite -> identityIndexOf(EmiFavorites.favorites, favorite)));
+		group.baseAmounts.keySet().removeIf(favorite -> !containsIdentity(group.members, favorite));
+		Set<Identifier> recipeIds = new LinkedHashSet<>();
+		for (EmiFavorite favorite : group.members) {
+			group.baseAmounts.putIfAbsent(favorite, Math.max(1L, favorite.getAmount()));
+			EmiRecipe recipe = favorite.getRecipe();
+			if (recipe != null && recipe.getId() != null) {
+				recipeIds.add(recipe.getId());
+			}
+		}
+		group.recipeQuantities.keySet().removeIf(id -> !recipeIds.contains(id));
+	}
+
+	private static Group groupFromRun(Group source, List<EmiFavorite> run) {
+		Group group = new Group(run);
+		group.collapsed = source.collapsed;
+		group.groupMode = source.groupMode;
+		group.craftingChain = source.craftingChain;
+		group.quantity = source.quantity;
+		group.recipeQuantities.putAll(source.recipeQuantities);
+		for (EmiFavorite favorite : run) {
+			group.baseAmounts.put(favorite, source.baseAmount(favorite));
+		}
+		return group;
+	}
+
+	private static int groupStart(Group group) {
+		int result = Integer.MAX_VALUE;
+		for (EmiFavorite favorite : group.members) {
+			int index = identityIndexOf(EmiFavorites.favorites, favorite);
+			if (index >= 0) {
+				result = Math.min(result, index);
+			}
+		}
+		return result == Integer.MAX_VALUE ? -1 : result;
+	}
+
+	private static int groupEnd(Group group) {
+		int result = -1;
+		for (EmiFavorite favorite : group.members) {
+			result = Math.max(result, identityIndexOf(EmiFavorites.favorites, favorite));
+		}
+		return result;
+	}
+
+	private static void changed() {
+		normalizeAll();
+		visibilityDirty = true;
+		EmiScreenManager.repopulatePanels(dev.emi.emi.config.SidebarType.FAVORITES);
+		EmiPersistentData.save();
+	}
+
+	private static int identityIndexOf(List<EmiFavorite> list, EmiFavorite target) {
+		for (int i = 0; i < list.size(); i++) {
+			if (list.get(i) == target) {
+				return i;
+			}
+		}
+		return -1;
+	}
+
+	private static boolean containsIdentity(List<EmiFavorite> list, EmiFavorite target) {
+		return identityIndexOf(list, target) >= 0;
+	}
+
+	private static boolean sameIdentityOrder(List<EmiFavorite> a, List<EmiFavorite> b) {
+		if (a.size() != b.size()) {
+			return false;
+		}
+		for (int i = 0; i < a.size(); i++) {
+			if (a.get(i) != b.get(i)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static void removeIdentity(List<EmiFavorite> list, EmiFavorite target) {
+		int index = identityIndexOf(list, target);
+		if (index >= 0) {
+			list.remove(index);
+		}
+	}
+
+	private static long ceilDiv(long a, long b) {
+		if (a <= 0) {
+			return 0L;
+		}
+		return 1L + (a - 1L) / Math.max(1L, b);
+	}
+
+	private static long safeMultiply(long a, long b) {
+		if (a <= 0 || b <= 0) {
+			return 1L;
+		}
+		if (a > Long.MAX_VALUE / b) {
+			return Long.MAX_VALUE;
+		}
+		return a * b;
+	}
+
+	private static long safeAdd(long a, long b) {
+		if (b > 0 && a > Long.MAX_VALUE - b) {
+			return Long.MAX_VALUE;
+		}
+		if (b < 0 && a < Long.MIN_VALUE - b) {
+			return Long.MIN_VALUE;
+		}
+		return a + b;
+	}
+
+	public static final class Group {
+		private final List<EmiFavorite> members = new ArrayList<>();
+		private final IdentityHashMap<EmiFavorite, Long> baseAmounts = new IdentityHashMap<>();
+		private final LinkedHashMap<Identifier, Long> recipeQuantities = new LinkedHashMap<>();
+		public boolean collapsed;
+		public boolean groupMode;
+		public boolean craftingChain;
+		public long quantity = 1L;
+
+		private Group(List<EmiFavorite> members) {
+			this.members.addAll(members);
+			for (EmiFavorite favorite : members) {
+				baseAmounts.put(favorite, Math.max(1L, favorite.getAmount()));
+			}
+		}
+
+		public List<EmiFavorite> members() {
+			return Collections.unmodifiableList(members);
+		}
+
+		public long baseAmount(EmiFavorite favorite) {
+			return Math.max(1L, baseAmounts.getOrDefault(favorite, Math.max(1L, favorite.getAmount())));
+		}
+
+		public @Nullable EmiFavorite firstMember() {
+			normalizeGroup(this);
+			return members.isEmpty() ? null : members.get(0);
+		}
+	}
+
+	public record AmountEntry(EmiIngredient ingredient, long amount) {
+	}
+
+	public static final class ChainPlan {
+		public static final ChainPlan EMPTY = new ChainPlan(List.of(), List.of(), List.of(), new IdentityHashMap<>(), new IdentityHashMap<>());
+		public final List<AmountEntry> results;
+		public final List<AmountEntry> ingredients;
+		public final List<AmountEntry> missing;
+		public final IdentityHashMap<EmiFavorite, Long> requiredFavorites;
+		public final IdentityHashMap<EmiRecipe, Long> recipeBatches;
+
+		private ChainPlan(List<AmountEntry> results, List<AmountEntry> ingredients, List<AmountEntry> missing,
+				IdentityHashMap<EmiFavorite, Long> requiredFavorites, IdentityHashMap<EmiRecipe, Long> recipeBatches) {
+			this.results = results;
+			this.ingredients = ingredients;
+			this.missing = missing;
+			this.requiredFavorites = requiredFavorites;
+			this.recipeBatches = recipeBatches;
+		}
+
+		public long batchesFor(EmiRecipe recipe) {
+			Long direct = recipeBatches.get(recipe);
+			if (direct != null) {
+				return direct;
+			}
+			if (recipe == null || recipe.getId() == null) {
+				return 0L;
+			}
+			for (Map.Entry<EmiRecipe, Long> entry : recipeBatches.entrySet()) {
+				EmiRecipe candidate = entry.getKey();
+				if (candidate != null && candidate.getId() != null && candidate.getId().equals(recipe.getId())) {
+					return entry.getValue();
+				}
+			}
+			return 0L;
+		}
+	}
+}

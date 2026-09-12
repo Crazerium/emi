@@ -18,6 +18,7 @@
     "accessor.SmithingTrimRecipeAccessor",
     "jei.PluginCallerMixin",
     "AbstractInventoryScreenMixin",
+    "ChatHudMixin",
     "CraftingResultSlotMixin",
     "DrawContextMixin",
     "GlobalMixin",
@@ -31,8 +32,7 @@
     "ScreenMixin",
     "ToastManagerMixin"
   ],
-  "mixins": [
-  ],
+  "mixins": [],
   "injectors": {
     "defaultRequire": 1
   }

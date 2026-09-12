@@ -55,10 +55,12 @@ import dev.emi.emi.registry.EmiRecipes;
 import dev.emi.emi.registry.EmiStackProviders;
 import dev.emi.emi.runtime.EmiDrawContext;
 import dev.emi.emi.runtime.EmiFavorite;
+import dev.emi.emi.runtime.EmiFavoriteGroups;
 import dev.emi.emi.runtime.EmiFavorites;
 import dev.emi.emi.runtime.EmiHidden;
 import dev.emi.emi.runtime.EmiHistory;
 import dev.emi.emi.runtime.EmiLog;
+import dev.emi.emi.runtime.RecipeFavoriteActions;
 import dev.emi.emi.runtime.EmiProfiler;
 import dev.emi.emi.runtime.EmiReloadLog;
 import dev.emi.emi.runtime.EmiReloadManager;
@@ -90,7 +92,7 @@ import net.minecraft.util.math.MathHelper;
 
 public class EmiScreenManager {
 	private static final int PADDING_SIZE = 1;
-	private static final int ENTRY_SIZE = 16 + PADDING_SIZE * 2;
+	public static final int ENTRY_SIZE = 16 + PADDING_SIZE * 2;
 	private static final int SUBPANEL_SEPARATOR_SIZE = 3;
 	private static MinecraftClient client = MinecraftClient.getInstance();
 	private static List<? extends EmiIngredient> searchedStacks = List.of();
@@ -654,6 +656,7 @@ public class EmiScreenManager {
 		for (SidebarPanel panel : panels) {
 			panel.render(context, mouseX, mouseY, delta);
 		}
+		FavoriteGroupSidebar.render(context, mouseX, mouseY, delta);
 
 		renderLastHoveredCraftable(context, mouseX, mouseY, delta, base);
 
@@ -673,6 +676,7 @@ public class EmiScreenManager {
 		if (!base.isEmpty() && !isDisabled()) {
 			renderDraggedStack(context, mouseX, mouseY, delta, base);
 			renderCurrentTooltip(context, mouseX, mouseY, delta, base);
+			FavoriteGroupSidebar.renderTooltip(base.screen(), context, mouseX, mouseY);
 		}
 	}
 
@@ -715,14 +719,11 @@ public class EmiScreenManager {
 				if (space != null && space.getType() == SidebarType.FAVORITES) {
 					int pageSize = space.pageSize;
 					int page = panel.page;
-					int index = space.getClosestEdge(mouseX, mouseY);
-					if (index + pageSize * page > EmiFavorites.favorites.size()) {
-						index = EmiFavorites.favorites.size() - pageSize * page;
-					}
-					if (index + pageSize * page > space.getStacks().size()) {
-						index = space.getStacks().size() - pageSize * page;
-					}
-					if (index >= 0) {
+					int pageStart = pageSize * page;
+					int sidebarCount = space.getStacks().size();
+					int globalEdge = Math.min(pageStart + space.getClosestEdge(mouseX, mouseY), sidebarCount);
+					int index = globalEdge - pageStart;
+					if (index >= 0 && index <= pageSize) {
 						context.push();
 						context.matrices().translate(0, 0, 200);
 						int dx = space.getEdgeX(index);
@@ -958,6 +959,9 @@ public class EmiScreenManager {
 		if (isDisabled()) {
 			return false;
 		}
+		if (FavoriteGroupSidebar.mouseScrolled(mouseX, mouseY, amount)) {
+			return true;
+		}
 		recalculate();
 		SidebarPanel panel = getHoveredPanel((int) mouseX, (int) mouseY);
 		if (panel != null) {
@@ -978,6 +982,9 @@ public class EmiScreenManager {
 		EmiScreenBase base = EmiScreenBase.getCurrent();
 		if (base.isEmpty()) {
 			return false;
+		}
+		if (FavoriteGroupSidebar.mouseClicked(mouseX, mouseY, button)) {
+			return true;
 		}
 		if (search.mouseClicked(mouseX, mouseY, button)) {
 			return true;
@@ -1028,6 +1035,9 @@ public class EmiScreenManager {
 			if (isDisabled()) {
 				return false;
 			}
+			if (FavoriteGroupSidebar.mouseReleased(mouseX, mouseY, button)) {
+				return true;
+			}
 			int mx = (int) mouseX;
 			int my = (int) mouseY;
 			recalculate();
@@ -1049,12 +1059,11 @@ public class EmiScreenManager {
 						if (space != null && space.getType() == SidebarType.FAVORITES ) {
 							int page = panel.page;
 							int pageSize = space.pageSize;
-							int index = Math.min(space.getClosestEdge(mx, my), EmiFavorites.favorites.size());
-							if (index + pageSize * page > EmiFavorites.favorites.size()) {
-								index = EmiFavorites.favorites.size() - pageSize * page;
-							}
-							if (index >= 0) {
-								EmiFavorites.addFavoriteAt(draggedStack, index + pageSize * page);
+							int pageStart = pageSize * page;
+							int sidebarEdge = Math.min(pageStart + space.getClosestEdge(mx, my), space.getStacks().size());
+							if (sidebarEdge >= pageStart) {
+								int rawIndex = EmiFavoriteGroups.rawInsertionIndexForSidebarEdge(sidebarEdge);
+								EmiFavorites.addFavoriteAt(draggedStack, rawIndex);
 								space.batcher.repopulate();
 							}
 							return true;
@@ -1091,6 +1100,10 @@ public class EmiScreenManager {
 		if (isDisabled()) {
 			return false;
 		}
+		if (FavoriteGroupSidebar.mouseDragged(mouseX, mouseY, button)) {
+			draggedStack = EmiStack.EMPTY;
+			return true;
+		}
 		if (draggedStack.isEmpty() && button == 0) {
 			if (client.currentScreen instanceof HandledScreen<?> handled) {
 				if (!handled.getScreenHandler().getCursorStack().isEmpty()) {
@@ -1123,6 +1136,9 @@ public class EmiScreenManager {
 		}
 		if (hasFocusedTextField(client.currentScreen, 10)) {
 			return false;
+		}
+		if (FavoriteGroupSidebar.keyPressed(lastMouseX, lastMouseY, keyCode, modifiers)) {
+			return true;
 		}
 		if (EmiApi.isCheatMode() && EmiConfig.deleteCursorStack.matchesKey(keyCode, scanCode)) {
 			if (deleteCursor(lastMouseX, lastMouseY)) {
@@ -1322,7 +1338,11 @@ public class EmiScreenManager {
 			return false;
 		}
 		if (function.apply(EmiConfig.favorite) && recipe.getOutputs().size() > 0) {
-			EmiFavorites.addFavorite(recipe.getOutputs().get(0), recipe);
+			if (EmiInput.isShiftDown()) {
+				RecipeFavoriteActions.saveRecipeTree(recipe);
+			} else {
+				EmiFavorites.addFavorite(recipe.getOutputs().get(0), recipe);
+			}
 			repopulatePanels(SidebarType.FAVORITES);
 			return true;
 		} else if (function.apply(EmiConfig.copyId)) {
@@ -1764,7 +1784,8 @@ public class EmiScreenManager {
 				int i = startIndex;
 				List<? extends EmiIngredient> stacks = getStacks();
 				int hovered = this.getRawOffsetFromMouse(mouseX, mouseY);
-				if (hovered != -1 && EmiConfig.showHoverOverlay && startIndex + hovered < stacks.size()) {
+				if (hovered != -1 && EmiConfig.showHoverOverlay && startIndex + hovered < stacks.size()
+						&& !stacks.get(startIndex + hovered).isEmpty()) {
 					hx = this.getRawX(hovered);
 					hy = this.getRawY(hovered);
 					EmiRenderHelper.drawSlotHightlight(context, hx, hy, ENTRY_SIZE, ENTRY_SIZE, 0);
@@ -1778,7 +1799,12 @@ public class EmiScreenManager {
 						int cx = this.getX(xo, yo);
 						int cy = this.getY(xo, yo);
 						EmiIngredient stack = stacks.get(i++);
-						batcher.render(stack, context.raw(), cx + 1, cy + 1, delta);
+						int renderFlags = -1 ^ EmiIngredient.RENDER_AMOUNT;
+						if (getType() == SidebarType.FAVORITES && stack instanceof EmiFavorite favorite
+								&& EmiFavoriteGroups.groupFor(favorite) != null) {
+							renderFlags = -1;
+						}
+						batcher.render(stack, context.raw(), cx + 1, cy + 1, delta, renderFlags);
 						if (getType() == SidebarType.INDEX) {
 							if (EmiConfig.editMode && EmiHidden.isHidden(stack)) {
 								context.enableDepthTest();

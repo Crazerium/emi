@@ -27,21 +27,37 @@ import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 
 public class EmiFavorite implements EmiIngredient, Batchable {
-	protected final EmiIngredient stack;
+	public enum Role {
+		ITEM,
+		RESULT,
+		INGREDIENT
+	}
+
+	protected EmiIngredient stack;
 	protected final @Nullable EmiRecipe recipe;
+	protected final Role role;
 
 	public EmiFavorite(EmiIngredient stack, @Nullable EmiRecipe recipe) {
+		this(stack, recipe, recipe == null ? Role.ITEM : Role.RESULT);
+	}
+
+	public EmiFavorite(EmiIngredient stack, @Nullable EmiRecipe recipe, Role role) {
 		this.stack = stack;
 		this.recipe = recipe;
+		this.role = recipe == null ? Role.ITEM : role;
 	}
 
 	public EmiIngredient getStack() {
 		return stack;
 	}
 
+	public Role getRole() {
+		return role;
+	}
+
 	@Override
 	public EmiIngredient copy() {
-		return new EmiFavorite(stack, recipe);
+		return new EmiFavorite(stack, recipe, role);
 	}
 
 	@Override
@@ -51,6 +67,7 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 
 	@Override
 	public EmiIngredient setAmount(long amount) {
+		stack = stack.copy().setAmount(amount);
 		return this;
 	}
 
@@ -76,11 +93,18 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 	@Override
 	public void render(DrawContext raw, int x, int y, float delta, int flags) {
 		EmiDrawContext context = EmiDrawContext.wrap(raw);
-		if (recipe != null) {
-			flags |= EmiIngredient.RENDER_AMOUNT;
+		boolean recipeFavorite = recipe != null;
+		boolean grouped = recipeFavorite && EmiFavoriteGroups.groupFor(this) != null;
+		int stackFlags = flags;
+		if (recipeFavorite && !grouped) {
+			stackFlags &= ~EmiIngredient.RENDER_AMOUNT;
 		}
-		stack.render(context.raw(), x, y, delta, flags);
-		if ((flags & EmiIngredient.RENDER_INGREDIENT) > 0 && recipe != null) {
+		stack.render(context.raw(), x, y, delta, stackFlags);
+		if (recipeFavorite && !grouped && getAmount() != 1 && !stack.getEmiStacks().isEmpty()) {
+			boolean volume = stack.getEmiStacks().get(0) instanceof FluidEmiStack;
+			MicroTextRenderer.render(context, getAmount(), volume, 16, x + 17, y + 17);
+		}
+		if ((flags & EmiIngredient.RENDER_INGREDIENT) > 0 && recipeFavorite && !grouped) {
 			EmiRenderHelper.renderRecipeFavorite(stack, context, x, y);
 		}
 	}
@@ -89,7 +113,7 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 	public List<TooltipComponent> getTooltip() {
 		List<TooltipComponent> list = Lists.newArrayList();
 		list.addAll(stack.getTooltip());
-		if (recipe != null) {
+		if (recipe != null && EmiFavoriteGroups.groupFor(this) == null) {
 			list.add(new RecipeTooltipComponent(recipe, true));
 		}
 		return list;
@@ -141,7 +165,7 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 	public static class Craftable extends EmiFavorite {
 
 		public Craftable(EmiRecipe recipe) {
-			super(recipe.getOutputs().isEmpty() ? EmiStack.EMPTY : recipe.getOutputs().get(0), recipe);
+			super(recipe.getOutputs().isEmpty() ? EmiStack.EMPTY : recipe.getOutputs().get(0), recipe, Role.RESULT);
 		}
 
 		@Override
@@ -157,7 +181,7 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 		public final long total;
 
 		public Synthetic(EmiRecipe recipe, long batches, long amount, long total, int state) {
-			super(recipe.getOutputs().get(0), recipe);
+			super(recipe.getOutputs().get(0), recipe, Role.RESULT);
 			this.batches = batches;
 			this.amount = amount;
 			this.total = total;
@@ -165,7 +189,7 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 		}
 
 		public Synthetic(EmiIngredient ingredient, long needed, long total) {
-			super(ingredient, null);
+			super(ingredient, null, Role.ITEM);
 			this.batches = needed;
 			this.amount = needed;
 			this.total = total;
@@ -175,15 +199,14 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 		@Override
 		public void render(DrawContext raw, int x, int y, float delta, int flags) {
 			EmiDrawContext context = EmiDrawContext.wrap(raw);
-			int color = 0x915900; // Orange
+			int color = 0x915900;
 			if (state == 1) {
-				color = 0x790091; // Magenta
+				color = 0x790091;
 			} else if (state == 2) {
-				color = 0x00918e; // Blue
+				color = 0x00918e;
 			} else if (state == -1) {
-				color = 0x911300; // Red
+				color = 0x911300;
 			}
-			//context.fill(x - 1, y - 1, 18, 18, 0x44000000 | color);
 			stack.render(context.raw(), x, y, delta, flags & (~EmiIngredient.RENDER_AMOUNT));
 			MicroTextRenderer.render(context, amount, stack.getEmiStacks().get(0) instanceof FluidEmiStack, 18, x + 17, y + 17, color);
 		}
@@ -203,7 +226,7 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 			if (state == -1) {
 				return list;
 			}
-			
+
 			Text craftKey = null;
 
 			if (EmiConfig.helpLevel.has(HelpLevel.NORMAL) && EmiRecipeFiller.getFirstValidHandler(recipe, EmiApi.getHandledScreen()) != null) {

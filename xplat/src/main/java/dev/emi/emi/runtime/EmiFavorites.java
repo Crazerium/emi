@@ -2,6 +2,7 @@ package dev.emi.emi.runtime;
 
 import java.util.AbstractList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import com.google.common.collect.Lists;
@@ -31,7 +32,7 @@ import net.minecraft.util.JsonHelper;
 public class EmiFavorites {
 	public static List<EmiFavorite> favorites = Lists.newArrayList();
 	public static List<EmiFavorite.Synthetic> syntheticFavorites = Lists.newArrayList();
-	public static List<EmiFavorite> favoriteSidebar = new CompoundList<>(favorites, syntheticFavorites);
+	public static List<EmiFavorite> favoriteSidebar = new FavoriteSidebarList();
 
 	public static JsonArray save() {
 		JsonArray arr = new JsonArray();
@@ -42,6 +43,7 @@ public class EmiFavorites {
 				obj.add("stack", stack);
 				if (fav.getRecipe() != null && fav.getRecipe().getId() != null) {
 					obj.addProperty("recipe", fav.getRecipe().getId().toString());
+					obj.addProperty("role", fav.getRole().name().toLowerCase(Locale.ROOT));
 				}
 				arr.add(obj);
 			}
@@ -66,10 +68,18 @@ public class EmiFavorites {
 					if (ingredient instanceof EmiStack es) {
 						ingredient = es.copy();
 					}
-					favorites.add(new EmiFavorite(ingredient, recipe));
+					EmiFavorite.Role role = recipe == null ? EmiFavorite.Role.ITEM : EmiFavorite.Role.RESULT;
+					if (recipe != null && JsonHelper.hasString(json, "role")) {
+						try {
+							role = EmiFavorite.Role.valueOf(JsonHelper.getString(json, "role").toUpperCase(Locale.ROOT));
+						} catch (IllegalArgumentException ignored) {
+						}
+					}
+					favorites.add(new EmiFavorite(ingredient, recipe, role));
 				}
 			}
 		}
+		EmiFavoriteGroups.onFavoritesChanged();
 	}
 
 	public static boolean canFavorite(EmiIngredient stack, EmiRecipe recipe) {
@@ -84,8 +94,11 @@ public class EmiFavorites {
 	}
 
 	private static int indexOf(EmiIngredient stack) {
+		EmiRecipe context = EmiApi.getRecipeContext(stack);
+		EmiFavorite.Role role = stack instanceof EmiFavorite favorite ? favorite.getRole() : context == null ? EmiFavorite.Role.ITEM : EmiFavorite.Role.RESULT;
 		for (int i = 0; i < favorites.size(); i++) {
-			if (favorites.get(i).strictEquals(stack) && favorites.get(i).getRecipe() == EmiApi.getRecipeContext(stack)) {
+			EmiFavorite favorite = favorites.get(i);
+			if (favorite.strictEquals(stack) && sameRecipe(favorite.getRecipe(), context) && favorite.getRole() == role) {
 				return i;
 			}
 		}
@@ -96,6 +109,7 @@ public class EmiFavorites {
 		int index = indexOf(stack);
 		if (index != -1) {
 			favorites.remove(index);
+			EmiFavoriteGroups.onFavoritesChanged();
 			return true;
 		}
 		return false;
@@ -133,7 +147,7 @@ public class EmiFavorites {
 					favorites.remove(i--);
 				}
 			}
-			favorite = new EmiFavorite(stack, null);
+			favorite = new EmiFavorite(stack, null, EmiFavorite.Role.ITEM);
 		}
 		if (offset < 0) {
 			offset = 0;
@@ -143,6 +157,7 @@ public class EmiFavorites {
 		} else {
 			favorites.add(offset, favorite);
 		}
+		EmiFavoriteGroups.onFavoritesChanged();
 		EmiPersistentData.save();
 	}
 
@@ -167,11 +182,11 @@ public class EmiFavorites {
 				if (!es.isEmpty()) {
 					for (int i = 0; i < favorites.size(); i++) {
 						EmiFavorite fav = favorites.get(i);
-						if (fav.getRecipe() == context && fav.strictEquals(es)) {
+						if (sameRecipe(fav.getRecipe(), context) && fav.getRole() == EmiFavorite.Role.RESULT && fav.strictEquals(es)) {
 							return;
 						}
 					}
-					favorites.add(new EmiFavorite(es, context));
+					favorites.add(new EmiFavorite(es, context, EmiFavorite.Role.RESULT));
 				}
 			} else {
 				if (stack.isEmpty()) {
@@ -183,10 +198,96 @@ public class EmiFavorites {
 						return;
 					}
 				}
-				favorites.add(new EmiFavorite(stack, null));
+				favorites.add(new EmiFavorite(stack, null, EmiFavorite.Role.ITEM));
 			}
 		}
+		EmiFavoriteGroups.onFavoritesChanged();
 		EmiPersistentData.save();
+	}
+
+	public static EmiFavorite addRecipeFavorite(EmiIngredient stack, EmiRecipe context, boolean preserveAmount) {
+		return addRecipeFavorite(stack, context, EmiFavorite.Role.RESULT, preserveAmount);
+	}
+
+	public static EmiFavorite addRecipeFavorite(EmiIngredient stack, EmiRecipe context, EmiFavorite.Role role, boolean preserveAmount) {
+		return addRecipeFavoriteInternal(stack, context, role, preserveAmount, true);
+	}
+
+	static EmiFavorite addRecipeFavoriteQuiet(EmiIngredient stack, EmiRecipe context, EmiFavorite.Role role, boolean preserveAmount) {
+		return addRecipeFavoriteInternal(stack, context, role, preserveAmount, false);
+	}
+
+	static void finishFavoriteBatch() {
+		EmiFavoriteGroups.onFavoritesChanged();
+		EmiPersistentData.save();
+	}
+
+	private static EmiFavorite addRecipeFavoriteInternal(EmiIngredient stack, EmiRecipe context, EmiFavorite.Role role,
+			boolean preserveAmount, boolean persist) {
+		if (context == null || context.getId() == null || stack == null || stack.isEmpty() || role == EmiFavorite.Role.ITEM) {
+			return null;
+		}
+		JsonElement serialized = EmiIngredientSerializer.getSerialized(stack);
+		if (serialized == null) {
+			return null;
+		}
+		stack = EmiIngredientSerializer.getDeserialized(serialized);
+		if (stack.isEmpty()) {
+			return null;
+		}
+		stack = stack.copy();
+		if (!preserveAmount) {
+			stack.setAmount(1);
+		}
+		for (EmiFavorite favorite : favorites) {
+			if (sameRecipe(favorite.getRecipe(), context) && favorite.getRole() == role && favorite.strictEquals(stack)) {
+				return favorite;
+			}
+		}
+		EmiFavorite favorite = new EmiFavorite(stack, context, role);
+		favorites.add(favorite);
+		if (persist) {
+			finishFavoriteBatch();
+		}
+		return favorite;
+	}
+
+	public static List<EmiFavorite> removeRecipeFavorites(EmiRecipe recipe) {
+		List<EmiFavorite> removed = Lists.newArrayList();
+		for (int i = favorites.size() - 1; i >= 0; i--) {
+			EmiFavorite favorite = favorites.get(i);
+			if (favorite.getRecipe() != null && sameRecipe(favorite.getRecipe(), recipe)) {
+				removed.add(favorite);
+				favorites.remove(i);
+			}
+		}
+		if (!removed.isEmpty()) {
+			EmiFavoriteGroups.onFavoritesChanged();
+			EmiPersistentData.save();
+		}
+		return removed;
+	}
+
+	private static boolean sameRecipe(EmiRecipe a, EmiRecipe b) {
+		if (a == b) {
+			return true;
+		}
+		if (a == null || b == null || a.getId() == null || b.getId() == null) {
+			return false;
+		}
+		return a.getId().equals(b.getId());
+	}
+
+	public static boolean removeFavorite(EmiFavorite favorite) {
+		for (int i = 0; i < favorites.size(); i++) {
+			if (favorites.get(i) == favorite) {
+				favorites.remove(i);
+				EmiFavoriteGroups.onFavoritesChanged();
+				EmiPersistentData.save();
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public static void updateSynthetic(EmiPlayerInventory inv) {
@@ -274,25 +375,15 @@ public class EmiFavorites {
 		}
 	}
 
-	private static class CompoundList<T> extends AbstractList<T> {
-		private List<? extends T> a, b;
-
-		public CompoundList(List<? extends T> a, List<? extends T> b) {
-			this.a = a;
-			this.b = b;
-		}
-
+	private static class FavoriteSidebarList extends AbstractList<EmiFavorite> {
 		@Override
-		public T get(int index) {
-			if (index >= a.size()) {
-				return b.get(index - a.size());
-			}
-			return a.get(index);
+		public EmiFavorite get(int index) {
+			return EmiFavoriteGroups.sidebarFavorites().get(index);
 		}
 
 		@Override
 		public int size() {
-			return a.size() + b.size();
+			return EmiFavoriteGroups.sidebarFavoriteCount();
 		}
 	}
 }

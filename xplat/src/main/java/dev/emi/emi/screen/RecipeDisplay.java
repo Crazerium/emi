@@ -15,6 +15,7 @@ import dev.emi.emi.config.EmiConfig;
 import dev.emi.emi.registry.EmiRecipeFiller;
 import dev.emi.emi.registry.EmiRecipes;
 import dev.emi.emi.runtime.EmiLog;
+import dev.emi.emi.widget.RecipeOverlayButtonWidget;
 import dev.emi.emi.widget.RecipeDefaultButtonWidget;
 import dev.emi.emi.widget.RecipeScreenshotButtonWidget;
 import dev.emi.emi.widget.RecipeTreeButtonWidget;
@@ -37,6 +38,9 @@ public class RecipeDisplay {
 		height = recipe.getDisplayHeight();
 		if (EmiRecipeFiller.isSupported(recipe) && EmiConfig.recipeFillButton) {
 			rightButtons.add(ButtonType.FILL);
+		}
+		if (recipe.getId() != null && !recipe.getOutputs().isEmpty()) {
+			rightButtons.add(ButtonType.OVERLAY);
 		}
 		if (recipe.supportsRecipeTree()) {
 			if (EmiConfig.recipeTreeButton) {
@@ -119,6 +123,7 @@ public class RecipeDisplay {
 					case TREE -> new RecipeTreeButtonWidget(bx, by, recipe);
 					case DEFAULT -> new RecipeDefaultButtonWidget(bx, by, recipe);
 					case SCREENSHOT -> new RecipeScreenshotButtonWidget(bx, by, recipe);
+					case OVERLAY -> new RecipeOverlayButtonWidget(bx, by, recipe);
 				});
 				yOff += 14;
 			}
@@ -147,6 +152,7 @@ public class RecipeDisplay {
 		FILL,
 		TREE,
 		DEFAULT,
-		SCREENSHOT
+		SCREENSHOT,
+		OVERLAY
 	}
 }
