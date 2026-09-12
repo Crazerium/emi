@@ -2,6 +2,10 @@ package dev.emi.emi.screen;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.glfw.GLFW;
@@ -37,6 +41,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.client.gui.tooltip.TooltipComponent;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.sound.SoundEvents;
@@ -45,6 +50,13 @@ import net.minecraft.util.Identifier;
 
 public class RecipeScreen extends Screen {
 	private static final Identifier TEXTURE = EmiPort.id("emi", "textures/gui/background.png");
+	private static final long RECIPE_FILTER_DEBOUNCE_MS = 140L;
+	private static final ScheduledExecutorService RECIPE_FILTER_EXECUTOR = Executors.newSingleThreadScheduledExecutor(runnable -> {
+		Thread thread = new Thread(runnable, "EMI-RecipeFilter");
+		thread.setDaemon(true);
+		thread.setPriority(Thread.NORM_PRIORITY - 1);
+		return thread;
+	});
 	public static @Nullable EmiIngredient resolve = null;
 	private Map<EmiRecipeCategory, List<EmiRecipe>> recipes;
 	public HandledScreen<?> old;
@@ -57,6 +69,26 @@ public class RecipeScreen extends Screen {
 	private Widget hoveredWidget = null, pressedSlot = null;
 	private ResolutionButtonWidget resolutionButton;
 	private double scrollAcc = 0;
+	private final EmiRecipeSearchIndex recipeSearchIndex = new EmiRecipeSearchIndex();
+	private TextFieldWidget recipeFilterField;
+	private String recipeFilterQuery = "";
+	private boolean recipeFilterActive;
+	private boolean recipeFilterHelpPinned;
+	private boolean recipeFilterFiltering;
+	private boolean recipeFilterSuppressNextHashCharacter;
+	private volatile long recipeFilterGeneration;
+	private ScheduledFuture<?> pendingRecipeFilter;
+	private EmiRecipeCategory recipeFilterCategory;
+	private EmiRecipeCategory recipeFilterAppliedCategory;
+	private int recipeFilterTotalCount;
+	private int recipeFilterCount;
+	private int recipeFilterToggleX;
+	private int recipeFilterToggleY;
+	private int recipeFilterX;
+	private int recipeFilterY;
+	private int recipeFilterWidth;
+	private int recipeFilterHelpX;
+	private int recipeFilterHelpY;
 	private int minimumWidth = 176;
 	int backgroundWidth = minimumWidth;
 	int backgroundHeight = 200;
@@ -138,6 +170,12 @@ public class RecipeScreen extends Screen {
 			}
 		}
 		setRecipePageWidth(backgroundWidth);
+		recipeFilterAppliedCategory = null;
+		recipeFilterCategory = null;
+		layoutRecipeFilter();
+		if (recipeFilterActive && !recipeFilterQuery.isBlank()) {
+			syncRecipeFilterCategory();
+		}
 	}
 
 	private void setRecipePageWidth(int width) {
@@ -283,6 +321,7 @@ public class RecipeScreen extends Screen {
 		if (rTab != null) {
 			EmiRenderHelper.drawTooltip(this, context, rTab.category.getTooltip(), mouseX, mouseY);
 		}
+		renderRecipeFilter(raw, mouseX, mouseY, delta);
 	}
 
 	public EmiIngredient getHoveredStack() {
@@ -412,6 +451,28 @@ public class RecipeScreen extends Screen {
 		int mx = (int) mouseX;
 		int my = (int) mouseY;
 		pressedSlot = null;
+		layoutRecipeFilter();
+		if (isRecipeFilterToggleHovered(mouseX, mouseY)) {
+			toggleRecipeFilter();
+			return true;
+		}
+		if (recipeFilterActive) {
+			if (isRecipeFilterHelpHovered(mouseX, mouseY)) {
+				recipeFilterHelpPinned = !recipeFilterHelpPinned;
+				return true;
+			}
+			if (recipeFilterField != null && recipeFilterField.mouseClicked(mouseX, mouseY, button)) {
+				EmiPort.focus(recipeFilterField, true);
+				return true;
+			}
+			if (!recipeFilterFiltering && recipeFilterCount == 0 && !recipeFilterQuery.isBlank()
+					&& isRecipeFilterAreaHovered(mouseX, mouseY)) {
+				return true;
+			}
+			if (recipeFilterField != null) {
+				EmiPort.focus(recipeFilterField, false);
+			}
+		}
 		if (mouseX >= x + 19 + buttonOff && mouseY >= y + 5 && mouseX < x + minimumWidth + buttonOff - 19 && mouseY <= y + 5 + 12) {
 			EmiApi.displayAllRecipes();
 			MinecraftClient.getInstance().getSoundManager().play(PositionedSoundInstance.master(SoundEvents.UI_BUTTON_CLICK, 1.0f));
@@ -525,6 +586,20 @@ public class RecipeScreen extends Screen {
 
 	@Override
 	public boolean charTyped(char chr, int modifiers) {
+		if (recipeFilterActive && recipeFilterField != null && recipeFilterField.isFocused()) {
+			if (recipeFilterSuppressNextHashCharacter) {
+				recipeFilterSuppressNextHashCharacter = false;
+				if (chr == '#' || chr == '№') {
+					return true;
+				}
+			}
+			if (chr == '№') {
+				recipeFilterField.write("#");
+				return true;
+			}
+			recipeFilterField.charTyped(chr, modifiers);
+			return true;
+		}
 		if (EmiScreenManager.search.charTyped(chr, modifiers)) {
 			return true;
 		}
@@ -533,6 +608,23 @@ public class RecipeScreen extends Screen {
 
 	@Override
 	public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+		if (recipeFilterActive && recipeFilterField != null && recipeFilterField.isFocused()) {
+			if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+				closeRecipeFilter();
+				return true;
+			}
+			if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+				EmiPort.focus(recipeFilterField, false);
+				return true;
+			}
+			if (keyCode == GLFW.GLFW_KEY_3 && (modifiers & GLFW.GLFW_MOD_SHIFT) != 0) {
+				recipeFilterField.write("#");
+				recipeFilterSuppressNextHashCharacter = true;
+				return true;
+			}
+			recipeFilterField.keyPressed(keyCode, scanCode, modifiers);
+			return true;
+		}
 		if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
 			this.close();
 			return true;
@@ -572,6 +664,394 @@ public class RecipeScreen extends Screen {
 		return super.keyPressed(keyCode, scanCode, modifiers);
 	}
 
+
+	private void layoutRecipeFilter() {
+		int newToggleX = x + buttonOff + 20;
+		int newToggleY = y + 19;
+		int newHelpX = x + buttonOff + minimumWidth - 32;
+		int newHelpY = y + 19;
+		int newX = newToggleX + 15;
+		int newY = y + 18;
+		int newWidth = Math.max(54, newHelpX - newX - 3);
+
+		if (recipeFilterField != null
+				&& newToggleX == recipeFilterToggleX
+				&& newToggleY == recipeFilterToggleY
+				&& newHelpX == recipeFilterHelpX
+				&& newHelpY == recipeFilterHelpY
+				&& newX == recipeFilterX
+				&& newY == recipeFilterY
+				&& newWidth == recipeFilterWidth) {
+			return;
+		}
+
+		boolean focused = recipeFilterActive && recipeFilterField != null && recipeFilterField.isFocused();
+		recipeFilterToggleX = newToggleX;
+		recipeFilterToggleY = newToggleY;
+		recipeFilterHelpX = newHelpX;
+		recipeFilterHelpY = newHelpY;
+		recipeFilterX = newX;
+		recipeFilterY = newY;
+		recipeFilterWidth = newWidth;
+
+		TextFieldWidget field = new TextFieldWidget(client.textRenderer, recipeFilterX, recipeFilterY,
+			recipeFilterWidth, 14, EmiPort.literal("Recipe filter"));
+		field.setMaxLength(256);
+		field.setSuggestion(recipeFilterQuery.isEmpty() ? "Filter recipes..." : "");
+		field.setText(recipeFilterQuery);
+		updateRecipeFilterColor(field);
+		field.setChangedListener(this::onRecipeFilterChanged);
+		EmiPort.focus(field, focused);
+		recipeFilterField = field;
+	}
+
+	private void renderRecipeFilter(DrawContext raw, int mouseX, int mouseY, float delta) {
+		if (tabs.isEmpty()) {
+			return;
+		}
+		layoutRecipeFilter();
+		syncRecipeFilterCategory();
+		renderRecipeFilterToggle(raw, mouseX, mouseY);
+		if (!recipeFilterActive || recipeFilterField == null) {
+			return;
+		}
+
+		if (!recipeFilterFiltering && recipeFilterCount == 0 && !recipeFilterQuery.isBlank()) {
+			renderNoRecipeFilterMatches(raw);
+		}
+
+		recipeFilterField.render(raw, mouseX, mouseY, delta);
+		renderRecipeFilterHelpButton(raw, mouseX, mouseY);
+		if (recipeFilterHelpPinned || isRecipeFilterHelpHovered(mouseX, mouseY)) {
+			renderRecipeFilterHelp(raw);
+		}
+	}
+
+	private void renderRecipeFilterToggle(DrawContext raw, int mouseX, int mouseY) {
+		boolean hovered = isRecipeFilterToggleHovered(mouseX, mouseY);
+		int bg = hovered || recipeFilterActive || !recipeFilterQuery.isBlank() ? 0xE0808080 : 0xD0404040;
+		int sx = recipeFilterToggleX;
+		int sy = recipeFilterToggleY;
+		raw.fill(sx, sy, sx + 12, sy + 12, bg);
+		int color = 0xFFFFFFFF;
+		raw.fill(sx + 3, sy + 3, sx + 8, sy + 4, color);
+		raw.fill(sx + 3, sy + 4, sx + 4, sy + 8, color);
+		raw.fill(sx + 7, sy + 4, sx + 8, sy + 8, color);
+		raw.fill(sx + 4, sy + 7, sx + 8, sy + 8, color);
+		raw.fill(sx + 8, sy + 8, sx + 9, sy + 9, color);
+		raw.fill(sx + 9, sy + 9, sx + 11, sy + 11, color);
+	}
+
+	private void renderRecipeFilterHelpButton(DrawContext raw, int mouseX, int mouseY) {
+		boolean hovered = isRecipeFilterHelpHovered(mouseX, mouseY);
+		int bg = hovered || recipeFilterHelpPinned ? 0xE0808080 : 0xD0404040;
+		raw.fill(recipeFilterHelpX, recipeFilterHelpY, recipeFilterHelpX + 12, recipeFilterHelpY + 12, bg);
+		EmiDrawContext.wrap(raw).drawCenteredTextWithShadow(EmiPort.literal("?"), recipeFilterHelpX + 6, recipeFilterHelpY + 2, 0xFFFFFF);
+	}
+
+	private void renderNoRecipeFilterMatches(DrawContext raw) {
+		int left = x + 4;
+		int top = y + 34;
+		int right = x + backgroundWidth - 4;
+		int bottom = y + backgroundHeight - 4;
+		if (right <= left || bottom <= top) {
+			return;
+		}
+		raw.fill(left, top, right, bottom, 0xEE101010);
+		EmiDrawContext.wrap(raw).drawCenteredTextWithShadow(
+			EmiPort.literal("No matching recipes"),
+			(left + right) / 2,
+			top + Math.max(8, (bottom - top) / 2 - 4),
+			0xFF7777
+		);
+	}
+
+	private void renderRecipeFilterHelp(DrawContext raw) {
+		String[] lines = {
+			recipeFilterFiltering ? "Filter Syntax  [searching...]" : "Filter Syntax  [" + recipeFilterCount + "/" + recipeFilterTotalCount + "]",
+			"text      - name / ID / mod",
+			"<text     - inputs",
+			">text     - outputs",
+			"@text     - mod",
+			"#text     - tooltip  (RU: №)",
+			"$text     - item/fluid tag",
+			"&text     - resource ID",
+			"=text     - chemical formula",
+			"%text     - voltage / tier",
+			"-term     - exclude",
+			"a|b       - OR",
+			"\"text\"  - exact phrase"
+		};
+
+		int width = 0;
+		for (String line : lines) {
+			width = Math.max(width, client.textRenderer.getWidth(line));
+		}
+		width += 12;
+		int helpHeight = lines.length * 11 + 8;
+		int helpX = Math.min(recipeFilterX, this.width - width - 4);
+		int helpY = recipeFilterY + 16;
+		if (helpY + helpHeight > this.height - 4) {
+			helpY = Math.max(4, recipeFilterY - helpHeight - 2);
+		}
+
+		raw.getMatrices().push();
+		raw.getMatrices().translate(0, 0, 500);
+		raw.fill(helpX, helpY, helpX + width, helpY + helpHeight, 0xEE101010);
+		raw.fill(helpX, helpY, helpX + width, helpY + 1, 0xFF7F7F7F);
+		raw.fill(helpX, helpY + helpHeight - 1, helpX + width, helpY + helpHeight, 0xFF7F7F7F);
+		EmiDrawContext context = EmiDrawContext.wrap(raw);
+		int ty = helpY + 5;
+		for (int i = 0; i < lines.length; i++) {
+			int color = i == 0 ? 0xFFFFFF : recipeFilterSyntaxColor(lines[i]);
+			context.drawText(EmiPort.literal(lines[i]), helpX + 6, ty, color);
+			ty += 11;
+		}
+		raw.getMatrices().pop();
+	}
+
+	private int recipeFilterSyntaxColor(String line) {
+		if (line.startsWith("<")) return 0x55FF55;
+		if (line.startsWith(">")) return 0xFFAA55;
+		if (line.startsWith("@")) return 0xFF55FF;
+		if (line.startsWith("#")) return 0xFFFF55;
+		if (line.startsWith("$")) return 0x55FFFF;
+		if (line.startsWith("&")) return 0x55AAFF;
+		if (line.startsWith("=")) return 0xAAFFAA;
+		if (line.startsWith("%")) return 0xFFAA55;
+		if (line.startsWith("-")) return 0xFF7777;
+		return 0xDDDDDD;
+	}
+
+	private boolean isRecipeFilterToggleHovered(double mouseX, double mouseY) {
+		return mouseX >= recipeFilterToggleX && mouseX < recipeFilterToggleX + 12
+			&& mouseY >= recipeFilterToggleY && mouseY < recipeFilterToggleY + 12;
+	}
+
+	private boolean isRecipeFilterHelpHovered(double mouseX, double mouseY) {
+		return recipeFilterActive
+			&& mouseX >= recipeFilterHelpX && mouseX < recipeFilterHelpX + 12
+			&& mouseY >= recipeFilterHelpY && mouseY < recipeFilterHelpY + 12;
+	}
+
+	private boolean isRecipeFilterAreaHovered(double mouseX, double mouseY) {
+		int top = y + 34;
+		return mouseX >= x && mouseX < x + backgroundWidth
+			&& mouseY >= top && mouseY < y + backgroundHeight;
+	}
+
+	private void toggleRecipeFilter() {
+		if (recipeFilterActive) {
+			closeRecipeFilter();
+			return;
+		}
+		recipeFilterActive = true;
+		recipeFilterHelpPinned = false;
+		syncRecipeFilterCategory();
+		layoutRecipeFilter();
+		if (recipeFilterField != null) {
+			EmiPort.focus(recipeFilterField, true);
+		}
+	}
+
+	private void closeRecipeFilter() {
+		recipeFilterActive = false;
+		recipeFilterHelpPinned = false;
+		recipeFilterSuppressNextHashCharacter = false;
+		cancelPendingRecipeFilter();
+		if (recipeFilterField != null) {
+			EmiPort.focus(recipeFilterField, false);
+			if (!recipeFilterQuery.isBlank()) {
+				recipeFilterField.setText("");
+				return;
+			}
+		}
+		recipeFilterGeneration++;
+		recipeFilterFiltering = false;
+		restoreRecipeFilterAppliedCategory(true);
+	}
+
+	private void syncRecipeFilterCategory() {
+		if (tabs.isEmpty() || tab < 0 || tab >= tabs.size()) {
+			return;
+		}
+		EmiRecipeCategory category = tabs.get(tab).category;
+		if (recipeFilterCategory == category) {
+			if (recipeFilterQuery.isBlank()) {
+				List<EmiRecipe> source = originalRecipeFilterRecipes(category);
+				recipeFilterTotalCount = source.size();
+				recipeFilterCount = source.size();
+			}
+			return;
+		}
+
+		if (recipeFilterAppliedCategory != null && recipeFilterAppliedCategory != category) {
+			restoreRecipeFilterAppliedCategory(false);
+		}
+		recipeFilterCategory = category;
+		List<EmiRecipe> source = originalRecipeFilterRecipes(category);
+		recipeFilterTotalCount = source.size();
+		recipeFilterCount = source.size();
+		if (recipeFilterActive && !recipeFilterQuery.isBlank()) {
+			scheduleRecipeFilter(category, recipeFilterQuery);
+		}
+	}
+
+	private void onRecipeFilterChanged(String value) {
+		recipeFilterQuery = value == null ? "" : value;
+		recipeFilterSuppressNextHashCharacter = false;
+		if (recipeFilterField != null) {
+			recipeFilterField.setSuggestion(recipeFilterQuery.isEmpty() ? "Filter recipes..." : "");
+		}
+		syncRecipeFilterCategory();
+		if (recipeFilterQuery.isBlank()) {
+			recipeFilterGeneration++;
+			recipeFilterFiltering = false;
+			cancelPendingRecipeFilter();
+			restoreRecipeFilterAppliedCategory(true);
+			List<EmiRecipe> source = originalRecipeFilterRecipes(recipeFilterCategory);
+			recipeFilterTotalCount = source.size();
+			recipeFilterCount = source.size();
+			updateRecipeFilterColor(recipeFilterField);
+			return;
+		}
+		if (recipeFilterCategory != null) {
+			scheduleRecipeFilter(recipeFilterCategory, recipeFilterQuery);
+		}
+	}
+
+	private void scheduleRecipeFilter(EmiRecipeCategory category, String querySnapshot) {
+		cancelPendingRecipeFilter();
+		long generation = ++recipeFilterGeneration;
+		recipeFilterFiltering = true;
+		updateRecipeFilterColor(recipeFilterField);
+		pendingRecipeFilter = RECIPE_FILTER_EXECUTOR.schedule(
+			() -> computeRecipeFilter(category, querySnapshot, generation),
+			RECIPE_FILTER_DEBOUNCE_MS,
+			TimeUnit.MILLISECONDS
+		);
+	}
+
+	private void computeRecipeFilter(EmiRecipeCategory category, String querySnapshot, long generation) {
+		if (generation != recipeFilterGeneration) {
+			return;
+		}
+		List<EmiRecipe> source = originalRecipeFilterRecipes(category);
+		RecipeFilterQuery parsed = RecipeFilterQuery.parse(querySnapshot);
+		List<EmiRecipe> accepted = Lists.newArrayList();
+		if (parsed.isEmpty()) {
+			accepted.addAll(source);
+		} else {
+			for (int i = 0; i < source.size(); i++) {
+				if ((i & 127) == 0 && generation != recipeFilterGeneration) {
+					return;
+				}
+				EmiRecipe recipe = source.get(i);
+				if (parsed.test(recipeSearchIndex.document(recipe))) {
+					accepted.add(recipe);
+				}
+			}
+		}
+		if (generation != recipeFilterGeneration) {
+			return;
+		}
+		List<EmiRecipe> result = List.copyOf(accepted);
+		client.execute(() -> applyRecipeFilter(category, querySnapshot, generation, source.size(), result));
+	}
+
+	private void applyRecipeFilter(EmiRecipeCategory category, String querySnapshot, long generation,
+			int sourceCount, List<EmiRecipe> result) {
+		if (client.currentScreen != this
+				|| generation != recipeFilterGeneration
+				|| recipeFilterCategory != category
+				|| !recipeFilterQuery.equals(querySnapshot)) {
+			return;
+		}
+		recipeFilterFiltering = false;
+		pendingRecipeFilter = null;
+		recipeFilterTotalCount = sourceCount;
+		recipeFilterCount = result.size();
+		updateRecipeFilterColor(recipeFilterField);
+		if (result.isEmpty()) {
+			return;
+		}
+		if (recipeFilterAppliedCategory != null && recipeFilterAppliedCategory != category) {
+			restoreRecipeFilterAppliedCategory(false);
+		}
+		if (replaceRecipeFilterTab(category, result, true)) {
+			recipeFilterAppliedCategory = category;
+		}
+	}
+
+	private boolean replaceRecipeFilterTab(EmiRecipeCategory category, List<EmiRecipe> newRecipes, boolean focus) {
+		int index = -1;
+		for (int i = 0; i < tabs.size(); i++) {
+			if (tabs.get(i).category == category || tabs.get(i).category.equals(category)) {
+				index = i;
+				break;
+			}
+		}
+		if (index < 0 && recipeFilterCategory == category && tab >= 0 && tab < tabs.size()) {
+			index = tab;
+		}
+		if (index < 0) {
+			return false;
+		}
+		RecipeTab replacement = new RecipeTab(category, newRecipes);
+		replacement.bakePages(backgroundHeight);
+		tabs.set(index, replacement);
+		if (focus) {
+			setPage(tabPage, index, 0);
+		}
+		return true;
+	}
+
+	private void restoreRecipeFilterAppliedCategory(boolean focusIfCurrent) {
+		if (recipeFilterAppliedCategory == null) {
+			return;
+		}
+		EmiRecipeCategory category = recipeFilterAppliedCategory;
+		recipeFilterAppliedCategory = null;
+		List<EmiRecipe> source = originalRecipeFilterRecipes(category);
+		if (source.isEmpty()) {
+			return;
+		}
+		boolean focus = focusIfCurrent && recipeFilterCategory == category;
+		replaceRecipeFilterTab(category, source, focus);
+	}
+
+	private List<EmiRecipe> originalRecipeFilterRecipes(EmiRecipeCategory category) {
+		if (recipes == null || category == null) {
+			return List.of();
+		}
+		List<EmiRecipe> source = recipes.get(category);
+		return source == null ? List.of() : source;
+	}
+
+	private void updateRecipeFilterColor(TextFieldWidget field) {
+		if (field == null) {
+			return;
+		}
+		int color;
+		if (recipeFilterFiltering) {
+			color = 0xFFFFAA;
+		} else if (!recipeFilterQuery.isBlank() && recipeFilterCount == 0) {
+			color = 0xFF5555;
+		} else {
+			color = 0xE0E0E0;
+		}
+		field.setEditableColor(color);
+		field.setUneditableColor(color);
+	}
+
+	private void cancelPendingRecipeFilter() {
+		ScheduledFuture<?> future = pendingRecipeFilter;
+		pendingRecipeFilter = null;
+		if (future != null) {
+			future.cancel(false);
+		}
+	}
+
 	public WidgetGroup getGroup(Widget widget) {
 		for (WidgetGroup group : currentPage) {
 			if (group.widgets.contains(widget)) {
@@ -583,6 +1063,7 @@ public class RecipeScreen extends Screen {
 
 	@Override
 	public void close() {
+		cancelPendingRecipeFilter();
 		EmiHistory.popUntil(s -> !(s instanceof RecipeScreen), old);
 	}
 
