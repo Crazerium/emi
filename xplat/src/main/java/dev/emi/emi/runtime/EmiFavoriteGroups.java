@@ -173,6 +173,12 @@ public final class EmiFavoriteGroups {
 	}
 
 	public static List<EmiFavorite> sidebarFavorites() {
+		if (EmiFavorites.resolveRecipeReferences()) {
+			for (Group group : GROUPS) {
+				applyQuantity(group);
+			}
+			visibilityDirty = true;
+		}
 		EmiScreenManager.SidebarPanel panel = EmiScreenManager.getPanelFor(SidebarType.FAVORITES);
 		if (panel == null || panel.space == null || panel.space.pageSize <= 0) {
 			return fallbackSidebarFavorites();
@@ -276,8 +282,7 @@ public final class EmiFavoriteGroups {
 		Identifier currentRecipe = null;
 		boolean inRecipeRow = false;
 		for (EmiFavorite member : members) {
-			EmiRecipe recipe = member.getRecipe();
-			Identifier recipeId = recipe == null ? null : recipe.getId();
+			Identifier recipeId = member.getRecipeId();
 			if (recipeId != null) {
 				if (inRecipeRow && !recipeId.equals(currentRecipe)) {
 					padToNextRow(result, space);
@@ -566,6 +571,13 @@ public final class EmiFavoriteGroups {
 		return Math.max(1L, group.recipeQuantities.getOrDefault(recipe.getId(), 1L));
 	}
 
+	private static long recipeQuantity(Group group, @Nullable Identifier recipeId) {
+		if (group == null || recipeId == null) {
+			return 1L;
+		}
+		return Math.max(1L, group.recipeQuantities.getOrDefault(recipeId, 1L));
+	}
+
 	private static long stepQuantity(long current, int direction, boolean stackStep) {
 		current = Math.max(1L, current);
 		if (!stackStep) {
@@ -592,7 +604,7 @@ public final class EmiFavoriteGroups {
 			}
 		} else {
 			for (EmiFavorite favorite : group.members) {
-				long rowQuantity = recipeQuantity(group, favorite.getRecipe());
+				long rowQuantity = recipeQuantity(group, favorite.getRecipeId());
 				long multiplier = safeMultiply(group.quantity, rowQuantity);
 				favorite.setAmount(safeMultiply(group.baseAmount(favorite), multiplier));
 			}
@@ -850,10 +862,10 @@ public final class EmiFavoriteGroups {
 		for (int i = 0; i < original.size(); i++) {
 			EmiFavorite favorite = original.get(i);
 			originalOrder.put(favorite, i);
-			EmiRecipe recipe = favorite.getRecipe();
-			if (recipe != null && recipe.getId() != null) {
-				if (!recipeOrder.containsKey(recipe.getId())) {
-					recipeOrder.put(recipe.getId(), nextOrder++);
+			Identifier recipeId = favorite.getRecipeId();
+			if (recipeId != null) {
+				if (!recipeOrder.containsKey(recipeId)) {
+					recipeOrder.put(recipeId, nextOrder++);
 				}
 			} else {
 				itemOrder.put(favorite, nextOrder++);
@@ -887,9 +899,9 @@ public final class EmiFavoriteGroups {
 
 	private static int sortBlock(EmiFavorite favorite, Map<Identifier, Integer> recipeOrder,
 			IdentityHashMap<EmiFavorite, Integer> itemOrder) {
-		EmiRecipe recipe = favorite.getRecipe();
-		if (recipe != null && recipe.getId() != null) {
-			return recipeOrder.getOrDefault(recipe.getId(), Integer.MAX_VALUE - 1);
+		Identifier recipeId = favorite.getRecipeId();
+		if (recipeId != null) {
+			return recipeOrder.getOrDefault(recipeId, Integer.MAX_VALUE - 1);
 		}
 		return itemOrder.getOrDefault(favorite, Integer.MAX_VALUE);
 	}
@@ -920,9 +932,9 @@ public final class EmiFavoriteGroups {
 		Set<Identifier> recipeIds = new LinkedHashSet<>();
 		for (EmiFavorite favorite : group.members) {
 			group.baseAmounts.putIfAbsent(favorite, Math.max(1L, favorite.getAmount()));
-			EmiRecipe recipe = favorite.getRecipe();
-			if (recipe != null && recipe.getId() != null) {
-				recipeIds.add(recipe.getId());
+			Identifier recipeId = favorite.getRecipeId();
+			if (recipeId != null) {
+				recipeIds.add(recipeId);
 			}
 		}
 		group.recipeQuantities.keySet().removeIf(id -> !recipeIds.contains(id));

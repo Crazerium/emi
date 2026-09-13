@@ -25,6 +25,7 @@ import net.minecraft.client.gui.tooltip.TooltipComponent;
 import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import net.minecraft.util.Identifier;
 
 public class EmiFavorite implements EmiIngredient, Batchable {
 	public enum Role {
@@ -34,17 +35,24 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 	}
 
 	protected EmiIngredient stack;
-	protected final @Nullable EmiRecipe recipe;
+	protected @Nullable EmiRecipe recipe;
+	protected final @Nullable Identifier recipeId;
 	protected final Role role;
+	private long nextRecipeResolveAttemptNanos;
 
 	public EmiFavorite(EmiIngredient stack, @Nullable EmiRecipe recipe) {
 		this(stack, recipe, recipe == null ? Role.ITEM : Role.RESULT);
 	}
 
 	public EmiFavorite(EmiIngredient stack, @Nullable EmiRecipe recipe, Role role) {
+		this(stack, recipe, recipe == null ? null : recipe.getId(), role);
+	}
+
+	EmiFavorite(EmiIngredient stack, @Nullable EmiRecipe recipe, @Nullable Identifier recipeId, Role role) {
 		this.stack = stack;
 		this.recipe = recipe;
-		this.role = recipe == null ? Role.ITEM : role;
+		this.recipeId = recipe != null && recipe.getId() != null ? recipe.getId() : recipeId;
+		this.role = this.recipeId == null ? Role.ITEM : role;
 	}
 
 	public EmiIngredient getStack() {
@@ -57,7 +65,7 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 
 	@Override
 	public EmiIngredient copy() {
-		return new EmiFavorite(stack, recipe, role);
+		return new EmiFavorite(stack, getRecipe(), recipeId, role);
 	}
 
 	@Override
@@ -81,8 +89,40 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 		return this;
 	}
 
-	public EmiRecipe getRecipe() {
+	public @Nullable EmiRecipe getRecipe() {
+		resolveRecipeReference();
 		return recipe;
+	}
+
+	boolean resolveRecipeReference() {
+		if (recipe != null || recipeId == null) {
+			return false;
+		}
+		long now = System.nanoTime();
+		if (now < nextRecipeResolveAttemptNanos) {
+			return false;
+		}
+		nextRecipeResolveAttemptNanos = now + 250_000_000L;
+		try {
+			EmiRecipe resolved = EmiApi.getRecipeManager().getRecipe(recipeId);
+			if (resolved != null) {
+				recipe = resolved;
+				return true;
+			}
+		} catch (Throwable ignored) {
+		}
+		return false;
+	}
+
+	boolean hasUnresolvedRecipeReference() {
+		return recipe == null && recipeId != null;
+	}
+
+	public @Nullable Identifier getRecipeId() {
+		if (recipeId != null) {
+			return recipeId;
+		}
+		return recipe == null ? null : recipe.getId();
 	}
 
 	@Override
@@ -93,7 +133,8 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 	@Override
 	public void render(DrawContext raw, int x, int y, float delta, int flags) {
 		EmiDrawContext context = EmiDrawContext.wrap(raw);
-		boolean recipeFavorite = recipe != null;
+		getRecipe();
+		boolean recipeFavorite = getRecipeId() != null;
 		boolean grouped = recipeFavorite && EmiFavoriteGroups.groupFor(this) != null;
 		int stackFlags = flags;
 		if (recipeFavorite && !grouped) {
@@ -113,8 +154,9 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 	public List<TooltipComponent> getTooltip() {
 		List<TooltipComponent> list = Lists.newArrayList();
 		list.addAll(stack.getTooltip());
-		if (recipe != null && EmiFavoriteGroups.groupFor(this) == null) {
-			list.add(new RecipeTooltipComponent(recipe, true));
+		EmiRecipe resolvedRecipe = getRecipe();
+		if (resolvedRecipe != null && EmiFavoriteGroups.groupFor(this) == null) {
+			list.add(new RecipeTooltipComponent(resolvedRecipe, true));
 		}
 		return list;
 	}

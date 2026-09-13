@@ -5,6 +5,7 @@ import java.io.FileReader;
 import java.io.FileWriter;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import dev.emi.emi.bom.BoM;
@@ -41,6 +42,10 @@ public class EmiPersistentData {
 			}
 			if (JsonHelper.hasArray(json, "favorite_groups")) {
 				EmiFavoriteGroups.load(JsonHelper.getArray(json, "favorite_groups"));
+				EmiFavorites.takeEmbeddedFavoriteGroups();
+			} else {
+				JsonArray embeddedGroups = EmiFavorites.takeEmbeddedFavoriteGroups();
+				EmiFavoriteGroups.load(embeddedGroups == null ? new JsonArray() : embeddedGroups);
 			}
 			EmiSidebars.load(json);
 			if (JsonHelper.hasJsonObject(json, "recipe_defaults")) {
