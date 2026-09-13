@@ -13,6 +13,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import dev.emi.emi.platform.EmiClient;
 import dev.emi.emi.runtime.EmiLog;
 import dev.emi.emi.runtime.EmiReloadManager;
+import dev.emi.emi.screen.FavoriteGroupSidebar;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.world.ClientWorld;
 
@@ -32,6 +33,11 @@ public class MinecraftClientMixin {
 				}
 			}, Executors.newFixedThreadPool(1));
 		}
+	}
+
+	@Inject(at = @At("RETURN"), method = "tick()V")
+	private void emi$favoriteCraftTick(CallbackInfo info) {
+		FavoriteGroupSidebar.tick();
 	}
 
 	@Inject(at = @At("HEAD"), method = "disconnect(Lnet/minecraft/client/gui/screen/Screen;)V")

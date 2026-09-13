@@ -7,6 +7,7 @@ import org.jetbrains.annotations.Nullable;
 
 import com.google.common.collect.Lists;
 
+import dev.emi.emi.runtime.EmiCraftingToolCompat;
 import dev.emi.emi.runtime.EmiLog;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
@@ -214,7 +215,7 @@ public class FillRecipeC2SPacket implements EmiPacket {
 				return grabbed;
 			}
 			ItemStack r = rubble.get(i);
-			if (ItemStack.canCombine(stack, r)) {
+			if (ItemStack.canCombine(stack, r) || EmiCraftingToolCompat.matches(stack, r)) {
 				int wanted = amount - grabbed;
 				if (r.getCount() <= wanted) {
 					grabbed += r.getCount();
@@ -234,7 +235,7 @@ public class FillRecipeC2SPacket implements EmiPacket {
 				continue;
 			}
 			ItemStack st = s.getStack();
-			if (ItemStack.canCombine(stack, st)) {
+			if (ItemStack.canCombine(stack, st) || EmiCraftingToolCompat.matches(stack, st)) {
 				int wanted = amount - grabbed;
 				ItemStack taken = st.copy();
 				if (st.getCount() <= wanted) {

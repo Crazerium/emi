@@ -22,6 +22,7 @@ import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.registry.EmiRecipeFiller;
 import dev.emi.emi.registry.EmiStackList;
+import dev.emi.emi.runtime.EmiCraftingToolCompat;
 import dev.emi.emi.runtime.EmiFavorite;
 import it.unimi.dsi.fastutil.objects.Object2LongMap;
 import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
@@ -148,13 +149,16 @@ public class EmiPlayerInventory {
 		outer:
 		for (EmiIngredient ingredient : recipe.getInputs()) {
 			for (EmiStack stack : ingredient.getEmiStacks()) {
-				long desired = stack.getAmount();
-				if (inventory.containsKey(stack)) {
-					EmiStack identity = inventory.get(stack);
-					long alreadyUsed = used.getOrDefault(identity, 0);
+				boolean reusable = EmiCraftingToolCompat.isReusable(stack);
+				long desired = reusable ? 1L : stack.getAmount();
+				EmiStack identity = findMatching(stack);
+				if (identity != null) {
+					long alreadyUsed = reusable ? 0L : used.getOrDefault(identity, 0);
 					long available = identity.getAmount() - alreadyUsed;
 					if (available >= desired) {
-						used.put(identity, desired + alreadyUsed);
+						if (!reusable) {
+							used.put(identity, desired + alreadyUsed);
+						}
 						states.add(true);
 						continue outer;
 					}
@@ -177,13 +181,16 @@ public class EmiPlayerInventory {
 				continue;
 			}
 			for (EmiStack stack : ingredient.getEmiStacks()) {
-				long desired = stack.getAmount() * amount;
-				if (inventory.containsKey(stack)) {
-					EmiStack identity = inventory.get(stack);
-					long alreadyUsed = used.getOrDefault(identity, 0);
+				boolean reusable = EmiCraftingToolCompat.isReusable(stack);
+				long desired = reusable ? 1L : stack.getAmount() * amount;
+				EmiStack identity = findMatching(stack);
+				if (identity != null) {
+					long alreadyUsed = reusable ? 0L : used.getOrDefault(identity, 0);
 					long available = identity.getAmount() - alreadyUsed;
 					if (available >= desired) {
-						used.put(identity, desired + alreadyUsed);
+						if (!reusable) {
+							used.put(identity, desired + alreadyUsed);
+						}
 						continue outer;
 					}
 				}
@@ -191,6 +198,22 @@ public class EmiPlayerInventory {
 			return false;
 		}
 		return true;
+	}
+
+	private EmiStack findMatching(EmiStack stack) {
+		EmiStack identity = inventory.get(stack);
+		if (identity != null) {
+			return identity;
+		}
+		if (!EmiCraftingToolCompat.isGtTool(stack)) {
+			return null;
+		}
+		for (EmiStack candidate : inventory.values()) {
+			if (EmiCraftingToolCompat.matches(stack, candidate)) {
+				return candidate;
+			}
+		}
+		return null;
 	}
 
 	public boolean isEqual(EmiPlayerInventory other) {

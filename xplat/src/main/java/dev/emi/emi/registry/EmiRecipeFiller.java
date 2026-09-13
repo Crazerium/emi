@@ -15,11 +15,11 @@ import dev.emi.emi.api.recipe.EmiRecipe;
 import dev.emi.emi.api.recipe.handler.EmiCraftContext;
 import dev.emi.emi.api.recipe.handler.EmiRecipeHandler;
 import dev.emi.emi.api.recipe.handler.StandardRecipeHandler;
-import dev.emi.emi.api.stack.Comparison;
 import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.handler.CoercedRecipeHandler;
 import dev.emi.emi.mixin.accessor.CraftingResultSlotAccessor;
+import dev.emi.emi.runtime.EmiCraftingToolCompat;
 import dev.emi.emi.runtime.EmiLog;
 import dev.emi.emi.runtime.EmiSidebars;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
@@ -153,9 +153,9 @@ public class EmiRecipeFiller {
 						slotLoop:
 						for (Slot s : slots) {
 							ItemStack ss = s.getStack();
-							if (EmiStack.of(s.getStack()).isEqual(stack)) {
+							if (EmiCraftingToolCompat.matches(stack, EmiStack.of(s.getStack()))) {
 								for (DiscoveredItem di : d) {
-									if (ItemStack.canCombine(ss, di.stack)) {
+									if (EmiCraftingToolCompat.matches(ss, di.stack)) {
 										di.amount += ss.getCount();
 										continue slotLoop;
 									}
@@ -198,7 +198,7 @@ public class EmiRecipeFiller {
 						continue;
 					}
 					for (DiscoveredItem ui : unique) {
-						if (ItemStack.canCombine(di.stack, ui.stack)) {
+						if (EmiCraftingToolCompat.matches(di.stack, ui.stack)) {
 							ui.consumed += di.consumed;
 							continue outer;
 						}
@@ -271,9 +271,14 @@ public class EmiRecipeFiller {
 				if (v.isEmpty()) {
 					continue;
 				}
-				if (v.isEqual(es) && es.getAmount() >= v.getAmount()) {
-					amount = Math.min(amount, es.getAmount() / v.getAmount());
-					continue outer;
+				if (EmiCraftingToolCompat.matches(v, es)) {
+					if (EmiCraftingToolCompat.isReusable(v)) {
+						continue outer;
+					}
+					if (es.getAmount() >= v.getAmount()) {
+						amount = Math.min(amount, es.getAmount() / v.getAmount());
+						continue outer;
+					}
 				}
 			}
 			return 0;
@@ -318,7 +323,7 @@ public class EmiRecipeFiller {
 						continue;
 					}
 					ItemStack is = input.getStack().copy();
-					if (ItemStack.canCombine(is, stack)) {
+					if (EmiCraftingToolCompat.matches(stack, is)) {
 						manager.clickSlot(screenHandler.syncId, input.id, 0, SlotActionType.PICKUP, player);
 						if (is.getCount() <= needed) {
 							needed -= is.getCount();
@@ -351,7 +356,6 @@ public class EmiRecipeFiller {
 	}
 
 	private static class DiscoveredItem {
-		private static final Comparison COMPARISON = Comparison.DEFAULT_COMPARISON;
 		public EmiStack ingredient;
 		public ItemStack stack;
 		public int consumed;
@@ -367,7 +371,7 @@ public class EmiRecipeFiller {
 		}
 
 		public boolean catalyst() {
-			return ingredient.getRemainder().isEqual(ingredient, COMPARISON);
+			return EmiCraftingToolCompat.isReusable(ingredient);
 		}
 	}
 }

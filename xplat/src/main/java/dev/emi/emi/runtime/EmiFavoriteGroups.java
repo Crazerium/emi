@@ -808,15 +808,15 @@ public final class EmiFavoriteGroups {
 	private static long available(EmiPlayerInventory inventory, EmiIngredient ingredient) {
 		long total = 0L;
 		for (EmiStack stack : inventory.inventory.values()) {
-			boolean matches = false;
 			for (EmiStack option : ingredient.getEmiStacks()) {
-				if (option.equals(stack)) {
-					matches = true;
-					break;
+				if (!EmiCraftingToolCompat.matches(option, stack)) {
+					continue;
 				}
-			}
-			if (matches) {
+				if (EmiCraftingToolCompat.isReusable(option)) {
+					return Long.MAX_VALUE;
+				}
 				total = safeAdd(total, Math.max(0L, stack.getAmount()));
+				break;
 			}
 		}
 		return total;
