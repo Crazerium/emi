@@ -10,6 +10,7 @@ import dev.emi.emi.EmiPort;
 import dev.emi.emi.EmiRenderHelper;
 import dev.emi.emi.api.EmiApi;
 import dev.emi.emi.api.recipe.EmiRecipe;
+import dev.emi.emi.api.recipe.VanillaEmiRecipeCategories;
 import dev.emi.emi.api.render.EmiTooltipComponents;
 import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStack;
@@ -133,7 +134,7 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 	@Override
 	public void render(DrawContext raw, int x, int y, float delta, int flags) {
 		EmiDrawContext context = EmiDrawContext.wrap(raw);
-		getRecipe();
+		EmiRecipe resolvedRecipe = getRecipe();
 		boolean recipeFavorite = getRecipeId() != null;
 		boolean grouped = recipeFavorite && EmiFavoriteGroups.groupFor(this) != null;
 		int stackFlags = flags;
@@ -154,9 +155,31 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 			boolean volume = stack.getEmiStacks().get(0) instanceof FluidEmiStack;
 			MicroTextRenderer.render(context, getAmount(), volume, 16, x + 17, y + 17);
 		}
-		if ((flags & EmiIngredient.RENDER_INGREDIENT) > 0 && recipeFavorite && !grouped) {
-			EmiRenderHelper.renderRecipeFavorite(stack, context, x, y);
+		if ((flags & EmiIngredient.RENDER_INGREDIENT) > 0 && recipeFavorite && role == Role.RESULT) {
+			if (resolvedRecipe != null) {
+				renderRecipeHandlerIcon(context, resolvedRecipe, x, y, delta);
+			} else if (!grouped) {
+				EmiRenderHelper.renderRecipeFavorite(stack, context, x, y);
+			}
 		}
+	}
+
+	private static void renderRecipeHandlerIcon(EmiDrawContext context, EmiRecipe recipe, int x, int y, float delta) {
+		if (recipe.getCategory() == null || recipe.getCategory() == VanillaEmiRecipeCategories.CRAFTING) {
+			return;
+		}
+		float scale = 0.45f;
+		int size = 8;
+		int left = x + 16 - size;
+		context.fill(left, y, size, size, 0xB0000000);
+		context.push();
+		context.resetColor();
+		context.enableDepthTest();
+		context.matrices().translate(x + 16 - 16 * scale, y, 410);
+		context.matrices().scale(scale, scale, 1);
+		recipe.getCategory().renderSimplified(context.raw(), 0, 0, delta);
+		context.pop();
+		context.resetColor();
 	}
 
 	@Override

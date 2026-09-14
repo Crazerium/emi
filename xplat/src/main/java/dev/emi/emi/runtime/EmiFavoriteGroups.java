@@ -30,6 +30,8 @@ public final class EmiFavoriteGroups {
 	private static final EmiFavorite SIDEBAR_SPACER = new EmiFavorite(EmiStack.EMPTY, null);
 	private static List<EmiFavorite> visibleFavorites = List.of();
 	private static boolean visibilityDirty = true;
+	private static int sidebarNamespacePageSize = -1;
+	private static List<Integer> sidebarPageNamespaces = List.of(0);
 
 	private EmiFavoriteGroups() {
 	}
@@ -235,46 +237,80 @@ public final class EmiFavoriteGroups {
 	private static List<EmiFavorite> buildSidebarLayout(EmiScreenManager.ScreenSpace space) {
 		int pageSize = space.pageSize;
 		if (pageSize <= 0 || space.th <= 0) {
+			sidebarNamespacePageSize = pageSize;
+			sidebarPageNamespaces = List.of(0);
 			return List.of();
 		}
 
-		List<EmiFavorite> normal = new ArrayList<>();
-		for (EmiFavorite favorite : EmiFavorites.favorites) {
-			if (groupFor(favorite) == null) {
-				normal.add(favorite);
-			}
-		}
-		normal.addAll(EmiFavorites.syntheticFavorites);
-		if (GROUPS.isEmpty()) {
-			return normal;
-		}
-
 		List<EmiFavorite> result = new ArrayList<>();
-		for (EmiFavorite favorite : normal) {
-			result.add(favorite);
-		}
-
-		padToNextRow(result, space);
-		for (Group group : GROUPS) {
-			normalizeGroup(group);
-			List<EmiFavorite> members;
-			if (group.collapsed) {
-				EmiFavorite first = group.firstMember();
-				members = first == null ? List.of() : List.of(first);
-			} else {
-				members = List.copyOf(group.members);
+		List<Integer> pageNamespaces = new ArrayList<>();
+		int namespaceCount = EmiFavorites.getFavoritePageCount();
+		for (int namespace = 0; namespace < namespaceCount; namespace++) {
+			int start = result.size();
+			for (EmiFavorite favorite : EmiFavorites.favorites) {
+				if (EmiFavorites.getFavoritePage(favorite) == namespace && groupFor(favorite) == null) {
+					result.add(favorite);
+				}
 			}
-			if (members.isEmpty()) {
-				continue;
+			if (namespace == 0) {
+				result.addAll(EmiFavorites.syntheticFavorites);
 			}
-			appendGroupRows(result, members, space);
 			padToNextRow(result, space);
+			for (Group group : GROUPS) {
+				normalizeGroup(group);
+				EmiFavorite first = group.firstMember();
+				if (first == null || EmiFavorites.getFavoritePage(first) != namespace) {
+					continue;
+				}
+				List<EmiFavorite> members = group.collapsed ? List.of(first) : List.copyOf(group.members);
+				appendGroupRows(result, members, space);
+				padToNextRow(result, space);
+			}
+			while (result.size() > start && result.get(result.size() - 1) == SIDEBAR_SPACER) {
+				result.remove(result.size() - 1);
+			}
+			int used = result.size() - start;
+			int pages = Math.max(1, (used + pageSize - 1) / pageSize);
+			int target = start + pages * pageSize;
+			while (result.size() < target) {
+				result.add(SIDEBAR_SPACER);
+			}
+			for (int i = 0; i < pages; i++) {
+				pageNamespaces.add(namespace);
+			}
 		}
-
-		while (!result.isEmpty() && result.get(result.size() - 1) == SIDEBAR_SPACER) {
-			result.remove(result.size() - 1);
-		}
+		sidebarNamespacePageSize = pageSize;
+		sidebarPageNamespaces = pageNamespaces.isEmpty() ? List.of(0) : List.copyOf(pageNamespaces);
 		return result;
+	}
+
+	public static int namespaceForSidebarPage(EmiScreenManager.ScreenSpace space, int page) {
+		if (space == null || space.pageSize <= 0) {
+			return 0;
+		}
+		if (sidebarNamespacePageSize != space.pageSize || sidebarPageNamespaces.isEmpty()) {
+			buildSidebarLayout(space);
+		}
+		if (page < 0) {
+			return 0;
+		}
+		if (page >= sidebarPageNamespaces.size()) {
+			return Math.max(0, EmiFavorites.getFavoritePageCount() - 1);
+		}
+		return sidebarPageNamespaces.get(page);
+	}
+
+	public static int firstSidebarPageForNamespace(EmiScreenManager.ScreenSpace space, int namespace) {
+		if (space == null || space.pageSize <= 0) {
+			return 0;
+		}
+		buildSidebarLayout(space);
+		for (int i = 0; i < sidebarPageNamespaces.size(); i++) {
+			if (sidebarPageNamespaces.get(i) == namespace) {
+				return i;
+			}
+		}
+		return Math.max(0, sidebarPageNamespaces.size() - 1);
 	}
 
 	private static void appendGroupRows(List<EmiFavorite> result, List<EmiFavorite> members,
@@ -420,10 +456,19 @@ public final class EmiFavoriteGroups {
 				}
 			}
 		}
+		int targetPage = EmiFavorites.getFavoritePage(selected.get(0));
 		for (EmiFavorite favorite : selected) {
 			removeIdentity(EmiFavorites.favorites, favorite);
+			EmiFavorites.setFavoritePage(favorite, targetPage);
 		}
-		EmiFavorites.favorites.addAll(selected);
+		int insertion = EmiFavorites.favorites.size();
+		for (int i = 0; i < EmiFavorites.favorites.size(); i++) {
+			if (EmiFavorites.getFavoritePage(EmiFavorites.favorites.get(i)) > targetPage) {
+				insertion = i;
+				break;
+			}
+		}
+		EmiFavorites.favorites.addAll(insertion, selected);
 		Group group = new Group(selected);
 		group.craftingChain = craftingChain;
 		GROUPS.add(group);
@@ -514,6 +559,7 @@ public final class EmiFavoriteGroups {
 		}
 		for (EmiFavorite favorite : new ArrayList<>(group.members)) {
 			removeIdentity(EmiFavorites.favorites, favorite);
+			EmiFavorites.forgetFavoritePage(favorite);
 		}
 		changed();
 	}
@@ -540,21 +586,21 @@ public final class EmiFavoriteGroups {
 		changed();
 	}
 
-	public static void adjustQuantity(Group group, int direction, boolean stackStep) {
+	public static void adjustQuantity(Group group, int direction, long step) {
 		if (direction == 0) {
 			return;
 		}
-		group.quantity = stepQuantity(group.quantity, direction, stackStep);
+		group.quantity = stepQuantity(group.quantity, direction, step);
 		applyQuantity(group);
 		changed();
 	}
 
-	public static void adjustRecipeQuantity(Group group, EmiRecipe recipe, int direction, boolean stackStep) {
+	public static void adjustRecipeQuantity(Group group, EmiRecipe recipe, int direction, long step) {
 		if (group == null || recipe == null || recipe.getId() == null || direction == 0) {
 			return;
 		}
 		Identifier id = recipe.getId();
-		long next = stepQuantity(group.recipeQuantities.getOrDefault(id, 1L), direction, stackStep);
+		long next = stepQuantity(group.recipeQuantities.getOrDefault(id, 1L), direction, step);
 		if (next <= 1L) {
 			group.recipeQuantities.remove(id);
 		} else {
@@ -578,21 +624,22 @@ public final class EmiFavoriteGroups {
 		return Math.max(1L, group.recipeQuantities.getOrDefault(recipeId, 1L));
 	}
 
-	private static long stepQuantity(long current, int direction, boolean stackStep) {
+	private static long stepQuantity(long current, int direction, long step) {
 		current = Math.max(1L, current);
-		if (!stackStep) {
+		step = Math.max(1L, step);
+		if (step == 1L) {
 			return Math.max(1L, safeAdd(current, direction));
 		}
 		if (direction > 0) {
-			long remainder = current % 64L;
-			long delta = remainder == 0L ? 64L : 64L - remainder;
+			long remainder = current % step;
+			long delta = remainder == 0L ? step : step - remainder;
 			return safeAdd(current, delta);
 		}
-		if (current <= 64L) {
+		if (current <= step) {
 			return 1L;
 		}
-		long remainder = current % 64L;
-		return remainder == 0L ? current - 64L : current - remainder;
+		long remainder = current % step;
+		return remainder == 0L ? current - step : current - remainder;
 	}
 
 	public static void applyQuantity(Group group) {
@@ -922,6 +969,13 @@ public final class EmiFavoriteGroups {
 	private static void normalizeAll() {
 		for (Group group : new ArrayList<>(GROUPS)) {
 			normalizeGroup(group);
+			EmiFavorite first = group.firstMember();
+			if (first != null) {
+				int page = EmiFavorites.getFavoritePage(first);
+				for (EmiFavorite favorite : group.members) {
+					EmiFavorites.setFavoritePage(favorite, page);
+				}
+			}
 			if (group.members.size() < 2) {
 				GROUPS.remove(group);
 			}

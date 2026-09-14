@@ -60,6 +60,7 @@ import dev.emi.emi.runtime.EmiFavorites;
 import dev.emi.emi.runtime.EmiHidden;
 import dev.emi.emi.runtime.EmiHistory;
 import dev.emi.emi.runtime.EmiLog;
+import dev.emi.emi.runtime.EmiPersistentData;
 import dev.emi.emi.runtime.RecipeFavoriteActions;
 import dev.emi.emi.runtime.EmiProfiler;
 import dev.emi.emi.runtime.EmiReloadLog;
@@ -282,7 +283,7 @@ public class EmiScreenManager {
 		ScreenAlign align = settings.align();
 		SidebarTheme theme = settings.theme();
 		SidebarSubpanels subpanels = settings.subpanels();
-		boolean header = settings.header() == HeaderType.VISIBLE;
+		boolean header = settings.header() == HeaderType.VISIBLE || panel.getType() == SidebarType.FAVORITES;
 
 		int maxWidth = settings.size().values.getInt(0);
 		int maxHeight = settings.size().values.getInt(1);
@@ -1422,8 +1423,8 @@ public class EmiScreenManager {
 		public SidebarPanel(SidebarSide side, SidebarPages pages) {
 			this.side = side;
 			this.pages = pages;
-			pageLeft = new SizedButtonWidget(0, 0, 16, 16, 224, 0, this::hasMultiplePages, (w) -> scroll(-1));
-			pageRight = new SizedButtonWidget(0, 0, 16, 16, 240, 0, this::hasMultiplePages, (w) -> scroll(1));
+			pageLeft = new SizedButtonWidget(0, 0, 16, 16, 224, 0, this::hasMultiplePages, (w) -> scrollButton(-1));
+			pageRight = new SizedButtonWidget(0, 0, 16, 16, 240, 0, this::hasMultiplePages, (w) -> scrollButton(1));
 			cycle = new SidebarButtonWidget(0, 0, 16, 16, this);
 		}
 
@@ -1468,9 +1469,12 @@ public class EmiScreenManager {
 			if (page == sidebarPage) {
 				return;
 			}
-			boolean forceRecalculate = getType() == SidebarType.CHESS;
+			SidebarType previousType = getType();
+			boolean forceRecalculate = previousType == SidebarType.CHESS;
 			this.sidebarPage = page;
-			forceRecalculate |= getType() == SidebarType.CHESS;
+			SidebarType currentType = getType();
+			forceRecalculate |= currentType == SidebarType.CHESS;
+			forceRecalculate |= (previousType == SidebarType.FAVORITES) != (currentType == SidebarType.FAVORITES);
 			if (forceRecalculate) {
 				if (client.currentScreen != null) {
 					// Force recalculation
@@ -1608,7 +1612,13 @@ public class EmiScreenManager {
 
 		private void drawHeader(EmiDrawContext context, int mouseX, int mouseY, float delta, int page, int totalPages) {
 			if (header) {
-				Text text = EmiRenderHelper.getPageText(page + 1, totalPages, (space.tw - 3) * ENTRY_SIZE);
+				int displayPage = page;
+				int displayPages = totalPages;
+				if (getType() == SidebarType.FAVORITES) {
+					displayPage = EmiFavoriteGroups.namespaceForSidebarPage(space, page);
+					displayPages = EmiFavorites.getFavoritePageCount();
+				}
+				Text text = EmiRenderHelper.getPageText(displayPage + 1, displayPages, (space.tw - 3) * ENTRY_SIZE);
 				int x = space.tx + (space.tw * ENTRY_SIZE) / 2;
 				int maxLeft = (space.tw - 2) * ENTRY_SIZE / 2 - ENTRY_SIZE;
 				int w = client.textRenderer.getWidth(text) / 2;
@@ -1616,12 +1626,12 @@ public class EmiScreenManager {
 					x += (w - maxLeft);
 				}
 				context.drawCenteredText(text, x, space.ty - 15);
-				if (totalPages > 1 && space.tw > 2) {
+				if (displayPages > 1 && space.tw > 2) {
 					int scrollLeft = space.tx + 18;
 					int scrollWidth = space.tw * ENTRY_SIZE - 36;
 					int scrollY = space.ty - 4;
 					context.fill(scrollLeft, scrollY, scrollWidth, 2, 0x55555555);
-					EmiRenderHelper.drawScroll(context, scrollLeft, scrollY, scrollWidth, 2, page, totalPages, 0xFFFFFFFF);
+					EmiRenderHelper.drawScroll(context, scrollLeft, scrollY, scrollWidth, 2, displayPage, displayPages, 0xFFFFFFFF);
 				}
 			}
 		}
@@ -1672,7 +1682,27 @@ public class EmiScreenManager {
 		}
 
 		public boolean hasMultiplePages() {
-			return space != null && space.getStacks().size() > space.pageSize;
+			return space != null && (getType() == SidebarType.FAVORITES || space.getStacks().size() > space.pageSize);
+		}
+
+		private void scrollButton(int delta) {
+			if (space == null || space.pageSize == 0) {
+				return;
+			}
+			if (getType() == SidebarType.FAVORITES && delta > 0) {
+				int totalPages = Math.max(1, (space.getStacks().size() - 1) / space.pageSize + 1);
+				if (page >= totalPages - 1) {
+					int namespace = EmiFavoriteGroups.namespaceForSidebarPage(space, page);
+					if (namespace == EmiFavorites.getFavoritePageCount() - 1 && EmiFavorites.isFavoritePageEmpty(namespace)) {
+						return;
+					}
+					namespace = EmiFavorites.addFavoritePage();
+					space.batcher.repopulate();
+					page = EmiFavoriteGroups.firstSidebarPageForNamespace(space, namespace);
+					return;
+				}
+			}
+			scroll(delta);
 		}
 
 		public void scroll(int delta) {
@@ -1682,10 +1712,20 @@ public class EmiScreenManager {
 			if (space.pageSize == 0) {
 				return;
 			}
+			if (getType() == SidebarType.FAVORITES && delta < 0) {
+				int namespace = EmiFavoriteGroups.namespaceForSidebarPage(space, page);
+				if (EmiFavorites.removeTrailingEmptyFavoritePage(namespace)) {
+					space.batcher.repopulate();
+					page = EmiFavoriteGroups.firstSidebarPageForNamespace(space, Math.max(0, namespace - 1));
+					EmiPersistentData.save();
+					return;
+				}
+			}
 			page += delta;
 			int pageSize = space.pageSize;
 			int totalPages = (space.getStacks().size() - 1) / pageSize + 1;
 			if (totalPages <= 1) {
+				page = 0;
 				return;
 			}
 			if (page >= totalPages) {

@@ -19,6 +19,7 @@ public class EmiPersistentData {
 		try {
 			JsonObject json = new JsonObject();
 			json.add("favorites", EmiFavorites.save());
+			json.addProperty("favorite_page_count", EmiFavorites.getFavoritePageCount());
 			json.add("favorite_groups", EmiFavoriteGroups.save());
 			EmiSidebars.save(json);
 			json.add("recipe_defaults", BoM.saveAdded());
@@ -36,10 +37,12 @@ public class EmiPersistentData {
 			return;
 		}
 		try {
+			boolean trimFavoritePages = false;
 			JsonObject json = GSON.fromJson(new FileReader(FILE), JsonObject.class);
 			if (JsonHelper.hasArray(json, "favorites")) {
 				EmiFavorites.load(JsonHelper.getArray(json, "favorites"));
 			}
+			EmiFavorites.setFavoritePageCount(JsonHelper.getInt(json, "favorite_page_count", 1));
 			if (JsonHelper.hasArray(json, "favorite_groups")) {
 				EmiFavoriteGroups.load(JsonHelper.getArray(json, "favorite_groups"));
 				EmiFavorites.takeEmbeddedFavoriteGroups();
@@ -47,12 +50,16 @@ public class EmiPersistentData {
 				JsonArray embeddedGroups = EmiFavorites.takeEmbeddedFavoriteGroups();
 				EmiFavoriteGroups.load(embeddedGroups == null ? new JsonArray() : embeddedGroups);
 			}
+			trimFavoritePages = EmiFavorites.trimTrailingEmptyFavoritePages();
 			EmiSidebars.load(json);
 			if (JsonHelper.hasJsonObject(json, "recipe_defaults")) {
 				BoM.loadAdded(JsonHelper.getObject(json, "recipe_defaults"));
 			}
 			if (JsonHelper.hasArray(json, "hidden_stacks")) {
 				EmiHidden.load(JsonHelper.getArray(json, "hidden_stacks"));
+			}
+			if (trimFavoritePages) {
+				save();
 			}
 		} catch (Exception e) {
 			EmiLog.error("Failed to parse persistent data", e);

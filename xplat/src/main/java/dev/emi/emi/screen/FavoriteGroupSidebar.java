@@ -9,6 +9,7 @@ import java.util.Set;
 import org.lwjgl.glfw.GLFW;
 
 import dev.emi.emi.EmiPort;
+import dev.emi.emi.api.EmiApi;
 import dev.emi.emi.EmiRenderHelper;
 import dev.emi.emi.api.recipe.EmiPlayerInventory;
 import dev.emi.emi.api.recipe.EmiRecipe;
@@ -87,13 +88,14 @@ public final class FavoriteGroupSidebar {
 			tooltip.add(line("ALT + LMB - Toggle Collapse/Expand", Formatting.YELLOW));
 			tooltip.add(line("SHIFT + A - Remove Group", Formatting.YELLOW));
 			tooltip.add(line("SHIFT + C - Craft Items", Formatting.YELLOW));
+			tooltip.add(line("LMB on Recipe - Open Exact Recipe", Formatting.YELLOW));
 			tooltip.add(line("LMB + Drag - Create/Include Group", Formatting.YELLOW));
 			tooltip.add(line("RMB + Drag - Remove/Exclude Group", Formatting.YELLOW));
-			tooltip.add(line("CTRL + Scroll - Change Quantity", Formatting.YELLOW));
-			tooltip.add(line("SHIFT + Scroll - Change Quantity", Formatting.YELLOW));
+			tooltip.add(line("SHIFT/CTRL + Scroll - Change Recipe Quantity", Formatting.YELLOW));
+			tooltip.add(line("CTRL + SHIFT + Scroll - Change Whole Group", Formatting.YELLOW));
+			tooltip.add(line("+ ALT - Use Output Stack Size Step", Formatting.YELLOW));
 			tooltip.add(line("SHIFT + LMB + Drag - Move Position", Formatting.YELLOW));
 			tooltip.add(line("CTRL + SHIFT + C - Craft Missing Items", Formatting.YELLOW));
-			tooltip.add(line("CTRL + ALT + Scroll - Change Quantity by 64", Formatting.YELLOW));
 		}
 		if (box.group.craftingChain) {
 			appendChainTooltip(tooltip, box.group);
@@ -206,6 +208,18 @@ public final class FavoriteGroupSidebar {
 
 	public static boolean mouseReleased(double mouseX, double mouseY, int button) {
 		try {
+			if (!dragging && pressedFavorite != null && button == 0 && pressedButton == 0
+					&& !EmiInput.isShiftDown() && !EmiInput.isControlDown() && !EmiInput.isAltDown()) {
+				VisibleSlot released = favoriteAt(layout(), (int) mouseX, (int) mouseY);
+				if (released != null && released.favorite == pressedFavorite
+						&& EmiFavoriteGroups.groupFor(pressedFavorite) != null) {
+					EmiRecipe recipe = pressedFavorite.getRecipe();
+					if (recipe != null) {
+						EmiApi.displayRecipe(recipe);
+						return true;
+					}
+				}
+			}
 			if (!dragging || pressedFavorite == null || dragFavorite == null || button != pressedButton) {
 				return false;
 			}
@@ -241,12 +255,6 @@ public final class FavoriteGroupSidebar {
 		Layout current = layout();
 		VisibleSlot slot = favoriteAt(current, (int) mouseX, (int) mouseY);
 		EmiFavoriteGroups.Group group = slot == null ? null : EmiFavoriteGroups.groupFor(slot.favorite);
-		int direction = amount > 0 ? 1 : -1;
-		boolean stackStep = control && EmiInput.isAltDown();
-		if (group != null && slot.favorite.getRecipe() != null) {
-			EmiFavoriteGroups.adjustRecipeQuantity(group, slot.favorite.getRecipe(), direction, stackStep);
-			return true;
-		}
 		GroupBox box = groupAtPoint(current, (int) mouseX, (int) mouseY);
 		if (group == null && box != null) {
 			group = box.group;
@@ -254,8 +262,62 @@ public final class FavoriteGroupSidebar {
 		if (group == null) {
 			return false;
 		}
-		EmiFavoriteGroups.adjustQuantity(group, direction, stackStep);
+		int direction = amount > 0 ? 1 : -1;
+		EmiRecipe recipe = slot == null ? null : slot.favorite.getRecipe();
+		long step = 1L;
+		if (EmiInput.isAltDown()) {
+			step = control && shift ? groupOutputStackStep(group) : outputStackStep(group, recipe);
+		}
+		if (control && shift) {
+			EmiFavoriteGroups.adjustQuantity(group, direction, step);
+			return true;
+		}
+		if (recipe != null) {
+			EmiFavoriteGroups.adjustRecipeQuantity(group, recipe, direction, step);
+			return true;
+		}
+		EmiFavoriteGroups.adjustQuantity(group, direction, step);
 		return true;
+	}
+
+	private static long groupOutputStackStep(EmiFavoriteGroups.Group group) {
+		List<EmiRecipe> recipes = new ArrayList<>();
+		Set<Identifier> seen = new HashSet<>();
+		for (EmiFavorite favorite : group.members()) {
+			EmiRecipe recipe = favorite.getRecipe();
+			if (recipe != null && recipe.getId() != null && favorite.getRole() != Role.ITEM && seen.add(recipe.getId())) {
+				recipes.add(recipe);
+			}
+		}
+		List<EmiRecipe> roots = rootRecipes(recipes);
+		return roots.isEmpty() ? 1L : outputStackStep(group, roots.get(0));
+	}
+
+	private static long outputStackStep(EmiFavoriteGroups.Group group, EmiRecipe recipe) {
+		EmiRecipe target = recipe;
+		if (target == null) {
+			for (EmiFavorite favorite : group.members()) {
+				if (favorite.getRole() == Role.RESULT && favorite.getRecipe() != null) {
+					target = favorite.getRecipe();
+					break;
+				}
+			}
+		}
+		if (target == null) {
+			return 1L;
+		}
+		for (EmiStack output : target.getOutputs()) {
+			if (output == null || output.isEmpty() || output.getItemStack().isEmpty()) {
+				continue;
+			}
+			long outputAmount = Math.max(1L, output.getAmount());
+			long maxStack = Math.max(1, output.getItemStack().getMaxCount());
+			if (outputAmount >= maxStack) {
+				return 1L;
+			}
+			return Math.max(1L, (maxStack + outputAmount - 1L) / outputAmount);
+		}
+		return 1L;
 	}
 
 	public static boolean keyPressed(int mouseX, int mouseY, int keyCode, int modifiers) {

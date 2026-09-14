@@ -36,9 +36,10 @@ public final class RecipeFavoriteActions {
 		if (recipe == null || recipe.getId() == null) {
 			return null;
 		}
+		int page = EmiFavorites.currentFavoritePage();
 		for (EmiFavorite favorite : EmiFavorites.favorites) {
 			EmiRecipe context = favorite.getRecipe();
-			if (context != null && context.getId() != null && context.getId().equals(recipe.getId()) && favorite.getRole() == Role.RESULT) {
+			if (EmiFavorites.getFavoritePage(favorite) == page && context != null && context.getId() != null && context.getId().equals(recipe.getId()) && favorite.getRole() == Role.RESULT) {
 				return favorite;
 			}
 		}
