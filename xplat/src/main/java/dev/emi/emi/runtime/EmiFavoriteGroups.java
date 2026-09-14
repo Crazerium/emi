@@ -769,7 +769,7 @@ public final class EmiFavoriteGroups {
 			return false;
 		}
 		for (EmiStack option : ingredient.getEmiStacks()) {
-			if (option.equals(output)) {
+			if (EmiCraftingToolCompat.matches(option, output)) {
 				return true;
 			}
 		}
@@ -813,7 +813,12 @@ public final class EmiFavoriteGroups {
 					continue;
 				}
 				if (EmiCraftingToolCompat.isReusable(option)) {
-					return Long.MAX_VALUE;
+					long uses = EmiCraftingToolCompat.getSafeCraftingUses(stack);
+					if (uses < 0L) {
+						return Long.MAX_VALUE;
+					}
+					total = safeAdd(total, uses);
+					break;
 				}
 				total = safeAdd(total, Math.max(0L, stack.getAmount()));
 				break;

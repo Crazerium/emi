@@ -1,15 +1,17 @@
 package dev.emi.emi.runtime;
 
+import java.lang.reflect.Method;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import dev.emi.emi.api.stack.Comparison;
 import dev.emi.emi.api.stack.EmiStack;
 import net.minecraft.item.ItemStack;
 
 public final class EmiCraftingToolCompat {
 	private static final String GT_TOOL_INTERFACE = "com.gregtechceu.gtceu.api.item.IGTTool";
 	private static final Map<Class<?>, Boolean> GT_TOOL_CACHE = new ConcurrentHashMap<>();
+	private static final Map<Class<?>, Method> TOOL_STATS_METHOD_CACHE = new ConcurrentHashMap<>();
+	private static final Map<Class<?>, Method> CRAFT_DAMAGE_METHOD_CACHE = new ConcurrentHashMap<>();
 
 	private EmiCraftingToolCompat() {
 	}
@@ -33,10 +35,38 @@ public final class EmiCraftingToolCompat {
 			return true;
 		}
 		try {
-			return stack.getRemainder().isEqual(stack, Comparison.DEFAULT_COMPARISON);
+			EmiStack remainder = stack.getRemainder();
+			return remainder != null && !remainder.isEmpty() && remainder.getKey().equals(stack.getKey());
 		} catch (Throwable ignored) {
 			return false;
 		}
+	}
+
+	public static long getSafeCraftingUses(EmiStack stack) {
+		if (stack == null || stack.isEmpty()) {
+			return -1L;
+		}
+		return getSafeCraftingUses(stack.getItemStack());
+	}
+
+	public static long getSafeCraftingUses(ItemStack stack) {
+		if (!isGtTool(stack)) {
+			return -1L;
+		}
+		if (!stack.isDamageable()) {
+			return Long.MAX_VALUE;
+		}
+		int maxDamage = stack.getMaxDamage();
+		int damage = stack.getDamage();
+		if (maxDamage <= 0) {
+			return Long.MAX_VALUE;
+		}
+		int damagePerCraft = getToolDamagePerCraft(stack);
+		if (damagePerCraft <= 0) {
+			return 0L;
+		}
+		long remaining = Math.max(0L, (long) maxDamage - damage);
+		return remaining / damagePerCraft;
 	}
 
 	public static boolean matches(EmiStack expected, EmiStack actual) {
@@ -44,6 +74,9 @@ public final class EmiCraftingToolCompat {
 			return false;
 		}
 		if (expected.isEqual(actual)) {
+			return true;
+		}
+		if (isReusable(expected) && expected.getKey().equals(actual.getKey())) {
 			return true;
 		}
 		ItemStack expectedStack = expected.getItemStack();
@@ -59,6 +92,40 @@ public final class EmiCraftingToolCompat {
 			return true;
 		}
 		return isGtTool(expected) && isGtTool(actual) && expected.getItem() == actual.getItem();
+	}
+
+	private static int getToolDamagePerCraft(ItemStack stack) {
+		try {
+			Object item = stack.getItem();
+			Method statsMethod = TOOL_STATS_METHOD_CACHE.computeIfAbsent(item.getClass(), type -> {
+				try {
+					return type.getMethod("getToolStats");
+				} catch (ReflectiveOperationException ignored) {
+					return null;
+				}
+			});
+			if (statsMethod == null) {
+				return 0;
+			}
+			Object stats = statsMethod.invoke(item);
+			if (stats == null) {
+				return 0;
+			}
+			Method damageMethod = CRAFT_DAMAGE_METHOD_CACHE.computeIfAbsent(stats.getClass(), type -> {
+				try {
+					return type.getMethod("getToolDamagePerCraft", ItemStack.class);
+				} catch (ReflectiveOperationException ignored) {
+					return null;
+				}
+			});
+			if (damageMethod == null) {
+				return 0;
+			}
+			Object value = damageMethod.invoke(stats, stack);
+			return value instanceof Number number ? Math.max(0, number.intValue()) : 0;
+		} catch (Throwable ignored) {
+			return 0;
+		}
 	}
 
 	private static boolean implementsGtTool(Class<?> type) {

@@ -93,12 +93,15 @@ public class EmiPlayerInventory {
 	}
 
 	private void addStack(ItemStack is) {
-		EmiStack stack = EmiStack.of(is).comparison(c -> none);
+		EmiStack stack = EmiStack.of(is).comparison(c -> EmiCraftingToolCompat.isGtTool(is) ? strict : none);
 		addStack(stack);
 	}
 
 	private void addStack(EmiStack stack) {
 		if (!stack.isEmpty()) {
+			if (EmiCraftingToolCompat.isGtTool(stack)) {
+				stack = stack.copy().comparison(c -> strict);
+			}
 			inventory.merge(stack, stack, (a, b) -> a.setAmount(a.getAmount() + b.getAmount()));
 		}
 	}
@@ -150,7 +153,14 @@ public class EmiPlayerInventory {
 		for (EmiIngredient ingredient : recipe.getInputs()) {
 			for (EmiStack stack : ingredient.getEmiStacks()) {
 				boolean reusable = EmiCraftingToolCompat.isReusable(stack);
-				long desired = reusable ? 1L : stack.getAmount();
+				long desired = reusable ? Math.max(1L, stack.getAmount()) : stack.getAmount();
+				if (reusable && EmiCraftingToolCompat.isGtTool(stack)) {
+					if (getReusableCraftingUses(stack) >= desired) {
+						states.add(true);
+						continue outer;
+					}
+					continue;
+				}
 				EmiStack identity = findMatching(stack);
 				if (identity != null) {
 					long alreadyUsed = reusable ? 0L : used.getOrDefault(identity, 0);
@@ -182,7 +192,13 @@ public class EmiPlayerInventory {
 			}
 			for (EmiStack stack : ingredient.getEmiStacks()) {
 				boolean reusable = EmiCraftingToolCompat.isReusable(stack);
-				long desired = reusable ? 1L : stack.getAmount() * amount;
+				long desired = reusable ? Math.max(1L, stack.getAmount()) * amount : stack.getAmount() * amount;
+				if (reusable && EmiCraftingToolCompat.isGtTool(stack)) {
+					if (getReusableCraftingUses(stack) >= desired) {
+						continue outer;
+					}
+					continue;
+				}
 				EmiStack identity = findMatching(stack);
 				if (identity != null) {
 					long alreadyUsed = reusable ? 0L : used.getOrDefault(identity, 0);
@@ -208,12 +224,39 @@ public class EmiPlayerInventory {
 		if (!EmiCraftingToolCompat.isGtTool(stack)) {
 			return null;
 		}
+		EmiStack best = null;
+		long bestUses = -1L;
 		for (EmiStack candidate : inventory.values()) {
-			if (EmiCraftingToolCompat.matches(stack, candidate)) {
-				return candidate;
+			if (!EmiCraftingToolCompat.matches(stack, candidate)) {
+				continue;
+			}
+			long uses = EmiCraftingToolCompat.getSafeCraftingUses(candidate);
+			if (best == null || uses > bestUses) {
+				best = candidate;
+				bestUses = uses;
 			}
 		}
-		return null;
+		return best;
+	}
+
+	private long getReusableCraftingUses(EmiStack stack) {
+		long total = 0L;
+		for (EmiStack candidate : inventory.values()) {
+			if (!EmiCraftingToolCompat.matches(stack, candidate)) {
+				continue;
+			}
+			long uses = EmiCraftingToolCompat.getSafeCraftingUses(candidate);
+			if (uses == Long.MAX_VALUE) {
+				return Long.MAX_VALUE;
+			}
+			if (uses > 0L) {
+				if (total > Long.MAX_VALUE - uses) {
+					return Long.MAX_VALUE;
+				}
+				total += uses;
+			}
+		}
+		return total;
 	}
 
 	public boolean isEqual(EmiPlayerInventory other) {

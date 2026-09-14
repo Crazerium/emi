@@ -137,10 +137,19 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 		boolean recipeFavorite = getRecipeId() != null;
 		boolean grouped = recipeFavorite && EmiFavoriteGroups.groupFor(this) != null;
 		int stackFlags = flags;
-		if (recipeFavorite && !grouped) {
+		boolean groupedFluid = grouped && !stack.getEmiStacks().isEmpty() && stack.getEmiStacks().get(0) instanceof FluidEmiStack;
+		boolean compactGroupedItem = grouped && !groupedFluid && getAmount() >= 100;
+		if ((recipeFavorite && !grouped) || groupedFluid || compactGroupedItem) {
 			stackFlags &= ~EmiIngredient.RENDER_AMOUNT;
 		}
 		stack.render(context.raw(), x, y, delta, stackFlags);
+		if (grouped && (flags & EmiIngredient.RENDER_AMOUNT) != 0 && getAmount() != 1) {
+			if (groupedFluid) {
+				MicroTextRenderer.renderBookmarkFluidAmount(context, getAmount(), x, y);
+			} else if (compactGroupedItem) {
+				MicroTextRenderer.renderBookmarkItemAmount(context, getAmount(), x, y);
+			}
+		}
 		if (recipeFavorite && !grouped && getAmount() != 1 && !stack.getEmiStacks().isEmpty()) {
 			boolean volume = stack.getEmiStacks().get(0) instanceof FluidEmiStack;
 			MicroTextRenderer.render(context, getAmount(), volume, 16, x + 17, y + 17);

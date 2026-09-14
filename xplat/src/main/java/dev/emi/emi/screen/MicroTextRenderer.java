@@ -10,6 +10,8 @@ import dev.emi.emi.config.FluidUnit;
 import dev.emi.emi.runtime.EmiDrawContext;
 import it.unimi.dsi.fastutil.chars.Char2ObjectMap;
 import it.unimi.dsi.fastutil.chars.Char2ObjectOpenHashMap;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
 public class MicroTextRenderer {
@@ -74,6 +76,112 @@ public class MicroTextRenderer {
 	
 	public static void render(EmiDrawContext context, long amount, boolean volume, int constraint, int right, int bottom) {
 		render(context, amount, volume, constraint, right, bottom, -1);
+	}
+
+	public static void renderMillibuckets(EmiDrawContext context, long amount, int constraint, int right, int bottom) {
+		long millibuckets = Math.max(0L, amount / FluidUnit.literDivisor());
+		Text text = EmiPort.literal(formatMillibuckets(millibuckets));
+		int width = Math.max(1, MinecraftClient.getInstance().textRenderer.getWidth(text));
+		float scale = Math.min(0.6f, constraint / (float) width);
+		context.push();
+		context.matrices().translate(right, bottom, 400);
+		context.matrices().scale(scale, scale, 1);
+		context.drawTextWithShadow(text, -width, -9, 0xFFFFFF);
+		context.pop();
+	}
+
+	public static void renderBookmarkItemAmount(EmiDrawContext context, long amount, int x, int y) {
+		renderBookmarkAmount(context, bookmarkItemNumber(Math.max(0L, amount)), "", x, y);
+	}
+
+	public static void renderBookmarkFluidAmount(EmiDrawContext context, long amount, int x, int y) {
+		long millibuckets = Math.max(0L, amount / FluidUnit.literDivisor());
+		renderBookmarkAmount(context, compactNumber(millibuckets), "mB", x, y);
+	}
+
+	private static void renderBookmarkAmount(EmiDrawContext context, String value, String unit, int x, int y) {
+		var textRenderer = MinecraftClient.getInstance().textRenderer;
+		Text valueText = EmiPort.literal(value);
+		Text unitText = EmiPort.literal(unit);
+		int valueWidth = Math.max(1, textRenderer.getWidth(valueText));
+		int unitWidth = unit.isEmpty() ? 0 : Math.max(1, textRenderer.getWidth(unitText));
+		float unitScale = unit.isEmpty() ? 0f : 0.34f;
+		float valueScale = 0.78f;
+		float unitPixels = unitWidth * unitScale;
+		float gap = unit.isEmpty() ? 0f : 0.5f;
+		float maxValuePixels = 16f - unitPixels - gap;
+		if (valueWidth * valueScale > maxValuePixels) {
+			valueScale = Math.max(0.52f, maxValuePixels / valueWidth);
+		}
+		float totalWidth = valueWidth * valueScale + unitPixels + gap;
+		int left = x + 17 - Math.round(totalWidth);
+		int top = y + 10;
+		context.push();
+		context.matrices().translate(0, 0, 390);
+		context.fill(left - 1, top, Math.min(18, Math.round(totalWidth) + 2), 7, 0xC8000000);
+		context.pop();
+		context.push();
+		context.matrices().translate(left, y + 10.5f, 400);
+		context.matrices().scale(valueScale, valueScale, 1);
+		context.drawTextWithShadow(valueText, 0, 0, 0xFFFFFF);
+		context.pop();
+		if (!unit.isEmpty()) {
+			float unitX = left + valueWidth * valueScale + gap;
+			context.push();
+			context.matrices().translate(unitX, y + 12.5f, 400);
+			context.matrices().scale(unitScale, unitScale, 1);
+			context.drawTextWithShadow(unitText, 0, 0, 0xFFFFFF);
+			context.pop();
+		}
+	}
+
+	private static String bookmarkItemNumber(long amount) {
+		if (amount < 10000L) {
+			return Long.toString(amount);
+		}
+		return compactNumber(amount);
+	}
+
+	private static String compactNumber(long amount) {
+		String[] suffixes = {"", "k", "M", "B", "T", "Q"};
+		long divisor = 1L;
+		int index = 0;
+		while (index + 1 < suffixes.length && amount >= divisor * 1000L && divisor <= Long.MAX_VALUE / 1000L) {
+			divisor *= 1000L;
+			index++;
+		}
+		if (index == 0) {
+			return Long.toString(amount);
+		}
+		long whole = amount / divisor;
+		long remainder = amount % divisor;
+		if (whole < 10L && remainder > 0L) {
+			long decimal = remainder / Math.max(1L, divisor / 10L);
+			if (decimal > 0L) {
+				return whole + "." + decimal + suffixes[index];
+			}
+		}
+		return whole + suffixes[index];
+	}
+
+	private static String formatMillibuckets(long amount) {
+		String[] prefixes = {"", "k", "M", "G", "T", "P"};
+		long divisor = 1L;
+		int index = 0;
+		while (index + 1 < prefixes.length && amount >= divisor * 1000L && divisor <= Long.MAX_VALUE / 1000L) {
+			divisor *= 1000L;
+			index++;
+		}
+		long whole = amount / divisor;
+		long remainder = amount % divisor;
+		String value = Long.toString(whole);
+		if (whole < 10L && remainder > 0L && divisor > 1L) {
+			long decimal = remainder / (divisor / 10L);
+			if (decimal > 0L) {
+				value += "." + decimal;
+			}
+		}
+		return value + prefixes[index] + "mB";
 	}
 
 	public static void render(EmiDrawContext context, long amount, boolean volume, int constraint, int right, int bottom, int color) {

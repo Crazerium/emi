@@ -168,6 +168,12 @@ public class EmiRecipeFiller {
 					for (DiscoveredItem di : d) {
 						if (biggest == null) {
 							biggest = di;
+						} else if (di.catalyst() && biggest.catalyst() && EmiCraftingToolCompat.isGtTool(di.stack)
+								&& EmiCraftingToolCompat.isGtTool(biggest.stack)) {
+							if (EmiCraftingToolCompat.getSafeCraftingUses(di.stack)
+									> EmiCraftingToolCompat.getSafeCraftingUses(biggest.stack)) {
+								biggest = di;
+							}
 						} else {
 							int a = di.amount / (weightDivider.getOrDefault(di.ingredient, 0) + di.consumed);
 							int ba = biggest.amount / (weightDivider.getOrDefault(biggest.ingredient, 0) + biggest.consumed);
@@ -207,7 +213,12 @@ public class EmiRecipeFiller {
 				}
 				int maxAmount = Integer.MAX_VALUE;
 				for (DiscoveredItem ui : unique) {
-					if (!ui.catalyst()) {
+					if (ui.catalyst()) {
+						long uses = EmiCraftingToolCompat.getSafeCraftingUses(ui.stack);
+						if (uses >= 0L && uses < Long.MAX_VALUE) {
+							maxAmount = Math.min(maxAmount, (int) Math.min(Integer.MAX_VALUE, uses));
+						}
+					} else {
 						maxAmount = Math.min(maxAmount, ui.amount / ui.consumed);
 						maxAmount = Math.min(maxAmount, ui.max);
 					}
@@ -318,12 +329,16 @@ public class EmiRecipeFiller {
 					return false;
 				}
 				int needed = stack.getCount();
-				for (Slot input : inputs) {
-					if (slots.contains(input)) {
-						continue;
-					}
-					ItemStack is = input.getStack().copy();
-					if (EmiCraftingToolCompat.matches(stack, is)) {
+				for (int pass = 0; pass < 2 && needed > 0; pass++) {
+					for (Slot input : inputs) {
+						if (slots.contains(input)) {
+							continue;
+						}
+						ItemStack is = input.getStack().copy();
+						boolean exact = ItemStack.canCombine(stack, is);
+						if ((pass == 0 && !exact) || (pass == 1 && (exact || !EmiCraftingToolCompat.matches(stack, is)))) {
+							continue;
+						}
 						manager.clickSlot(screenHandler.syncId, input.id, 0, SlotActionType.PICKUP, player);
 						if (is.getCount() <= needed) {
 							needed -= is.getCount();
@@ -335,9 +350,9 @@ public class EmiRecipeFiller {
 							}
 							manager.clickSlot(screenHandler.syncId, input.id, 0, SlotActionType.PICKUP, player);
 						}
-					}
-					if (needed == 0) {
-						continue outer;
+						if (needed == 0) {
+							continue outer;
+						}
 					}
 				}
 				return false;
