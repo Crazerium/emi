@@ -29,6 +29,10 @@ public interface EmiDragDropHandler<T extends Screen> {
 	 */
 	boolean dropStack(T screen, EmiIngredient stack, int x, int y);
 
+	default boolean dropStacks(T screen, List<? extends EmiIngredient> stacks, int x, int y) {
+		return false;
+	}
+
 	/**
 	 * Called when a stack is being dragged.
 	 */
@@ -64,6 +68,39 @@ public interface EmiDragDropHandler<T extends Screen> {
 				}
 			}
 			return false;
+		}
+
+		@Override
+		public boolean dropStacks(T screen, List<? extends EmiIngredient> stacks, int x, int y) {
+			if (stacks == null || stacks.isEmpty()) {
+				return false;
+			}
+			Map<Bounds, Consumer<EmiIngredient>> bounds = this.bounds.apply(screen);
+			boolean inside = false;
+			for (Bounds bound : bounds.keySet()) {
+				if (bound.contains(x, y)) {
+					inside = true;
+					break;
+				}
+			}
+			if (!inside) {
+				return false;
+			}
+			List<Map.Entry<Bounds, Consumer<EmiIngredient>>> targets = Lists.newArrayList(bounds.entrySet());
+			targets.sort((a, b) -> {
+				int yCompare = Integer.compare(a.getKey().y(), b.getKey().y());
+				return yCompare != 0 ? yCompare : Integer.compare(a.getKey().x(), b.getKey().x());
+			});
+			int target = 0;
+			boolean placed = false;
+			for (EmiIngredient stack : stacks) {
+				if (stack == null || stack.isEmpty() || target >= targets.size()) {
+					continue;
+				}
+				targets.get(target++).getValue().accept(stack);
+				placed = true;
+			}
+			return placed;
 		}
 
 		@Override

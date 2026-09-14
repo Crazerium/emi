@@ -21,10 +21,12 @@ import dev.emi.emi.api.widget.Bounds;
 import dev.emi.emi.config.SidebarSide;
 import dev.emi.emi.config.SidebarType;
 import dev.emi.emi.input.EmiInput;
+import dev.emi.emi.registry.EmiDragDropHandlers;
 import dev.emi.emi.registry.EmiRecipeFiller;
 import dev.emi.emi.runtime.EmiCraftingToolCompat;
 import dev.emi.emi.runtime.EmiDrawContext;
 import dev.emi.emi.runtime.EmiFavorite;
+import dev.emi.emi.runtime.EmiFavorites;
 import dev.emi.emi.runtime.EmiFavoriteGroups;
 import dev.emi.emi.runtime.EmiFavoriteGroups.AmountEntry;
 import dev.emi.emi.runtime.EmiFavoriteGroups.ChainPlan;
@@ -49,6 +51,8 @@ public final class FavoriteGroupSidebar {
 	private static EmiFavorite dragFavorite;
 	private static int pressedButton = -1;
 	private static boolean dragging;
+	private static EmiFavoriteGroups.Group pressedPageGroup;
+	private static boolean pageGroupDragging;
 	private static AutoCraftJob autoCraftJob;
 
 	private FavoriteGroupSidebar() {
@@ -56,7 +60,7 @@ public final class FavoriteGroupSidebar {
 
 	public static void render(EmiDrawContext context, int mouseX, int mouseY, float delta) {
 		Layout layout = layout();
-		if (layout.boxes.isEmpty() && !dragging) {
+		if (layout.boxes.isEmpty() && !dragging && !pageGroupDragging) {
 			return;
 		}
 		context.push();
@@ -67,10 +71,17 @@ public final class FavoriteGroupSidebar {
 		if (dragging && pressedFavorite != null && dragFavorite != null) {
 			renderDragPreview(context, layout, mouseX, mouseY);
 		}
+		if (pageGroupDragging && pressedPageGroup != null) {
+			renderPageGroupPreview(context, pressedPageGroup, mouseX, mouseY);
+			renderPageDropTargets(context, layout, mouseX, mouseY);
+		}
 		context.pop();
 	}
 
 	public static void renderTooltip(Screen screen, EmiDrawContext context, int mouseX, int mouseY) {
+		if (pageGroupDragging) {
+			return;
+		}
 		GroupBox box = hoveredHandle(layout(), mouseX, mouseY);
 		if (box == null) {
 			return;
@@ -95,6 +106,8 @@ public final class FavoriteGroupSidebar {
 			tooltip.add(line("CTRL + SHIFT + Scroll - Change Whole Group", Formatting.YELLOW));
 			tooltip.add(line("+ ALT - Use Output Stack Size Step", Formatting.YELLOW));
 			tooltip.add(line("SHIFT + LMB + Drag - Move Position", Formatting.YELLOW));
+			tooltip.add(line("SHIFT + Drag Handle to < > - Move Page", Formatting.YELLOW));
+			tooltip.add(line("SHIFT + Drag Handle to Ghost Slots - Fill Group", Formatting.YELLOW));
 			tooltip.add(line("CTRL + SHIFT + C - Craft Missing Items", Formatting.YELLOW));
 		}
 		if (box.group.craftingChain) {
@@ -161,10 +174,100 @@ public final class FavoriteGroupSidebar {
 		}
 	}
 
+	private static void renderPageGroupPreview(EmiDrawContext context, EmiFavoriteGroups.Group group, int mouseX, int mouseY) {
+		List<EmiFavorite> members = group.members();
+		if (members.isEmpty()) {
+			return;
+		}
+		int count = Math.min(63, members.size());
+		int columns = Math.min(20, count);
+		int rows = (count + columns - 1) / columns;
+		int width = columns * 18;
+		int height = rows * 18;
+		MinecraftClient client = MinecraftClient.getInstance();
+		int screenWidth = client.getWindow().getScaledWidth();
+		int screenHeight = client.getWindow().getScaledHeight();
+		int startX = mouseX + 10;
+		if (startX + width > screenWidth - 4) {
+			startX = mouseX - width - 10;
+		}
+		startX = Math.max(4, Math.min(startX, Math.max(4, screenWidth - width - 4)));
+		int startY = mouseY - 8;
+		startY = Math.max(4, Math.min(startY, Math.max(4, screenHeight - height - 4)));
+		context.push();
+		context.matrices().translate(0, 0, 240);
+		for (int i = 0; i < count; i++) {
+			EmiFavorite favorite = members.get(i);
+			EmiIngredient ingredient = concreteDragIngredient(favorite);
+			if (ingredient.isEmpty()) {
+				continue;
+			}
+			int x = startX + (i % columns) * 18;
+			int y = startY + (i / columns) * 18;
+			context.drawStack(ingredient, x + 1, y + 1, EmiIngredient.RENDER_ICON);
+		}
+		context.pop();
+	}
+
+	private static void renderPageDropTargets(EmiDrawContext context, Layout layout, int mouseX, int mouseY) {
+		if (layout.panel == null || layout.space == null || pressedPageGroup == null) {
+			return;
+		}
+		EmiFavorite first = pressedPageGroup.firstMember();
+		if (first == null) {
+			return;
+		}
+		int sourcePage = EmiFavorites.getFavoritePage(first);
+		if (sourcePage > 0) {
+			drawPageDropTarget(context, pageArrowBounds(layout, false), mouseX, mouseY);
+		}
+		drawPageDropTarget(context, pageArrowBounds(layout, true), mouseX, mouseY);
+	}
+
+	private static void drawPageDropTarget(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY) {
+		int color = bounds.contains(mouseX, mouseY) ? 0xFFFF55FF : 0xFFAA55AA;
+		context.fill(bounds.x(), bounds.y(), bounds.width(), 1, color);
+		context.fill(bounds.x(), bounds.bottom() - 1, bounds.width(), 1, color);
+		context.fill(bounds.x(), bounds.y(), 1, bounds.height(), color);
+		context.fill(bounds.right() - 1, bounds.y(), 1, bounds.height(), color);
+	}
+
+	private static Bounds pageArrowBounds(Layout layout, boolean right) {
+		if (layout.space == null) {
+			return Bounds.EMPTY;
+		}
+		int x = right ? layout.space.tx + layout.space.tw * 18 - 16 : layout.space.tx;
+		return new Bounds(x, layout.space.ty - 18, 16, 16);
+	}
+
+	private static int pageDropTarget(Layout layout, EmiFavoriteGroups.Group group, int mouseX, int mouseY) {
+		if (layout.panel == null || layout.space == null || group == null) {
+			return -1;
+		}
+		EmiFavorite first = group.firstMember();
+		if (first == null) {
+			return -1;
+		}
+		int sourcePage = EmiFavorites.getFavoritePage(first);
+		if (sourcePage > 0 && pageArrowBounds(layout, false).contains(mouseX, mouseY)) {
+			return sourcePage - 1;
+		}
+		if (pageArrowBounds(layout, true).contains(mouseX, mouseY)) {
+			return sourcePage + 1;
+		}
+		return -1;
+	}
+
 	public static boolean mouseClicked(double mouseX, double mouseY, int button) {
 		Layout layout = layout();
 		GroupBox box = hoveredHandle(layout, (int) mouseX, (int) mouseY);
 		if (box != null) {
+			if (button == 0 && EmiInput.isShiftDown() && !EmiInput.isControlDown() && !EmiInput.isAltDown()) {
+				clearDrag();
+				pressedPageGroup = box.group;
+				pageGroupDragging = false;
+				return true;
+			}
 			if (button == 0) {
 				if (EmiInput.isAltDown()) {
 					EmiFavoriteGroups.toggleCollapsed(box.group);
@@ -193,6 +296,10 @@ public final class FavoriteGroupSidebar {
 	}
 
 	public static boolean mouseDragged(double mouseX, double mouseY, int button) {
+		if (pressedPageGroup != null && button == 0) {
+			pageGroupDragging = true;
+			return true;
+		}
 		if (pressedFavorite == null || button != pressedButton || (button != 0 && button != 1)) {
 			return false;
 		}
@@ -207,6 +314,38 @@ public final class FavoriteGroupSidebar {
 	}
 
 	public static boolean mouseReleased(double mouseX, double mouseY, int button) {
+		if (pressedPageGroup != null && button == 0) {
+			try {
+				if (!pageGroupDragging) {
+					return true;
+				}
+				Layout current = layout();
+				int targetPage = pageDropTarget(current, pressedPageGroup, (int) mouseX, (int) mouseY);
+				if (targetPage >= 0) {
+					if (activeJob(pressedPageGroup) != null) {
+						autoCraftJob = null;
+					}
+					if (EmiFavoriteGroups.moveGroupToFavoritePage(pressedPageGroup, targetPage)) {
+						if (current.space != null) {
+							current.space.batcher.repopulate();
+						}
+						if (current.panel != null && current.space != null) {
+							int maxPage = Math.max(0, EmiFavorites.getFavoritePageCount() - 1);
+							int actualPage = Math.max(0, Math.min(targetPage, maxPage));
+							current.panel.page = EmiFavoriteGroups.firstSidebarPageForNamespace(current.space, actualPage);
+						}
+						playSound();
+					}
+					return true;
+				}
+				if (dropPageGroupToScreen(pressedPageGroup, (int) mouseX, (int) mouseY)) {
+					playSound();
+				}
+				return true;
+			} finally {
+				clearPageGroupDrag();
+			}
+		}
 		try {
 			if (!dragging && pressedFavorite != null && button == 0 && pressedButton == 0
 					&& !EmiInput.isShiftDown() && !EmiInput.isControlDown() && !EmiInput.isAltDown()) {
@@ -1119,6 +1258,55 @@ public final class FavoriteGroupSidebar {
 		dragFavorite = null;
 		pressedButton = -1;
 		dragging = false;
+	}
+
+	private static boolean dropPageGroupToScreen(EmiFavoriteGroups.Group group, int mouseX, int mouseY) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.currentScreen == null) {
+			return false;
+		}
+		List<EmiIngredient> stacks = new ArrayList<>();
+		for (EmiFavorite favorite : group.members()) {
+			if (stacks.size() >= 63) {
+				break;
+			}
+			EmiIngredient ingredient = concreteDragIngredient(favorite);
+			if (ingredient.isEmpty() || containsEquivalent(stacks, ingredient)) {
+				continue;
+			}
+			stacks.add(ingredient);
+		}
+		return !stacks.isEmpty() && EmiDragDropHandlers.dropStacks(client.currentScreen, stacks, mouseX, mouseY);
+	}
+
+	private static EmiIngredient concreteDragIngredient(EmiFavorite favorite) {
+		if (favorite == null || favorite.getStack() == null || favorite.getStack().getEmiStacks().isEmpty()) {
+			return EmiStack.EMPTY;
+		}
+		try {
+			return favorite.getStack().getEmiStacks().get(0).copy().setAmount(1).setChance(1);
+		} catch (Throwable ignored) {
+			return favorite.getStack().getEmiStacks().get(0);
+		}
+	}
+
+	private static boolean containsEquivalent(List<EmiIngredient> stacks, EmiIngredient candidate) {
+		if (candidate == null || candidate.isEmpty() || candidate.getEmiStacks().isEmpty()) {
+			return true;
+		}
+		EmiStack target = candidate.getEmiStacks().get(0);
+		for (EmiIngredient existing : stacks) {
+			if (existing != null && !existing.isEmpty() && !existing.getEmiStacks().isEmpty()
+					&& existing.getEmiStacks().get(0).isEqual(target, EmiPort.compareStrict())) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static void clearPageGroupDrag() {
+		pressedPageGroup = null;
+		pageGroupDragging = false;
 	}
 
 	private static void playSound() {

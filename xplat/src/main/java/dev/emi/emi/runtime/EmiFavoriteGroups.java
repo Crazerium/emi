@@ -553,6 +553,41 @@ public final class EmiFavoriteGroups {
 		changed();
 	}
 
+	public static boolean moveGroupToFavoritePage(Group group, int targetPage) {
+		normalizeGroup(group);
+		EmiFavorite first = group.firstMember();
+		if (first == null) {
+			return false;
+		}
+		int sourcePage = EmiFavorites.getFavoritePage(first);
+		int pageCount = EmiFavorites.getFavoritePageCount();
+		if (targetPage < 0 || targetPage > pageCount || targetPage == sourcePage) {
+			return false;
+		}
+		if (targetPage == pageCount) {
+			targetPage = EmiFavorites.addFavoritePage();
+		}
+		List<EmiFavorite> moving = new ArrayList<>(group.members);
+		for (EmiFavorite favorite : moving) {
+			removeIdentity(EmiFavorites.favorites, favorite);
+			EmiFavorites.setFavoritePage(favorite, targetPage);
+		}
+		int insertion = EmiFavorites.favorites.size();
+		for (int i = 0; i < EmiFavorites.favorites.size(); i++) {
+			if (EmiFavorites.getFavoritePage(EmiFavorites.favorites.get(i)) > targetPage) {
+				insertion = i;
+				break;
+			}
+		}
+		EmiFavorites.favorites.addAll(insertion, moving);
+		GROUPS.remove(group);
+		GROUPS.add(group);
+		normalizeAll();
+		EmiFavorites.removeTrailingEmptyFavoritePage(sourcePage);
+		changed();
+		return true;
+	}
+
 	public static void removeGroup(Group group) {
 		if (!GROUPS.remove(group)) {
 			return;
