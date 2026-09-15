@@ -1796,6 +1796,9 @@ public final class FavoriteGroupSidebar {
 			if (group.craftingChain && plan.batchesFor(recipe) <= 0L) {
 				continue;
 			}
+			if (!group.craftingChain && EmiFavoriteGroups.recipeQuantity(group, recipe) <= 0L) {
+				continue;
+			}
 			EmiFavorite resultFavorite = resultFavorite(group, recipe);
 			EmiIngredient output;
 			if (resultFavorite != null && !resultFavorite.isEmpty()) {
@@ -1811,7 +1814,7 @@ public final class FavoriteGroupSidebar {
 				if (group.craftingChain) {
 					amount = Math.max(1L, plan.requiredFavorites.getOrDefault(resultFavorite, resultFavorite.getAmount()));
 				} else {
-					amount = Math.max(1L, resultFavorite.getAmount());
+					amount = Math.max(0L, resultFavorite.getAmount());
 				}
 			} else {
 				long batches = group.craftingChain ? plan.batchesFor(recipe)
@@ -1822,7 +1825,7 @@ public final class FavoriteGroupSidebar {
 						perBatch = Math.max(perBatch, candidate.getAmount());
 					}
 				}
-				amount = safeMultiply(perBatch, Math.max(1L, batches));
+				amount = safeMultiply(perBatch, Math.max(0L, batches));
 			}
 			if (amount <= 0L) {
 				continue;

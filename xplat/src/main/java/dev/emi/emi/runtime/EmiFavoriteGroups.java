@@ -70,7 +70,7 @@ public final class EmiFavoriteGroups {
 			object.addProperty("quantity", group.quantity);
 			JsonObject recipeQuantities = new JsonObject();
 			for (Map.Entry<Identifier, Long> entry : group.recipeQuantities.entrySet()) {
-				if (entry.getKey() != null && entry.getValue() != null && entry.getValue() > 1L) {
+				if (entry.getKey() != null && entry.getValue() != null && entry.getValue() != 1L) {
 					recipeQuantities.addProperty(entry.getKey().toString(), entry.getValue());
 				}
 			}
@@ -127,7 +127,7 @@ public final class EmiFavoriteGroups {
 				for (Map.Entry<String, JsonElement> entry : recipeQuantities.entrySet()) {
 					try {
 						Identifier id = new Identifier(entry.getKey());
-						long quantity = Math.max(1L, entry.getValue().getAsLong());
+						long quantity = Math.max(0L, entry.getValue().getAsLong());
 						group.recipeQuantities.put(id, quantity);
 					} catch (Throwable ignored) {
 					}
@@ -505,6 +505,12 @@ public final class EmiFavoriteGroups {
 			group = new Group(new ArrayList<>(EmiFavorites.favorites.subList(mergedStart, mergedEnd + 1)));
 		} else {
 			group = merged.get(0);
+			LinkedHashMap<Identifier, Long> recipeQuantities = new LinkedHashMap<>();
+			for (Group old : merged) {
+				for (Map.Entry<Identifier, Long> entry : old.recipeQuantities.entrySet()) {
+					recipeQuantities.putIfAbsent(entry.getKey(), entry.getValue());
+				}
+			}
 			GROUPS.removeAll(merged);
 			List<EmiFavorite> members = new ArrayList<>(EmiFavorites.favorites.subList(mergedStart, mergedEnd + 1));
 			IdentityHashMap<EmiFavorite, Long> bases = new IdentityHashMap<>();
@@ -516,6 +522,8 @@ public final class EmiFavoriteGroups {
 			group.members.clear();
 			group.members.addAll(members);
 			group.baseAmounts.clear();
+			group.recipeQuantities.clear();
+			group.recipeQuantities.putAll(recipeQuantities);
 			for (EmiFavorite favorite : members) {
 				group.baseAmounts.put(favorite, bases.getOrDefault(favorite, Math.max(1L, favorite.getAmount())));
 			}
@@ -725,8 +733,8 @@ public final class EmiFavoriteGroups {
 			return;
 		}
 		Identifier id = recipe.getId();
-		long next = stepQuantity(group.recipeQuantities.getOrDefault(id, 1L), direction, step);
-		if (next <= 1L) {
+		long next = stepRecipeQuantity(group.recipeQuantities.getOrDefault(id, 1L), direction, step);
+		if (next == 1L) {
 			group.recipeQuantities.remove(id);
 		} else {
 			group.recipeQuantities.put(id, next);
@@ -739,14 +747,28 @@ public final class EmiFavoriteGroups {
 		if (group == null || recipe == null || recipe.getId() == null) {
 			return 1L;
 		}
-		return Math.max(1L, group.recipeQuantities.getOrDefault(recipe.getId(), 1L));
+		return Math.max(0L, group.recipeQuantities.getOrDefault(recipe.getId(), 1L));
 	}
 
 	private static long recipeQuantity(Group group, @Nullable Identifier recipeId) {
 		if (group == null || recipeId == null) {
 			return 1L;
 		}
-		return Math.max(1L, group.recipeQuantities.getOrDefault(recipeId, 1L));
+		return Math.max(0L, group.recipeQuantities.getOrDefault(recipeId, 1L));
+	}
+
+	public static void setRecipeQuantity(Group group, EmiRecipe recipe, long quantity) {
+		if (group == null || recipe == null || recipe.getId() == null) {
+			return;
+		}
+		long normalized = Math.max(0L, quantity);
+		if (normalized == 1L) {
+			group.recipeQuantities.remove(recipe.getId());
+		} else {
+			group.recipeQuantities.put(recipe.getId(), normalized);
+		}
+		applyQuantity(group);
+		changed();
 	}
 
 	private static long stepQuantity(long current, int direction, long step) {
@@ -767,12 +789,30 @@ public final class EmiFavoriteGroups {
 		return remainder == 0L ? current - step : current - remainder;
 	}
 
+	private static long stepRecipeQuantity(long current, int direction, long step) {
+		current = Math.max(0L, current);
+		step = Math.max(1L, step);
+		if (step == 1L) {
+			return Math.max(0L, safeAdd(current, direction));
+		}
+		if (direction > 0) {
+			long remainder = current % step;
+			long delta = remainder == 0L ? step : step - remainder;
+			return safeAdd(current, delta);
+		}
+		if (current <= step) {
+			return 0L;
+		}
+		long remainder = current % step;
+		return remainder == 0L ? current - step : current - remainder;
+	}
+
 	public static void applyQuantity(Group group) {
 		if (group.craftingChain) {
 			ChainPlan plan = calculatePlan(group, null);
 			for (EmiFavorite favorite : group.members) {
 				long amount = plan.requiredFavorites.getOrDefault(favorite, safeMultiply(group.baseAmount(favorite), group.quantity));
-				favorite.setAmount(Math.max(1L, amount));
+				favorite.setAmount(Math.max(0L, amount));
 			}
 		} else {
 			for (EmiFavorite favorite : group.members) {
@@ -855,7 +895,7 @@ public final class EmiFavoriteGroups {
 			} else {
 				amount = safeMultiply(group.baseAmount(favorite), group.quantity);
 			}
-			required.put(favorite, Math.max(1L, amount));
+			required.put(favorite, Math.max(0L, amount));
 		}
 
 		List<AmountEntry> resultList = toAmountList(results);

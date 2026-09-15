@@ -93,7 +93,13 @@ public final class RecipeFavoriteActions {
 		if (group == null) {
 			EmiFavorites.finishFavoriteBatch();
 		} else {
-			EmiFavoriteGroups.applyQuantity(group);
+			if (!preserveCount) {
+				for (EmiRecipe recipe : recipes) {
+					EmiFavoriteGroups.setRecipeQuantity(group, recipe, 0L);
+				}
+			} else {
+				EmiFavoriteGroups.applyQuantity(group);
+			}
 		}
 	}
 
