@@ -192,13 +192,15 @@ public class EmiPlayerInventory {
 			}
 			for (EmiStack stack : ingredient.getEmiStacks()) {
 				boolean reusable = EmiCraftingToolCompat.isReusable(stack);
-				long desired = reusable ? Math.max(1L, stack.getAmount()) * amount : stack.getAmount() * amount;
+				long perCraft = Math.max(1L, stack.getAmount());
 				if (reusable && EmiCraftingToolCompat.isGtTool(stack)) {
-					if (getReusableCraftingUses(stack) >= desired) {
+					long requiredUses = safeMultiply(perCraft, amount);
+					if (getReusableCraftingUses(stack) >= requiredUses) {
 						continue outer;
 					}
 					continue;
 				}
+				long desired = reusable ? perCraft : safeMultiply(perCraft, amount);
 				EmiStack identity = findMatching(stack);
 				if (identity != null) {
 					long alreadyUsed = reusable ? 0L : used.getOrDefault(identity, 0);
@@ -214,6 +216,16 @@ public class EmiPlayerInventory {
 			return false;
 		}
 		return true;
+	}
+
+	private static long safeMultiply(long a, long b) {
+		if (a <= 0L || b <= 0L) {
+			return 0L;
+		}
+		if (a > Long.MAX_VALUE / b) {
+			return Long.MAX_VALUE;
+		}
+		return a * b;
 	}
 
 	private EmiStack findMatching(EmiStack stack) {

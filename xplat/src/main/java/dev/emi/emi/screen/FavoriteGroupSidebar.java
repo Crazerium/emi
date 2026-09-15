@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 import org.lwjgl.glfw.GLFW;
@@ -38,6 +39,8 @@ import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
 import net.minecraft.client.gui.tooltip.TooltipComponent;
 import net.minecraft.client.sound.PositionedSoundInstance;
+import net.minecraft.entity.player.PlayerInventory;
+import net.minecraft.item.ItemStack;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
 import net.minecraft.screen.slot.CraftingResultSlot;
@@ -53,7 +56,13 @@ public final class FavoriteGroupSidebar {
 	private static boolean dragging;
 	private static EmiFavoriteGroups.Group pressedPageGroup;
 	private static boolean pageGroupDragging;
+	private static int pageGroupInsertion = -1;
 	private static AutoCraftJob autoCraftJob;
+	private static MeAutoCraftJob meAutoCraftJob;
+	private static PullJob pullJob;
+	private static final int ME_BURST_LIMIT = 64;
+	private static final int ME_GRID_SETTLE_STABLE_TICKS = 3;
+	private static final int ME_GRID_SETTLE_LIMIT = 60;
 
 	private FavoriteGroupSidebar() {
 	}
@@ -72,7 +81,12 @@ public final class FavoriteGroupSidebar {
 			renderDragPreview(context, layout, mouseX, mouseY);
 		}
 		if (pageGroupDragging && pressedPageGroup != null) {
-			renderPageGroupPreview(context, pressedPageGroup, mouseX, mouseY);
+			renderPageGroupPlacementPreview(context, layout, pressedPageGroup);
+			if (pageGroupInsertion >= 0 && EmiFavoriteGroups.hasGroupMovePreview(pressedPageGroup)) {
+				renderPageGroupCursor(context, pressedPageGroup, mouseX, mouseY);
+			} else {
+				renderPageGroupPreview(context, pressedPageGroup, mouseX, mouseY);
+			}
 			renderPageDropTargets(context, layout, mouseX, mouseY);
 		}
 		context.pop();
@@ -91,6 +105,15 @@ public final class FavoriteGroupSidebar {
 		AutoCraftJob job = activeJob(box.group);
 		if (job != null) {
 			appendAutoCraftTooltip(tooltip, job);
+		} else {
+			MeAutoCraftJob meJob = activeMeJob(box.group);
+			if (meJob != null) {
+				appendMeAutoCraftTooltip(tooltip, meJob);
+			}
+		}
+		PullJob pull = activePullJob(box.group);
+		if (pull != null) {
+			appendPullTooltip(tooltip, pull);
 		}
 		if (EmiInput.isAltDown()) {
 			tooltip.add(line("LMB - Toggle Group Mode", Formatting.YELLOW));
@@ -109,6 +132,8 @@ public final class FavoriteGroupSidebar {
 			tooltip.add(line("SHIFT + Drag Handle to < > - Move Page", Formatting.YELLOW));
 			tooltip.add(line("SHIFT + Drag Handle to Ghost Slots - Fill Group", Formatting.YELLOW));
 			tooltip.add(line("CTRL + SHIFT + C - Craft Missing Items", Formatting.YELLOW));
+			tooltip.add(line("SHIFT + P - Pull Bookmarked Items", Formatting.YELLOW));
+			tooltip.add(line("CTRL + SHIFT + P - Pull Missing Items", Formatting.YELLOW));
 		}
 		if (box.group.craftingChain) {
 			appendChainTooltip(tooltip, box.group);
@@ -154,6 +179,17 @@ public final class FavoriteGroupSidebar {
 			int progress = completed >= total ? inner : Math.max(1, (int) Math.ceil(inner * (completed / (double) total)));
 			context.fill(h.x() + 1, h.bottom() - 2, inner, 1, 0xFF303030);
 			context.fill(h.x() + 1, h.bottom() - 2, Math.min(inner, progress), 1, job.missingOnly ? 0xFFFFAA00 : 0xFF55FFFF);
+		} else {
+			MeAutoCraftJob meJob = activeMeJob(box.group);
+			if (meJob != null) {
+				int inner = Math.max(1, h.width() - 2);
+				int total = Math.max(1, meJob.steps.size());
+				int completed = Math.min(meJob.index, total);
+				int progress = completed >= total ? inner : Math.max(1, (int) Math.ceil(inner * (completed / (double) total)));
+				context.fill(h.x() + 1, h.bottom() - 2, inner, 1, 0xFF303030);
+				context.fill(h.x() + 1, h.bottom() - 2, Math.min(inner, progress), 1,
+						meJob.missingOnly ? 0xFFFFAA00 : 0xFF55FFFF);
+			}
 		}
 	}
 
@@ -170,6 +206,34 @@ public final class FavoriteGroupSidebar {
 			int raw = rawIndex(slot.favorite);
 			if (raw >= min && raw <= max) {
 				context.fill(slot.bounds.x(), slot.bounds.y(), slot.bounds.width(), slot.bounds.height(), color);
+			}
+		}
+	}
+
+	private static void renderPageGroupPlacementPreview(EmiDrawContext context, Layout layout, EmiFavoriteGroups.Group group) {
+		if (pageGroupInsertion < 0 || !EmiFavoriteGroups.hasGroupMovePreview(group)) {
+			return;
+		}
+		for (VisibleSlot slot : layout.slots) {
+			if (containsIdentity(group.members(), slot.favorite)) {
+				Bounds b = slot.bounds;
+				context.fill(b.x(), b.y(), b.width(), 1, 0xFF55FFFF);
+				context.fill(b.x(), b.bottom() - 1, b.width(), 1, 0xFF55FFFF);
+				context.fill(b.x(), b.y(), 1, b.height(), 0xFF55FFFF);
+				context.fill(b.right() - 1, b.y(), 1, b.height(), 0xFF55FFFF);
+			}
+		}
+	}
+
+	private static void renderPageGroupCursor(EmiDrawContext context, EmiFavoriteGroups.Group group, int mouseX, int mouseY) {
+		for (EmiFavorite favorite : group.members()) {
+			EmiIngredient ingredient = concreteDragIngredient(favorite);
+			if (!ingredient.isEmpty()) {
+				context.push();
+				context.matrices().translate(0, 0, 240);
+				context.drawStack(ingredient, mouseX - 8, mouseY - 8, EmiIngredient.RENDER_ICON);
+				context.pop();
+				return;
 			}
 		}
 	}
@@ -264,6 +328,7 @@ public final class FavoriteGroupSidebar {
 		if (box != null) {
 			if (button == 0 && EmiInput.isShiftDown() && !EmiInput.isControlDown() && !EmiInput.isAltDown()) {
 				clearDrag();
+				clearPageGroupDrag();
 				pressedPageGroup = box.group;
 				pageGroupDragging = false;
 				return true;
@@ -298,6 +363,7 @@ public final class FavoriteGroupSidebar {
 	public static boolean mouseDragged(double mouseX, double mouseY, int button) {
 		if (pressedPageGroup != null && button == 0) {
 			pageGroupDragging = true;
+			updatePageGroupMovePreview((int) mouseX, (int) mouseY);
 			return true;
 		}
 		if (pressedFavorite == null || button != pressedButton || (button != 0 && button != 1)) {
@@ -325,6 +391,7 @@ public final class FavoriteGroupSidebar {
 					if (activeJob(pressedPageGroup) != null) {
 						autoCraftJob = null;
 					}
+					EmiFavoriteGroups.clearGroupMovePreview();
 					if (EmiFavoriteGroups.moveGroupToFavoritePage(pressedPageGroup, targetPage)) {
 						if (current.space != null) {
 							current.space.batcher.repopulate();
@@ -336,6 +403,19 @@ public final class FavoriteGroupSidebar {
 						}
 						playSound();
 					}
+					return true;
+				}
+				int insertion = updatePageGroupMovePreview((int) mouseX, (int) mouseY);
+				if (insertion >= 0) {
+					if (activeJob(pressedPageGroup) != null) {
+						autoCraftJob = null;
+					}
+					EmiFavoriteGroups.clearGroupMovePreview();
+					EmiFavoriteGroups.moveGroup(pressedPageGroup, insertion);
+					if (current.space != null) {
+						current.space.batcher.repopulate();
+					}
+					playSound();
 					return true;
 				}
 				if (dropPageGroupToScreen(pressedPageGroup, (int) mouseX, (int) mouseY)) {
@@ -466,14 +546,26 @@ public final class FavoriteGroupSidebar {
 		}
 		boolean shift = (modifiers & GLFW.GLFW_MOD_SHIFT) != 0;
 		boolean control = (modifiers & GLFW.GLFW_MOD_CONTROL) != 0;
-		if (shift && keyCode == GLFW.GLFW_KEY_C && activeJob(box.group) != null) {
+		if (shift && keyCode == GLFW.GLFW_KEY_C && (activeJob(box.group) != null || activeMeJob(box.group) != null)) {
 			autoCraftJob = null;
+			meAutoCraftJob = null;
+			playSound();
+			return true;
+		}
+		if (shift && keyCode == GLFW.GLFW_KEY_P && activePullJob(box.group) != null) {
+			pullJob = null;
 			playSound();
 			return true;
 		}
 		if (shift && keyCode == GLFW.GLFW_KEY_A) {
 			if (activeJob(box.group) != null) {
 				autoCraftJob = null;
+			}
+			if (activeMeJob(box.group) != null) {
+				meAutoCraftJob = null;
+			}
+			if (activePullJob(box.group) != null) {
+				pullJob = null;
 			}
 			EmiFavoriteGroups.removeGroup(box.group);
 			return true;
@@ -484,6 +576,12 @@ public final class FavoriteGroupSidebar {
 		}
 		if (control && shift && keyCode == GLFW.GLFW_KEY_C) {
 			return craftMissing(box.group);
+		}
+		if (control && shift && keyCode == GLFW.GLFW_KEY_P) {
+			return pullItems(box.group, true);
+		}
+		if (shift && !control && keyCode == GLFW.GLFW_KEY_P) {
+			return pullItems(box.group, false);
 		}
 		if (shift && !control && keyCode == GLFW.GLFW_KEY_C) {
 			return craftItems(box.group);
@@ -504,6 +602,38 @@ public final class FavoriteGroupSidebar {
 
 	private static AutoCraftJob activeJob(EmiFavoriteGroups.Group group) {
 		AutoCraftJob job = autoCraftJob;
+		return job != null && job.group == group ? job : null;
+	}
+
+	private static void appendMeAutoCraftTooltip(List<TooltipComponent> tooltip, MeAutoCraftJob job) {
+		int total = Math.max(1, job.steps.size());
+		int current = Math.min(total, job.index + 1);
+		tooltip.add(line((job.missingOnly ? "ME Craft Missing: " : "ME Crafting: ") + current + "/" + total, Formatting.GOLD));
+		if (job.index < job.steps.size()) {
+			CraftStep step = job.steps.get(job.index);
+			tooltip.add(line("Current: " + ingredientName(step.output), Formatting.GRAY));
+		}
+		tooltip.add(line("SHIFT + C - Cancel Crafting", Formatting.YELLOW));
+	}
+
+	private static MeAutoCraftJob activeMeJob(EmiFavoriteGroups.Group group) {
+		MeAutoCraftJob job = meAutoCraftJob;
+		return job != null && job.group == group ? job : null;
+	}
+
+	private static void appendPullTooltip(List<TooltipComponent> tooltip, PullJob job) {
+		int total = Math.max(1, job.steps.size());
+		int current = Math.min(total, job.index + 1);
+		tooltip.add(line((job.missingOnly ? "Pull Missing: " : "Pulling: ") + current + "/" + total, Formatting.GOLD));
+		if (job.index < job.steps.size()) {
+			PullStep step = job.steps.get(job.index);
+			tooltip.add(line("Current: " + ingredientName(step.ingredient), Formatting.GRAY));
+		}
+		tooltip.add(line("SHIFT + P - Cancel Pulling", Formatting.YELLOW));
+	}
+
+	private static PullJob activePullJob(EmiFavoriteGroups.Group group) {
+		PullJob job = pullJob;
 		return job != null && job.group == group ? job : null;
 	}
 
@@ -614,6 +744,83 @@ public final class FavoriteGroupSidebar {
 		client.player.networkHandler.sendChatMessage(message);
 	}
 
+	private static boolean pullItems(EmiFavoriteGroups.Group group, boolean missingOnly) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (!(client.currentScreen instanceof HandledScreen<?> handled) || client.player == null || client.interactionManager == null) {
+			return false;
+		}
+		List<AmountEntry> entries = pullEntries(group, client.player, missingOnly);
+		List<PullStep> steps = new ArrayList<>();
+		for (AmountEntry entry : entries) {
+			if (entry == null || entry.ingredient() == null || entry.ingredient().isEmpty() || entry.amount() <= 0L) {
+				continue;
+			}
+			long amount = pullAmount(entry.ingredient(), entry.amount());
+			if (amount > 0L) {
+				steps.add(new PullStep(normalized(entry.ingredient()), amount));
+			}
+		}
+		if (steps.isEmpty()) {
+			return false;
+		}
+		autoCraftJob = null;
+		meAutoCraftJob = null;
+		pullJob = new PullJob(group, missingOnly, handled, handled.getScreenHandler().syncId, steps);
+		playSound();
+		return true;
+	}
+
+	private static List<AmountEntry> pullEntries(EmiFavoriteGroups.Group group, net.minecraft.entity.player.PlayerEntity player, boolean missingOnly) {
+		boolean hasRecipe = false;
+		for (EmiFavorite favorite : group.members()) {
+			if (favorite.getRecipe() != null && favorite.getRole() != Role.ITEM) {
+				hasRecipe = true;
+				break;
+			}
+		}
+		if (hasRecipe) {
+			EmiPlayerInventory inventory;
+			if (missingOnly) {
+				inventory = playerOnlyInventory(player);
+			} else {
+				inventory = new EmiPlayerInventory(List.of());
+				inventory.inventory.clear();
+			}
+			return buildMissingCraftPlan(group, inventory, false).missing;
+		}
+		ChainPlan plan = EmiFavoriteGroups.calculatePlan(group, null);
+		if (!missingOnly) {
+			return plan.results;
+		}
+		List<AmountEntry> missing = new ArrayList<>();
+		for (AmountEntry entry : plan.results) {
+			long amount = Math.max(0L, entry.amount() - available(entry.ingredient()));
+			if (amount > 0L) {
+				missing.add(new AmountEntry(entry.ingredient(), amount));
+			}
+		}
+		return List.copyOf(missing);
+	}
+
+	private static EmiPlayerInventory playerOnlyInventory(net.minecraft.entity.player.PlayerEntity player) {
+		List<EmiStack> stacks = new ArrayList<>();
+		for (ItemStack stack : player.getInventory().main) {
+			if (stack != null && !stack.isEmpty()) {
+				stacks.add(EmiStack.of(stack.copy()));
+			}
+		}
+		return new EmiPlayerInventory(stacks);
+	}
+
+	private static long pullAmount(EmiIngredient ingredient, long amount) {
+		for (EmiStack option : ingredient.getEmiStacks()) {
+			if (EmiCraftingToolCompat.isReusable(option)) {
+				return 1L;
+			}
+		}
+		return Math.max(0L, amount);
+	}
+
 	private static boolean craftItems(EmiFavoriteGroups.Group group) {
 		return startCraft(group, false);
 	}
@@ -627,25 +834,59 @@ public final class FavoriteGroupSidebar {
 		if (!(client.currentScreen instanceof HandledScreen<?> handled) || client.player == null) {
 			return false;
 		}
-		List<CraftStep> steps = missingOnly
-				? buildMissingCraftSteps(group, EmiPlayerInventory.of(client.player))
-				: buildCraftSteps(group);
+		List<CraftStep> fullSteps = buildCraftSteps(group);
+		if (fullSteps.isEmpty()) {
+			return false;
+		}
+		boolean meContext = isMeCraftContext(fullSteps.get(0).recipe, handled);
+		List<CraftStep> steps;
+		if (missingOnly && meContext) {
+			var handler = EmiRecipeFiller.getFirstValidHandler(fullSteps.get(0).recipe, (HandledScreen) handled);
+			if (handler == null) {
+				return false;
+			}
+			EmiPlayerInventory inventory = handler.getInventory((HandledScreen) handled);
+			steps = buildMissingCraftSteps(group, inventory);
+		} else if (missingOnly) {
+			steps = buildMissingCraftSteps(group, EmiPlayerInventory.of(client.player));
+		} else {
+			steps = fullSteps;
+		}
 		if (steps.isEmpty()) {
 			return false;
+		}
+		if (meContext) {
+			for (CraftStep step : steps) {
+				if (firstHandler(step.recipe, handled) == null) {
+					return false;
+				}
+			}
+			pullJob = null;
+			autoCraftJob = null;
+			meAutoCraftJob = new MeAutoCraftJob(group, missingOnly, handled, handled.getScreenHandler().syncId, steps);
+			playSound();
+			return true;
 		}
 		for (CraftStep step : steps) {
 			if (!canAutoCraft(step.recipe, handled)) {
 				return false;
 			}
 		}
+		pullJob = null;
+		meAutoCraftJob = null;
 		autoCraftJob = new AutoCraftJob(group, missingOnly, handled, handled.getScreenHandler().syncId, steps);
 		playSound();
 		return true;
 	}
 
 	public static void tick() {
+		if (meAutoCraftJob != null) {
+			tickMeAutoCraftJob();
+			return;
+		}
 		AutoCraftJob job = autoCraftJob;
 		if (job == null) {
+			tickPullJob();
 			return;
 		}
 		MinecraftClient client = MinecraftClient.getInstance();
@@ -731,6 +972,385 @@ public final class FavoriteGroupSidebar {
 			job.waitTicks = 2;
 		}
 	}
+
+	private static void tickMeAutoCraftJob() {
+		MeAutoCraftJob job = meAutoCraftJob;
+		if (job == null) {
+			return;
+		}
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (!(client.currentScreen instanceof HandledScreen<?> handled) || handled != job.screen
+				|| handled.getScreenHandler().syncId != job.syncId || client.player == null) {
+			meAutoCraftJob = null;
+			return;
+		}
+		if (job.waitTicks > 0) {
+			job.waitTicks--;
+			return;
+		}
+		if (job.index >= job.steps.size()) {
+			meAutoCraftJob = null;
+			return;
+		}
+
+		CraftStep step = job.steps.get(job.index);
+		long available = available(step.output);
+		if (step.target < 0L) {
+			step.target = safeAdd(available, step.amount);
+		}
+		if (step.phase == 2) {
+			tickMeGridSettle(job, step, handled);
+			return;
+		}
+
+		if (step.phase == 1) {
+			long expectedProduced = safeMultiply(Math.max(1L, step.outputPerBatch), Math.max(1, step.pendingBatches));
+			long expectedAvailable = safeAdd(step.pendingAvailable, expectedProduced);
+			if (available >= expectedAvailable) {
+				step.phase = 0;
+				step.pendingTicks = 0;
+				step.failures = 0;
+				if (available >= step.target) {
+					finishMeStep(job, step, handled);
+				} else {
+					job.waitTicks = 1;
+				}
+				return;
+			}
+
+			Slot output = outputSlot(step.recipe, handled);
+			if (output != null && !output.getStack().isEmpty()
+					&& matchesOutput(step.output, EmiStack.of(output.getStack())) && takeOutput(step.recipe, handled)) {
+				job.waitTicks = 2;
+				step.pendingTicks++;
+				return;
+			}
+
+			step.pendingTicks++;
+			if (step.pendingTicks >= 100) {
+				meAutoCraftJob = null;
+			}
+			return;
+		}
+
+		if (available >= step.target) {
+			finishMeStep(job, step, handled);
+			return;
+		}
+
+		long missing = Math.max(1L, step.target - available);
+		long perBatch = step.outputPerBatch > 0L ? step.outputPerBatch : matchingOutputAmount(step.recipe, step.output);
+		perBatch = Math.max(1L, perBatch);
+		long batches = ceilDiv(missing, perBatch);
+		int amount = (int) Math.min(ME_BURST_LIMIT, Math.max(1L, batches));
+		int submitted = performMeFill(step.recipe, handled, amount);
+		if (submitted > 0) {
+			step.outputPerBatch = perBatch;
+			step.phase = 1;
+			step.pendingAvailable = available;
+			step.pendingBatches = submitted;
+			step.pendingTicks = 0;
+			job.waitTicks = 2;
+			return;
+		}
+		step.failures++;
+		if (step.failures >= 3) {
+			meAutoCraftJob = null;
+		} else {
+			job.waitTicks = 2;
+		}
+	}
+
+	private static void finishMeStep(MeAutoCraftJob job, CraftStep step, HandledScreen<?> handled) {
+		if (needsMeGridSettle(job, step)) {
+			step.phase = 2;
+			step.settleTicks = 0;
+			step.settleStableTicks = 0;
+			tickMeGridSettle(job, step, handled);
+		} else {
+			advanceMe(job);
+		}
+	}
+
+	private static boolean needsMeGridSettle(MeAutoCraftJob job, CraftStep step) {
+		if (job.index + 1 >= job.steps.size()) {
+			return false;
+		}
+		return recipesShareReusableInput(step.recipe, job.steps.get(job.index + 1).recipe);
+	}
+
+	private static boolean recipesShareReusableInput(EmiRecipe first, EmiRecipe second) {
+		if (first == null || second == null) {
+			return false;
+		}
+		for (EmiIngredient a : first.getInputs()) {
+			if (a == null || a.isEmpty()) {
+				continue;
+			}
+			for (EmiStack left : a.getEmiStacks()) {
+				if (!isReusable(left)) {
+					continue;
+				}
+				for (EmiIngredient b : second.getInputs()) {
+					if (b == null || b.isEmpty()) {
+						continue;
+					}
+					for (EmiStack right : b.getEmiStacks()) {
+						if (isReusable(right) && (EmiCraftingToolCompat.matches(left, right)
+								|| EmiCraftingToolCompat.matches(right, left))) {
+							return true;
+						}
+					}
+				}
+			}
+		}
+		return false;
+	}
+
+	private static void tickMeGridSettle(MeAutoCraftJob job, CraftStep step, HandledScreen<?> handled) {
+		step.settleTicks++;
+		if (step.settleTicks >= ME_GRID_SETTLE_LIMIT) {
+			meAutoCraftJob = null;
+			return;
+		}
+		boolean empty = clearMeCraftingGrid(step.recipe, handled);
+		if (!empty) {
+			step.settleStableTicks = 0;
+			job.waitTicks = 1;
+			return;
+		}
+		step.settleStableTicks++;
+		if (step.settleStableTicks < ME_GRID_SETTLE_STABLE_TICKS) {
+			job.waitTicks = 1;
+			return;
+		}
+		CraftStep next = job.index + 1 < job.steps.size() ? job.steps.get(job.index + 1) : null;
+		if (next != null && !meReusableInputsReady(next.recipe, handled)) {
+			job.waitTicks = 1;
+			return;
+		}
+		step.phase = 0;
+		step.settleTicks = 0;
+		step.settleStableTicks = 0;
+		advanceMe(job);
+	}
+
+	@SuppressWarnings({"rawtypes", "unchecked"})
+	private static boolean clearMeCraftingGrid(EmiRecipe recipe, HandledScreen<?> handled) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.player == null || client.interactionManager == null) {
+			return false;
+		}
+		var handler = EmiRecipeFiller.getFirstValidHandler(recipe, (HandledScreen) handled);
+		if (!(handler instanceof StandardRecipeHandler standard)) {
+			return true;
+		}
+		List<Slot> slots = standard.getCraftingSlots(recipe, handled.getScreenHandler());
+		boolean empty = true;
+		for (Slot slot : slots) {
+			if (slot == null || slot.getStack().isEmpty()) {
+				continue;
+			}
+			empty = false;
+			client.interactionManager.clickSlot(handled.getScreenHandler().syncId, slot.id, 0, SlotActionType.QUICK_MOVE, client.player);
+		}
+		return empty;
+	}
+
+	@SuppressWarnings({"rawtypes", "unchecked"})
+	private static boolean meReusableInputsReady(EmiRecipe recipe, HandledScreen<?> handled) {
+		var handler = EmiRecipeFiller.getFirstValidHandler(recipe, (HandledScreen) handled);
+		if (handler == null) {
+			return false;
+		}
+		EmiPlayerInventory inventory = handler.getInventory((HandledScreen) handled);
+		if (inventory == null) {
+			return false;
+		}
+		for (EmiIngredient ingredient : recipe.getInputs()) {
+			if (ingredient == null || ingredient.isEmpty() || !hasReusableOption(ingredient)) {
+				continue;
+			}
+			boolean found = false;
+			for (EmiStack expected : ingredient.getEmiStacks()) {
+				if (!isReusable(expected)) {
+					continue;
+				}
+				for (EmiStack candidate : inventory.inventory.values()) {
+					if (candidate == null || candidate.isEmpty() || !EmiCraftingToolCompat.matches(expected, candidate)) {
+						continue;
+					}
+					if (!EmiCraftingToolCompat.isGtTool(candidate) || EmiCraftingToolCompat.getSafeCraftingUses(candidate) > 0L) {
+						found = true;
+						break;
+					}
+				}
+				if (found) {
+					break;
+				}
+			}
+			if (!found) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static void advanceMe(MeAutoCraftJob job) {
+		job.index++;
+		job.waitTicks = 1;
+		if (job.index >= job.steps.size()) {
+			meAutoCraftJob = null;
+		}
+	}
+
+	@SuppressWarnings({"rawtypes", "unchecked"})
+	private static int performMeFill(EmiRecipe recipe, HandledScreen<?> handled, int amount) {
+		var handler = EmiRecipeFiller.getFirstValidHandler(recipe, (HandledScreen) handled);
+		if (handler == null) {
+			return 0;
+		}
+		EmiPlayerInventory inventory = handler.getInventory((HandledScreen) handled);
+		boolean ae2Handler = isAe2UseCraftingHandler(handler);
+		int requests = ae2Handler ? Math.max(1, amount) : 1;
+		int contextAmount = requests > 1 ? 1 : Math.max(1, amount);
+		int submitted = 0;
+		for (int i = 0; i < requests; i++) {
+			EmiCraftContext context = new EmiCraftContext((HandledScreen) handled, inventory,
+					EmiCraftContext.Type.CRAFTABLE, EmiCraftContext.Destination.INVENTORY, contextAmount);
+			boolean crafted;
+			if (ae2Handler) {
+				crafted = handler.craft(recipe, context);
+			} else if (handler instanceof StandardRecipeHandler standard) {
+				List<ItemStack> stacks = EmiRecipeFiller.getStacks(standard, recipe, (HandledScreen) handled, contextAmount);
+				if (stacks == null) {
+					break;
+				}
+				crafted = standard.craft(recipe, context);
+			} else {
+				crafted = handler.craft(recipe, context);
+			}
+			if (!crafted) {
+				break;
+			}
+			submitted++;
+		}
+		return submitted;
+	}
+
+	private static boolean isAe2UseCraftingHandler(Object handler) {
+		if (handler == null) {
+			return false;
+		}
+		String name = handler.getClass().getName();
+		return name.equals("appeng.integration.modules.emi.EmiUseCraftingRecipeHandler")
+				|| name.endsWith(".EmiUseCraftingRecipeHandler");
+	}
+
+	@SuppressWarnings({"rawtypes", "unchecked"})
+	private static Object firstHandler(EmiRecipe recipe, HandledScreen<?> handled) {
+		return EmiRecipeFiller.getFirstValidHandler(recipe, (HandledScreen) handled);
+	}
+
+	private static boolean isMeCraftContext(EmiRecipe recipe, HandledScreen<?> handled) {
+		return isMeLikeClass(firstHandler(recipe, handled)) || isMeLikeClass(handled) || isMeLikeClass(handled.getScreenHandler());
+	}
+
+	private static boolean isMeLikeClass(Object object) {
+		if (object == null) {
+			return false;
+		}
+		for (Class<?> type = object.getClass(); type != null; type = type.getSuperclass()) {
+			if (isMeLikeClassName(type.getName())) {
+				return true;
+			}
+			for (Class<?> iface : type.getInterfaces()) {
+				if (isMeLikeClassName(iface.getName())) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private static boolean isMeLikeClassName(String name) {
+		if (name == null) {
+			return false;
+		}
+		String lower = name.toLowerCase(Locale.ROOT);
+		if (lower.startsWith("appeng.")) {
+			return true;
+		}
+		return lower.startsWith("com.gtocore.") && lower.contains("terminal")
+				&& (lower.contains("ae") || lower.contains("me") || lower.contains("storage"));
+	}
+
+
+	private static void tickPullJob() {
+		PullJob job = pullJob;
+		if (job == null) {
+			return;
+		}
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (!(client.currentScreen instanceof HandledScreen<?> handled) || handled != job.screen
+				|| handled.getScreenHandler().syncId != job.syncId || client.player == null || client.interactionManager == null) {
+			pullJob = null;
+			return;
+		}
+		if (job.waitTicks > 0) {
+			job.waitTicks--;
+			return;
+		}
+		if (job.index >= job.steps.size()) {
+			pullJob = null;
+			return;
+		}
+		PullStep step = job.steps.get(job.index);
+		long available = available(step.ingredient);
+		if (step.target < 0L) {
+			step.target = safeAdd(available, step.amount);
+		}
+		if (available >= step.target) {
+			job.index++;
+			job.waitTicks = 1;
+			return;
+		}
+		if (step.waiting) {
+			if (available > step.pendingAvailable) {
+				step.waiting = false;
+				step.pendingTicks = 0;
+				step.failures = 0;
+				job.waitTicks = 1;
+				return;
+			}
+			step.pendingTicks++;
+			if (step.pendingTicks >= 30) {
+				step.waiting = false;
+				step.pendingTicks = 0;
+				step.failures++;
+			}
+			if (step.failures >= 3) {
+				pullJob = null;
+			}
+			return;
+		}
+		long remaining = Math.max(1L, step.target - available);
+		Slot source = findPullSlot(handled, step.ingredient, remaining);
+		if (source == null) {
+			pullJob = null;
+			return;
+		}
+		step.pendingAvailable = available;
+		if (!pullFromSlot(handled, source, remaining)) {
+			pullJob = null;
+			return;
+		}
+		step.waiting = true;
+		step.pendingTicks = 0;
+		job.waitTicks = 1;
+	}
+
+
 
 	private static void advance(AutoCraftJob job) {
 		job.index++;
@@ -1006,8 +1626,127 @@ public final class FavoriteGroupSidebar {
 
 	@SuppressWarnings({"rawtypes", "unchecked"})
 	private static boolean performFill(EmiRecipe recipe, HandledScreen<?> handled, int amount) {
-		return EmiRecipeFiller.performFill(recipe, (HandledScreen) handled, EmiCraftContext.Type.CRAFTABLE,
-				EmiCraftContext.Destination.NONE, amount);
+		var handler = EmiRecipeFiller.getFirstValidHandler(recipe, (HandledScreen) handled);
+		if (handler == null) {
+			return false;
+		}
+		EmiPlayerInventory inventory = handler.getInventory((HandledScreen) handled);
+		EmiCraftContext context = new EmiCraftContext((HandledScreen) handled, inventory,
+				EmiCraftContext.Type.CRAFTABLE, EmiCraftContext.Destination.NONE, amount);
+
+		if (handler instanceof StandardRecipeHandler standard) {
+			List<ItemStack> stacks = EmiRecipeFiller.getStacks(standard, recipe, (HandledScreen) handled, amount);
+			if (stacks == null) {
+				return false;
+			}
+			return standard.craft(recipe, context);
+		}
+
+		if (!handler.canCraft(recipe, context)) {
+			return false;
+		}
+		return handler.craft(recipe, context);
+	}
+
+	private static boolean pullFromSlot(HandledScreen<?> handled, Slot source, long remaining) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.player == null || client.interactionManager == null || source == null) {
+			return false;
+		}
+		ItemStack sourceStack = source.getStack().copy();
+		if (sourceStack.isEmpty()) {
+			return false;
+		}
+		long desired = Math.min(remaining, sourceStack.getCount());
+		if (desired <= 0L) {
+			return false;
+		}
+		if (sourceStack.getCount() <= desired) {
+			client.interactionManager.clickSlot(handled.getScreenHandler().syncId, source.id, 0, SlotActionType.QUICK_MOVE, client.player);
+			return true;
+		}
+		if (!handled.getScreenHandler().getCursorStack().isEmpty() || !source.canInsert(sourceStack)) {
+			return false;
+		}
+		if (playerCapacity(handled, sourceStack) < desired) {
+			return false;
+		}
+		client.interactionManager.clickSlot(handled.getScreenHandler().syncId, source.id, 0, SlotActionType.PICKUP, client.player);
+		long moved = 0L;
+		while (moved < desired) {
+			Slot destination = findPlayerDestinationSlot(handled, sourceStack);
+			if (destination == null) {
+				client.interactionManager.clickSlot(handled.getScreenHandler().syncId, source.id, 0, SlotActionType.PICKUP, client.player);
+				return false;
+			}
+			client.interactionManager.clickSlot(handled.getScreenHandler().syncId, destination.id, 1, SlotActionType.PICKUP, client.player);
+			moved++;
+		}
+		client.interactionManager.clickSlot(handled.getScreenHandler().syncId, source.id, 0, SlotActionType.PICKUP, client.player);
+		return handled.getScreenHandler().getCursorStack().isEmpty();
+	}
+
+	private static long playerCapacity(HandledScreen<?> handled, ItemStack stack) {
+		long capacity = 0L;
+		for (Slot slot : handled.getScreenHandler().slots) {
+			if (slot == null || !(slot.inventory instanceof PlayerInventory) || !slot.canInsert(stack)) {
+				continue;
+			}
+			ItemStack current = slot.getStack();
+			int max = Math.min(stack.getMaxCount(), slot.getMaxItemCount());
+			if (current.isEmpty()) {
+				capacity = safeAdd(capacity, max);
+			} else if (ItemStack.canCombine(current, stack)) {
+				capacity = safeAdd(capacity, Math.max(0, max - current.getCount()));
+			}
+		}
+		return capacity;
+	}
+
+	private static Slot findPlayerDestinationSlot(HandledScreen<?> handled, ItemStack stack) {
+		Slot empty = null;
+		for (Slot slot : handled.getScreenHandler().slots) {
+			if (slot == null || !(slot.inventory instanceof PlayerInventory) || !slot.canInsert(stack)) {
+				continue;
+			}
+			ItemStack current = slot.getStack();
+			int max = Math.min(stack.getMaxCount(), slot.getMaxItemCount());
+			if (!current.isEmpty() && ItemStack.canCombine(current, stack) && current.getCount() < max) {
+				return slot;
+			}
+			if (current.isEmpty() && empty == null) {
+				empty = slot;
+			}
+		}
+		return empty;
+	}
+
+	private static Slot findPullSlot(HandledScreen<?> handled, EmiIngredient ingredient, long remaining) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.player == null) {
+			return null;
+		}
+		Slot fallback = null;
+		long fallbackAmount = Long.MAX_VALUE;
+		for (Slot slot : handled.getScreenHandler().slots) {
+			if (slot == null || slot.inventory instanceof PlayerInventory || slot instanceof CraftingResultSlot
+					|| !slot.canTakeItems(client.player)) {
+				continue;
+			}
+			ItemStack stack = slot.getStack();
+			if (stack.isEmpty() || !matchesOutput(ingredient, EmiStack.of(stack))) {
+				continue;
+			}
+			long count = stack.getCount();
+			if (count <= remaining) {
+				return slot;
+			}
+			if (count < fallbackAmount) {
+				fallbackAmount = count;
+				fallback = slot;
+			}
+		}
+		return fallback;
 	}
 
 	@SuppressWarnings({"rawtypes", "unchecked"})
@@ -1260,6 +1999,35 @@ public final class FavoriteGroupSidebar {
 		dragging = false;
 	}
 
+	private static int updatePageGroupMovePreview(int mouseX, int mouseY) {
+		pageGroupInsertion = -1;
+		EmiFavoriteGroups.clearGroupMovePreview();
+		if (pressedPageGroup == null) {
+			return -1;
+		}
+		Layout base = layout();
+		if (base.panel == null || base.space == null) {
+			return -1;
+		}
+		if (pageDropTarget(base, pressedPageGroup, mouseX, mouseY) >= 0) {
+			return -1;
+		}
+		Bounds grid = new Bounds(base.space.tx, base.space.ty, base.space.tw * EmiScreenManager.ENTRY_SIZE,
+				base.space.th * EmiScreenManager.ENTRY_SIZE);
+		if (!grid.contains(mouseX, mouseY)) {
+			return -1;
+		}
+		int sidebarEdge = Math.min(base.pageStart + base.space.getClosestEdge(mouseX, mouseY), base.space.getStacks().size());
+		int rawInsertion = EmiFavoriteGroups.rawInsertionIndexForSidebarEdge(sidebarEdge);
+		int insertion = EmiFavoriteGroups.snapGroupInsertion(pressedPageGroup, rawInsertion);
+		if (insertion < 0) {
+			return -1;
+		}
+		pageGroupInsertion = insertion;
+		EmiFavoriteGroups.setGroupMovePreview(pressedPageGroup, insertion);
+		return insertion;
+	}
+
 	private static boolean dropPageGroupToScreen(EmiFavoriteGroups.Group group, int mouseX, int mouseY) {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client.currentScreen == null) {
@@ -1307,6 +2075,8 @@ public final class FavoriteGroupSidebar {
 	private static void clearPageGroupDrag() {
 		pressedPageGroup = null;
 		pageGroupDragging = false;
+		pageGroupInsertion = -1;
+		EmiFavoriteGroups.clearGroupMovePreview();
 	}
 
 	private static void playSound() {
@@ -1405,8 +2175,60 @@ public final class FavoriteGroupSidebar {
 	private record AmountIcon(EmiIngredient ingredient, Text amount, int x, int y) {
 	}
 
+	private static final class PullJob {
+		private final EmiFavoriteGroups.Group group;
+		private final boolean missingOnly;
+		private final HandledScreen<?> screen;
+		private final int syncId;
+		private final List<PullStep> steps;
+		private int index;
+		private int waitTicks;
+
+		private PullJob(EmiFavoriteGroups.Group group, boolean missingOnly, HandledScreen<?> screen, int syncId, List<PullStep> steps) {
+			this.group = group;
+			this.missingOnly = missingOnly;
+			this.screen = screen;
+			this.syncId = syncId;
+			this.steps = steps;
+		}
+	}
+
+	private static final class PullStep {
+		private final EmiIngredient ingredient;
+		private final long amount;
+		private long target = -1L;
+		private long pendingAvailable;
+		private int pendingTicks;
+		private int failures;
+		private boolean waiting;
+
+		private PullStep(EmiIngredient ingredient, long amount) {
+			this.ingredient = ingredient;
+			this.amount = amount;
+		}
+	}
+
 	private record MissingCraftPlan(List<CraftStep> steps, List<AmountEntry> missing) {
 		private static final MissingCraftPlan EMPTY = new MissingCraftPlan(List.of(), List.of());
+	}
+
+	private static final class MeAutoCraftJob {
+		private final EmiFavoriteGroups.Group group;
+		private final boolean missingOnly;
+		private final HandledScreen<?> screen;
+		private final int syncId;
+		private final List<CraftStep> steps;
+		private int index;
+		private int waitTicks;
+
+		private MeAutoCraftJob(EmiFavoriteGroups.Group group, boolean missingOnly, HandledScreen<?> screen, int syncId,
+				List<CraftStep> steps) {
+			this.group = group;
+			this.missingOnly = missingOnly;
+			this.screen = screen;
+			this.syncId = syncId;
+			this.steps = steps;
+		}
 	}
 
 	private static final class AutoCraftJob {
@@ -1663,6 +2485,8 @@ public final class FavoriteGroupSidebar {
 		private int pendingTicks;
 		private int failures;
 		private int phase;
+		private int settleTicks;
+		private int settleStableTicks;
 
 		private CraftStep(EmiRecipe recipe, EmiIngredient output, long amount) {
 			this.recipe = recipe;

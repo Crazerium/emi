@@ -32,6 +32,8 @@ public final class EmiFavoriteGroups {
 	private static boolean visibilityDirty = true;
 	private static int sidebarNamespacePageSize = -1;
 	private static List<Integer> sidebarPageNamespaces = List.of(0);
+	private static @Nullable Group movePreviewGroup;
+	private static int movePreviewRawInsertionIndex = -1;
 
 	private EmiFavoriteGroups() {
 	}
@@ -81,6 +83,7 @@ public final class EmiFavoriteGroups {
 	}
 
 	public static void load(JsonArray array) {
+		clearGroupMovePreview();
 		GROUPS.clear();
 		for (JsonElement element : array) {
 			if (!element.isJsonObject()) {
@@ -137,6 +140,7 @@ public final class EmiFavoriteGroups {
 	}
 
 	public static void onFavoritesChanged() {
+		clearGroupMovePreview();
 		normalizeAll();
 		visibilityDirty = true;
 	}
@@ -234,6 +238,88 @@ public final class EmiFavoriteGroups {
 		return EmiFavorites.favorites.size();
 	}
 
+	public static int snapGroupInsertion(Group moving, int rawInsertionIndex) {
+		if (moving == null) {
+			return -1;
+		}
+		normalizeGroup(moving);
+		EmiFavorite first = moving.firstMember();
+		if (first == null) {
+			return -1;
+		}
+		int page = EmiFavorites.getFavoritePage(first);
+		int pageStart = EmiFavorites.favorites.size();
+		int pageEnd = -1;
+		for (int i = 0; i < EmiFavorites.favorites.size(); i++) {
+			if (EmiFavorites.getFavoritePage(EmiFavorites.favorites.get(i)) == page) {
+				pageStart = Math.min(pageStart, i);
+				pageEnd = Math.max(pageEnd, i + 1);
+			}
+		}
+		if (pageEnd < 0) {
+			return -1;
+		}
+		int insertion = Math.max(pageStart, Math.min(pageEnd, rawInsertionIndex));
+		for (Group group : GROUPS) {
+			if (group == moving) {
+				continue;
+			}
+			EmiFavorite targetFirst = group.firstMember();
+			if (targetFirst == null || EmiFavorites.getFavoritePage(targetFirst) != page) {
+				continue;
+			}
+			int start = groupStart(group);
+			int end = groupEnd(group) + 1;
+			if (insertion > start && insertion < end) {
+				int left = insertion - start;
+				int right = end - insertion;
+				insertion = left <= right ? start : end;
+				break;
+			}
+		}
+		return insertion;
+	}
+
+	public static void setGroupMovePreview(Group group, int rawInsertionIndex) {
+		int insertion = snapGroupInsertion(group, rawInsertionIndex);
+		if (insertion < 0) {
+			clearGroupMovePreview();
+			return;
+		}
+		movePreviewGroup = group;
+		movePreviewRawInsertionIndex = insertion;
+	}
+
+	public static void clearGroupMovePreview() {
+		movePreviewGroup = null;
+		movePreviewRawInsertionIndex = -1;
+	}
+
+	public static boolean hasGroupMovePreview(Group group) {
+		return movePreviewGroup == group && movePreviewRawInsertionIndex >= 0;
+	}
+
+	private static List<EmiFavorite> favoritesForLayout() {
+		if (movePreviewGroup == null || movePreviewRawInsertionIndex < 0) {
+			return EmiFavorites.favorites;
+		}
+		List<EmiFavorite> order = new ArrayList<>(EmiFavorites.favorites);
+		List<EmiFavorite> moving = new ArrayList<>(movePreviewGroup.members);
+		int before = 0;
+		for (EmiFavorite favorite : moving) {
+			int index = identityIndexOf(order, favorite);
+			if (index >= 0 && index < movePreviewRawInsertionIndex) {
+				before++;
+			}
+		}
+		for (EmiFavorite favorite : moving) {
+			removeIdentity(order, favorite);
+		}
+		int target = Math.max(0, Math.min(order.size(), movePreviewRawInsertionIndex - before));
+		order.addAll(target, moving);
+		return order;
+	}
+
 	private static List<EmiFavorite> buildSidebarLayout(EmiScreenManager.ScreenSpace space) {
 		int pageSize = space.pageSize;
 		if (pageSize <= 0 || space.th <= 0) {
@@ -244,10 +330,13 @@ public final class EmiFavoriteGroups {
 
 		List<EmiFavorite> result = new ArrayList<>();
 		List<Integer> pageNamespaces = new ArrayList<>();
+		List<EmiFavorite> layoutFavorites = favoritesForLayout();
+		List<Group> layoutGroups = new ArrayList<>(GROUPS);
+		layoutGroups.sort(Comparator.comparingInt(group -> groupStart(group, layoutFavorites)));
 		int namespaceCount = EmiFavorites.getFavoritePageCount();
 		for (int namespace = 0; namespace < namespaceCount; namespace++) {
 			int start = result.size();
-			for (EmiFavorite favorite : EmiFavorites.favorites) {
+			for (EmiFavorite favorite : layoutFavorites) {
 				if (EmiFavorites.getFavoritePage(favorite) == namespace && groupFor(favorite) == null) {
 					result.add(favorite);
 				}
@@ -256,7 +345,7 @@ public final class EmiFavoriteGroups {
 				result.addAll(EmiFavorites.syntheticFavorites);
 			}
 			padToNextRow(result, space);
-			for (Group group : GROUPS) {
+			for (Group group : layoutGroups) {
 				normalizeGroup(group);
 				EmiFavorite first = group.firstMember();
 				if (first == null || EmiFavorites.getFavoritePage(first) != namespace) {
@@ -527,6 +616,7 @@ public final class EmiFavoriteGroups {
 	}
 
 	public static void moveGroup(Group group, int rawInsertionIndex) {
+		clearGroupMovePreview();
 		normalizeGroup(group);
 		if (group.members.isEmpty()) {
 			return;
@@ -1048,9 +1138,13 @@ public final class EmiFavoriteGroups {
 	}
 
 	private static int groupStart(Group group) {
+		return groupStart(group, EmiFavorites.favorites);
+	}
+
+	private static int groupStart(Group group, List<EmiFavorite> order) {
 		int result = Integer.MAX_VALUE;
 		for (EmiFavorite favorite : group.members) {
-			int index = identityIndexOf(EmiFavorites.favorites, favorite);
+			int index = identityIndexOf(order, favorite);
 			if (index >= 0) {
 				result = Math.min(result, index);
 			}
@@ -1067,6 +1161,7 @@ public final class EmiFavoriteGroups {
 	}
 
 	private static void changed() {
+		clearGroupMovePreview();
 		normalizeAll();
 		visibilityDirty = true;
 		EmiScreenManager.repopulatePanels(dev.emi.emi.config.SidebarType.FAVORITES);
