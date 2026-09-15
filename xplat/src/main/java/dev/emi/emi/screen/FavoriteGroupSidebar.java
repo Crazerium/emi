@@ -1,5 +1,7 @@
 package dev.emi.emi.screen;
 
+import java.lang.reflect.Array;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -41,6 +43,7 @@ import net.minecraft.client.gui.tooltip.TooltipComponent;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
+import net.minecraft.recipe.Ingredient;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
 import net.minecraft.screen.slot.CraftingResultSlot;
@@ -63,6 +66,12 @@ public final class FavoriteGroupSidebar {
 	private static final int ME_BURST_LIMIT = 64;
 	private static final int ME_GRID_SETTLE_STABLE_TICKS = 3;
 	private static final int ME_GRID_SETTLE_LIMIT = 60;
+	private static final int ME_PULL_IDLE = 0;
+	private static final int ME_PULL_WAIT_SHIFT = 1;
+	private static final int ME_PULL_WAIT_CURSOR = 2;
+	private static final int ME_PULL_WAIT_INSERT = 3;
+	private static final int ME_PULL_TIMEOUT_TICKS = 40;
+	private static final int ME_PULL_CURSOR_STABLE_TICKS = 2;
 
 	private FavoriteGroupSidebar() {
 	}
@@ -553,7 +562,7 @@ public final class FavoriteGroupSidebar {
 			return true;
 		}
 		if (shift && keyCode == GLFW.GLFW_KEY_P && activePullJob(box.group) != null) {
-			pullJob = null;
+			cancelPullJob();
 			playSound();
 			return true;
 		}
@@ -565,7 +574,7 @@ public final class FavoriteGroupSidebar {
 				meAutoCraftJob = null;
 			}
 			if (activePullJob(box.group) != null) {
-				pullJob = null;
+				cancelPullJob();
 			}
 			EmiFavoriteGroups.removeGroup(box.group);
 			return true;
@@ -763,9 +772,14 @@ public final class FavoriteGroupSidebar {
 		if (steps.isEmpty()) {
 			return false;
 		}
+		boolean mePull = isMePullContext(handled);
+		if (mePull && !handled.getScreenHandler().getCursorStack().isEmpty()) {
+			return false;
+		}
 		autoCraftJob = null;
 		meAutoCraftJob = null;
-		pullJob = new PullJob(group, missingOnly, handled, handled.getScreenHandler().syncId, steps);
+		cancelPullJob();
+		pullJob = new PullJob(group, missingOnly, handled, handled.getScreenHandler().syncId, steps, mePull);
 		playSound();
 		return true;
 	}
@@ -861,7 +875,7 @@ public final class FavoriteGroupSidebar {
 					return false;
 				}
 			}
-			pullJob = null;
+			cancelPullJob();
 			autoCraftJob = null;
 			meAutoCraftJob = new MeAutoCraftJob(group, missingOnly, handled, handled.getScreenHandler().syncId, steps);
 			playSound();
@@ -872,7 +886,7 @@ public final class FavoriteGroupSidebar {
 				return false;
 			}
 		}
-		pullJob = null;
+		cancelPullJob();
 		meAutoCraftJob = null;
 		autoCraftJob = new AutoCraftJob(group, missingOnly, handled, handled.getScreenHandler().syncId, steps);
 		playSound();
@@ -1291,6 +1305,10 @@ public final class FavoriteGroupSidebar {
 		if (job == null) {
 			return;
 		}
+		if (job.mePull) {
+			tickMePullJob(job);
+			return;
+		}
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (!(client.currentScreen instanceof HandledScreen<?> handled) || handled != job.screen
 				|| handled.getScreenHandler().syncId != job.syncId || client.player == null || client.interactionManager == null) {
@@ -1351,6 +1369,405 @@ public final class FavoriteGroupSidebar {
 	}
 
 
+	private static void tickMePullJob(PullJob job) {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (!(client.currentScreen instanceof HandledScreen<?> handled) || handled != job.screen
+				|| handled.getScreenHandler().syncId != job.syncId || client.player == null || client.interactionManager == null) {
+			pullJob = null;
+			return;
+		}
+		if (job.waitTicks > 0) {
+			job.waitTicks--;
+			return;
+		}
+		if (job.index >= job.steps.size()) {
+			pullJob = null;
+			return;
+		}
+
+		PullStep step = job.steps.get(job.index);
+		long playerAmount = available(step.ingredient);
+		if (step.target < 0L) {
+			step.target = safeAdd(playerAmount, step.amount);
+		}
+
+		if (step.mePhase == ME_PULL_IDLE) {
+			tickMePullIdle(job, handled, step, playerAmount);
+		} else if (step.mePhase == ME_PULL_WAIT_SHIFT) {
+			tickMePullShift(job, step, playerAmount);
+		} else if (step.mePhase == ME_PULL_WAIT_CURSOR) {
+			tickMePullCursor(job, handled, step, playerAmount, client);
+		} else if (step.mePhase == ME_PULL_WAIT_INSERT) {
+			tickMePullInsert(job, handled, step, playerAmount);
+		} else {
+			pullJob = null;
+		}
+	}
+
+	private static void tickMePullIdle(PullJob job, HandledScreen<?> handled, PullStep step, long playerAmount) {
+		if (playerAmount >= step.target) {
+			job.index++;
+			job.waitTicks = 1;
+			return;
+		}
+
+		long remaining = Math.max(1L, step.target - playerAmount);
+		MePullEntry entry = findMePullEntry(handled, step.ingredient);
+		if (entry == null || entry.storedAmount <= 0L) {
+			pullJob = null;
+			return;
+		}
+
+		ItemStack sample = entry.stack.isEmpty() ? firstItemStack(step.ingredient) : entry.stack;
+		if (sample.isEmpty() || playerCapacity(handled, sample) <= 0L) {
+			pullJob = null;
+			return;
+		}
+
+		int maxStack = Math.max(1, sample.getMaxCount());
+		if (remaining >= maxStack) {
+			step.pendingAvailable = playerAmount;
+			if (!sendMeInteraction(handled, entry.serial, "SHIFT_CLICK")) {
+				pullJob = null;
+				return;
+			}
+			step.mePhase = ME_PULL_WAIT_SHIFT;
+			step.pendingTicks = 0;
+			job.waitTicks = 1;
+			return;
+		}
+
+		if (!handled.getScreenHandler().getCursorStack().isEmpty()) {
+			pullJob = null;
+			return;
+		}
+
+		int destinationCapacity = bestPlayerSlotCapacity(handled, sample);
+		int count = (int) Math.min(Math.min(remaining, entry.storedAmount), Math.min(maxStack, destinationCapacity));
+		if (count <= 0) {
+			pullJob = null;
+			return;
+		}
+
+		int sent = 0;
+		for (int i = 0; i < count; i++) {
+			if (!sendMeInteraction(handled, entry.serial, "PICKUP_SINGLE")) {
+				break;
+			}
+			sent++;
+		}
+		if (sent <= 0) {
+			pullJob = null;
+			return;
+		}
+
+		step.mePhase = ME_PULL_WAIT_CURSOR;
+		step.meCursorExpected = sent;
+		step.meCursorLastCount = 0;
+		step.meCursorStableTicks = 0;
+		step.pendingTicks = 0;
+		job.waitTicks = 1;
+	}
+
+	private static void tickMePullShift(PullJob job, PullStep step, long playerAmount) {
+		if (playerAmount > step.pendingAvailable) {
+			resetMePullPhase(step);
+			job.waitTicks = 1;
+			return;
+		}
+		if (++step.pendingTicks >= ME_PULL_TIMEOUT_TICKS) {
+			if (++step.failures >= 3) {
+				pullJob = null;
+			} else {
+				resetMePullPhase(step);
+			}
+		}
+	}
+
+	private static void tickMePullCursor(PullJob job, HandledScreen<?> handled, PullStep step, long playerAmount,
+			MinecraftClient client) {
+		ItemStack cursor = handled.getScreenHandler().getCursorStack();
+		if (!cursor.isEmpty()) {
+			if (!matchesOutput(step.ingredient, EmiStack.of(cursor))) {
+				pullJob = null;
+				return;
+			}
+
+			int count = cursor.getCount();
+			if (count == step.meCursorLastCount) {
+				step.meCursorStableTicks++;
+			} else {
+				step.meCursorLastCount = count;
+				step.meCursorStableTicks = 0;
+			}
+
+			if (count >= step.meCursorExpected || step.meCursorStableTicks >= ME_PULL_CURSOR_STABLE_TICKS) {
+				Slot destination = findPlayerDestinationSlot(handled, cursor, count);
+				if (destination == null) {
+					returnMeCursorToNetwork(handled);
+					pullJob = null;
+					return;
+				}
+				step.pendingAvailable = playerAmount;
+				client.interactionManager.clickSlot(handled.getScreenHandler().syncId, destination.id, 0,
+						SlotActionType.PICKUP, client.player);
+				step.mePhase = ME_PULL_WAIT_INSERT;
+				step.pendingTicks = 0;
+				job.waitTicks = 1;
+				return;
+			}
+		}
+
+		if (++step.pendingTicks >= ME_PULL_TIMEOUT_TICKS) {
+			if (!handled.getScreenHandler().getCursorStack().isEmpty()) {
+				returnMeCursorToNetwork(handled);
+			}
+			pullJob = null;
+		}
+	}
+
+	private static void tickMePullInsert(PullJob job, HandledScreen<?> handled, PullStep step, long playerAmount) {
+		if (handled.getScreenHandler().getCursorStack().isEmpty() && playerAmount > step.pendingAvailable) {
+			resetMePullPhase(step);
+			job.waitTicks = 1;
+			return;
+		}
+		if (++step.pendingTicks >= ME_PULL_TIMEOUT_TICKS) {
+			if (!handled.getScreenHandler().getCursorStack().isEmpty()) {
+				returnMeCursorToNetwork(handled);
+			}
+			pullJob = null;
+		}
+	}
+
+	private static void resetMePullPhase(PullStep step) {
+		step.mePhase = ME_PULL_IDLE;
+		step.pendingTicks = 0;
+		step.failures = 0;
+		step.meCursorExpected = 0;
+		step.meCursorLastCount = 0;
+		step.meCursorStableTicks = 0;
+	}
+
+	private static boolean isMePullContext(HandledScreen<?> handled) {
+		if (handled == null || (!isMeLikeClass(handled) && !isMeLikeClass(handled.getScreenHandler()))) {
+			return false;
+		}
+		Object menu = handled.getScreenHandler();
+		return findMethod(menu.getClass(), "getClientRepo", 0) != null && findMethod(menu.getClass(), "handleInteraction", 2) != null;
+	}
+
+	private static MePullEntry findMePullEntry(HandledScreen<?> handled, EmiIngredient ingredient) {
+		try {
+			Object menu = handled.getScreenHandler();
+			Object repo = invokeNoArgs(menu, "getClientRepo");
+			if (repo == null) {
+				return null;
+			}
+			Ingredient vanilla = toVanillaIngredient(ingredient);
+			if (vanilla == null || vanilla.isEmpty()) {
+				return null;
+			}
+			Method method = findCompatibleMethod(repo.getClass(), "getByIngredient", vanilla);
+			if (method == null) {
+				return null;
+			}
+			Object raw = invoke(method, repo, vanilla);
+			MePullEntry best = null;
+			for (Object entry : iterableValues(raw)) {
+				long stored = reflectedLong(entry, "getStoredAmount", "storedAmount");
+				long serial = reflectedLong(entry, "getSerial", "serial");
+				if (stored <= 0L || serial < 0L) {
+					continue;
+				}
+				ItemStack stack = itemStackFromMeEntry(entry);
+				if (stack.isEmpty()) {
+					stack = firstItemStack(ingredient);
+				}
+				if (best == null || stored > best.storedAmount) {
+					best = new MePullEntry(serial, stored, stack);
+				}
+			}
+			return best;
+		} catch (Throwable ignored) {
+			return null;
+		}
+	}
+
+	private static Ingredient toVanillaIngredient(EmiIngredient ingredient) {
+		List<ItemStack> stacks = new ArrayList<>();
+		if (ingredient != null) {
+			for (EmiStack option : ingredient.getEmiStacks()) {
+				ItemStack stack = option.getItemStack();
+				if (stack != null && !stack.isEmpty()) {
+					ItemStack copy = stack.copy();
+					copy.setCount(1);
+					stacks.add(copy);
+				}
+			}
+		}
+		if (stacks.isEmpty()) {
+			return null;
+		}
+		return Ingredient.ofStacks(stacks.toArray(ItemStack[]::new));
+	}
+
+	private static ItemStack firstItemStack(EmiIngredient ingredient) {
+		if (ingredient == null) {
+			return ItemStack.EMPTY;
+		}
+		for (EmiStack option : ingredient.getEmiStacks()) {
+			ItemStack stack = option.getItemStack();
+			if (stack != null && !stack.isEmpty()) {
+				ItemStack copy = stack.copy();
+				copy.setCount(1);
+				return copy;
+			}
+		}
+		return ItemStack.EMPTY;
+	}
+
+	private static ItemStack itemStackFromMeEntry(Object entry) {
+		Object value = invokeNoArgs(entry, "getWhat", "what", "getStack", "getItemStack");
+		if (value instanceof ItemStack stack) {
+			ItemStack copy = stack.copy();
+			copy.setCount(1);
+			return copy;
+		}
+		if (value != null) {
+			Object stack = invokeNoArgs(value, "toStack", "getItemStack");
+			if (stack instanceof ItemStack itemStack && !itemStack.isEmpty()) {
+				ItemStack copy = itemStack.copy();
+				copy.setCount(1);
+				return copy;
+			}
+		}
+		return ItemStack.EMPTY;
+	}
+
+	private static boolean sendMeInteraction(HandledScreen<?> handled, long serial, String actionName) {
+		try {
+			Object menu = handled.getScreenHandler();
+			for (Method method : menu.getClass().getMethods()) {
+				if (!method.getName().equals("handleInteraction") || method.getParameterCount() != 2) {
+					continue;
+				}
+				Class<?>[] types = method.getParameterTypes();
+				if (types[0] != long.class && types[0] != Long.class) {
+					continue;
+				}
+				Object action = enumValue(types[1], actionName);
+				if (action == null) {
+					continue;
+				}
+				invoke(method, menu, serial, action);
+				return true;
+			}
+		} catch (Throwable ignored) {
+		}
+		return false;
+	}
+
+	private static void returnMeCursorToNetwork(HandledScreen<?> handled) {
+		if (!handled.getScreenHandler().getCursorStack().isEmpty()) {
+			sendMeInteraction(handled, -1L, "PICKUP_OR_SET_DOWN");
+		}
+	}
+
+	private static void cancelPullJob() {
+		PullJob job = pullJob;
+		if (job != null && job.mePull) {
+			MinecraftClient client = MinecraftClient.getInstance();
+			if (client.currentScreen == job.screen) {
+				PullStep step = job.index >= 0 && job.index < job.steps.size() ? job.steps.get(job.index) : null;
+				if (!job.screen.getScreenHandler().getCursorStack().isEmpty() || step != null && step.mePhase == ME_PULL_WAIT_CURSOR) {
+					sendMeInteraction(job.screen, -1L, "PICKUP_OR_SET_DOWN");
+				}
+			}
+		}
+		pullJob = null;
+	}
+
+	private static Object enumValue(Class<?> type, String name) {
+		if (type == null || !type.isEnum()) {
+			return null;
+		}
+		for (Object value : type.getEnumConstants()) {
+			if (value instanceof Enum<?> e && e.name().equals(name)) {
+				return value;
+			}
+		}
+		return null;
+	}
+
+	private static Method findMethod(Class<?> type, String name, int parameterCount) {
+		if (type == null) {
+			return null;
+		}
+		for (Method method : type.getMethods()) {
+			if (method.getName().equals(name) && method.getParameterCount() == parameterCount) {
+				return method;
+			}
+		}
+		return null;
+	}
+
+	private static Method findCompatibleMethod(Class<?> type, String name, Object argument) {
+		if (type == null || argument == null) {
+			return null;
+		}
+		for (Method method : type.getMethods()) {
+			if (method.getName().equals(name) && method.getParameterCount() == 1
+					&& method.getParameterTypes()[0].isAssignableFrom(argument.getClass())) {
+				return method;
+			}
+		}
+		return null;
+	}
+
+	private static Object invokeNoArgs(Object target, String... names) {
+		if (target == null) {
+			return null;
+		}
+		for (String name : names) {
+			Method method = findMethod(target.getClass(), name, 0);
+			if (method == null) {
+				continue;
+			}
+			try {
+				return invoke(method, target);
+			} catch (Throwable ignored) {
+			}
+		}
+		return null;
+	}
+
+	private static Object invoke(Method method, Object target, Object... arguments) throws Exception {
+		if (!method.canAccess(target)) {
+			method.trySetAccessible();
+		}
+		return method.invoke(target, arguments);
+	}
+
+	private static long reflectedLong(Object target, String... names) {
+		Object value = invokeNoArgs(target, names);
+		return value instanceof Number number ? number.longValue() : -1L;
+	}
+
+	private static List<Object> iterableValues(Object value) {
+		List<Object> result = new ArrayList<>();
+		if (value instanceof Iterable<?> iterable) {
+			for (Object entry : iterable) {
+				result.add(entry);
+			}
+		} else if (value != null && value.getClass().isArray()) {
+			int length = Array.getLength(value);
+			for (int i = 0; i < length; i++) {
+				result.add(Array.get(value, i));
+			}
+		}
+		return result;
+	}
 
 	private static void advance(AutoCraftJob job) {
 		job.index++;
@@ -1719,6 +2136,42 @@ public final class FavoriteGroupSidebar {
 			}
 		}
 		return empty;
+	}
+
+
+	private static Slot findPlayerDestinationSlot(HandledScreen<?> handled, ItemStack stack, int amount) {
+		Slot empty = null;
+		for (Slot slot : handled.getScreenHandler().slots) {
+			if (slot == null || !(slot.inventory instanceof PlayerInventory) || !slot.canInsert(stack)) {
+				continue;
+			}
+			ItemStack current = slot.getStack();
+			int max = Math.min(stack.getMaxCount(), slot.getMaxItemCount());
+			if (!current.isEmpty() && ItemStack.canCombine(current, stack) && max - current.getCount() >= amount) {
+				return slot;
+			}
+			if (current.isEmpty() && max >= amount && empty == null) {
+				empty = slot;
+			}
+		}
+		return empty;
+	}
+
+	private static int bestPlayerSlotCapacity(HandledScreen<?> handled, ItemStack stack) {
+		int best = 0;
+		for (Slot slot : handled.getScreenHandler().slots) {
+			if (slot == null || !(slot.inventory instanceof PlayerInventory) || !slot.canInsert(stack)) {
+				continue;
+			}
+			ItemStack current = slot.getStack();
+			int max = Math.min(stack.getMaxCount(), slot.getMaxItemCount());
+			if (current.isEmpty()) {
+				best = Math.max(best, max);
+			} else if (ItemStack.canCombine(current, stack)) {
+				best = Math.max(best, Math.max(0, max - current.getCount()));
+			}
+		}
+		return best;
 	}
 
 	private static Slot findPullSlot(HandledScreen<?> handled, EmiIngredient ingredient, long remaining) {
@@ -2181,15 +2634,18 @@ public final class FavoriteGroupSidebar {
 		private final HandledScreen<?> screen;
 		private final int syncId;
 		private final List<PullStep> steps;
+		private final boolean mePull;
 		private int index;
 		private int waitTicks;
 
-		private PullJob(EmiFavoriteGroups.Group group, boolean missingOnly, HandledScreen<?> screen, int syncId, List<PullStep> steps) {
+		private PullJob(EmiFavoriteGroups.Group group, boolean missingOnly, HandledScreen<?> screen, int syncId,
+				List<PullStep> steps, boolean mePull) {
 			this.group = group;
 			this.missingOnly = missingOnly;
 			this.screen = screen;
 			this.syncId = syncId;
 			this.steps = steps;
+			this.mePull = mePull;
 		}
 	}
 
@@ -2201,11 +2657,18 @@ public final class FavoriteGroupSidebar {
 		private int pendingTicks;
 		private int failures;
 		private boolean waiting;
+		private int mePhase;
+		private int meCursorExpected;
+		private int meCursorLastCount;
+		private int meCursorStableTicks;
 
 		private PullStep(EmiIngredient ingredient, long amount) {
 			this.ingredient = ingredient;
 			this.amount = amount;
 		}
+	}
+
+	private record MePullEntry(long serial, long storedAmount, ItemStack stack) {
 	}
 
 	private record MissingCraftPlan(List<CraftStep> steps, List<AmountEntry> missing) {
