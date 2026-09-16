@@ -31,6 +31,7 @@ import dev.emi.emi.runtime.EmiSidebars;
 import dev.emi.emi.screen.BoMScreen;
 import dev.emi.emi.screen.EmiScreenManager;
 import dev.emi.emi.screen.RecipeScreen;
+import dev.emi.emi.screen.ProductionPlannerScreen;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.ingame.HandledScreen;
@@ -111,6 +112,8 @@ public class EmiApi {
 			return rs.old;
 		} else if (s instanceof BoMScreen bs) {
 			return bs.old;
+		} else if (s instanceof ProductionPlannerScreen ps) {
+			return ps.old;
 		}
 		return null;
 	}
@@ -173,6 +176,17 @@ public class EmiApi {
 		}
 	}
 
+	public static void viewProductionPlanner() {
+		if (client.currentScreen == null) {
+			client.setScreen(new InventoryScreen(client.player));
+		}
+		HandledScreen<?> old = getHandledScreen();
+		if (old != null) {
+			push();
+			client.setScreen(new ProductionPlannerScreen(old));
+		}
+	}
+
 	public static void focusRecipe(EmiRecipe recipe) {
 		if (client.currentScreen instanceof RecipeScreen rs) {
 			rs.focusRecipe(recipe);
@@ -184,6 +198,8 @@ public class EmiApi {
 			EmiHistory.push(rs);
 		} else if (client.currentScreen instanceof BoMScreen bs) {
 			EmiHistory.push(bs);
+		} else if (client.currentScreen instanceof ProductionPlannerScreen ps) {
+			EmiHistory.push(ps);
 		} else {
 			EmiHistory.clear();
 			EmiHistory.push(client.currentScreen);
@@ -252,6 +268,9 @@ public class EmiApi {
 			} else if (client.currentScreen instanceof BoMScreen bs) {
 				push();
 				client.setScreen(new RecipeScreen(bs.old, recipes));
+			} else if (client.currentScreen instanceof ProductionPlannerScreen ps) {
+				push();
+				client.setScreen(new RecipeScreen(ps.old, recipes));
 			} else if (client.currentScreen instanceof RecipeScreen rs) {
 				push();
 				RecipeScreen n = new RecipeScreen(rs.old, recipes);

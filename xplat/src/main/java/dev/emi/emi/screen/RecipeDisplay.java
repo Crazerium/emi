@@ -16,6 +16,7 @@ import dev.emi.emi.registry.EmiRecipeFiller;
 import dev.emi.emi.registry.EmiRecipes;
 import dev.emi.emi.runtime.EmiLog;
 import dev.emi.emi.widget.RecipeOverlayButtonWidget;
+import dev.emi.emi.widget.RecipePlannerButtonWidget;
 import dev.emi.emi.widget.RecipeDefaultButtonWidget;
 import dev.emi.emi.widget.RecipeScreenshotButtonWidget;
 import dev.emi.emi.widget.RecipeTreeButtonWidget;
@@ -41,6 +42,9 @@ public class RecipeDisplay {
 		}
 		if (recipe.getId() != null && !recipe.getOutputs().isEmpty()) {
 			rightButtons.add(ButtonType.OVERLAY);
+		}
+		if (recipe.getId() != null && !recipe.getInputs().isEmpty() && !recipe.getOutputs().isEmpty()) {
+			rightButtons.add(ButtonType.PLANNER);
 		}
 		if (recipe.supportsRecipeTree()) {
 			if (EmiConfig.recipeTreeButton) {
@@ -124,6 +128,7 @@ public class RecipeDisplay {
 					case DEFAULT -> new RecipeDefaultButtonWidget(bx, by, recipe);
 					case SCREENSHOT -> new RecipeScreenshotButtonWidget(bx, by, recipe);
 					case OVERLAY -> new RecipeOverlayButtonWidget(bx, by, recipe);
+					case PLANNER -> new RecipePlannerButtonWidget(bx, by, recipe);
 				});
 				yOff += 14;
 			}
@@ -153,6 +158,7 @@ public class RecipeDisplay {
 		TREE,
 		DEFAULT,
 		SCREENSHOT,
-		OVERLAY
+		OVERLAY,
+		PLANNER
 	}
 }
