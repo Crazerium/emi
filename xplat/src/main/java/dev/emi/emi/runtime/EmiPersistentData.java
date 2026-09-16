@@ -31,6 +31,7 @@ public class EmiPersistentData {
 			json.add("favorites", EmiFavorites.save());
 			json.addProperty("favorite_page_count", EmiFavorites.getFavoritePageCount());
 			json.add("favorite_groups", EmiFavoriteGroups.save());
+			json.add("bookmark_trees", EmiBookmarkTreePersistence.save());
 			EmiSidebars.save(json);
 			json.add("recipe_defaults", BoM.saveAdded());
 			json.add("hidden_stacks", EmiHidden.save());
@@ -79,16 +80,36 @@ public class EmiPersistentData {
 
 	private static void preparePersistentFileForLoad() {
 		if (!FILE.exists()) {
-			recoverFromBackup();
+			if (recoverFromBackup()) {
+				loadBookmarkTreeState();
+			}
 			return;
 		}
 		try {
-			readJson(FILE);
+			JsonObject json = readJson(FILE);
+			EmiBookmarkTreePersistence.loadFromRoot(json);
 			backupCurrentFileIfValid();
 		} catch (Exception e) {
 			EmiLog.error("Persistent data is corrupted, attempting recovery", e);
 			preserveCorruptedFile();
-			recoverFromBackup();
+			if (recoverFromBackup()) {
+				loadBookmarkTreeState();
+			}
+		}
+	}
+
+	public static void reloadBookmarkTreeState() {
+		loadBookmarkTreeState();
+	}
+
+	private static void loadBookmarkTreeState() {
+		if (!FILE.exists()) {
+			return;
+		}
+		try {
+			EmiBookmarkTreePersistence.loadFromRoot(readJson(FILE));
+		} catch (Exception e) {
+			EmiLog.error("Failed to load bookmark tree state", e);
 		}
 	}
 

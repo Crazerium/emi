@@ -12,8 +12,11 @@ import dev.emi.emi.bom.BoM.DefaultStatus;
 import dev.emi.emi.config.EmiConfig;
 import dev.emi.emi.config.HelpLevel;
 import dev.emi.emi.runtime.EmiHistory;
+import dev.emi.emi.screen.RecipeDefaultOutputScreen;
 import dev.emi.emi.screen.RecipeScreen;
 import dev.emi.emi.screen.tooltip.IngredientTooltipComponent;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.tooltip.TooltipComponent;
 
 public class RecipeDefaultButtonWidget extends RecipeButtonWidget {
@@ -36,6 +39,24 @@ public class RecipeDefaultButtonWidget extends RecipeButtonWidget {
 	@Override
 	public List<TooltipComponent> getTooltip(int mouseX, int mouseY) {
 		List<TooltipComponent> list = Lists.newArrayList();
+		long outputCount = recipe.getOutputs().stream().filter(stack -> !stack.isEmpty()).count();
+		if (outputCount > 1) {
+			list.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Choose default recipe outputs"))));
+			List<EmiStack> stacks = Lists.newArrayList();
+			for (EmiStack stack : recipe.getOutputs()) {
+				if (!stack.isEmpty() && BoM.getRecipe(stack) == recipe) {
+					stacks.add(stack);
+				}
+			}
+			if (!stacks.isEmpty()) {
+				list.add(TooltipComponent.of(EmiPort.ordered(EmiPort.translatable("tooltip.emi.current_defaults"))));
+				list.add(new IngredientTooltipComponent(stacks));
+			}
+			if (EmiConfig.helpLevel.has(HelpLevel.NORMAL) && EmiConfig.defaultStack.isBound()) {
+				list.add(TooltipComponent.of(EmiPort.ordered(EmiPort.translatable("tooltip.emi.set_default_stack", EmiConfig.defaultStack.getBindText()))));
+			}
+			return list;
+		}
 		switch(BoM.getRecipeStatus(recipe)) {
 			case PARTIAL:
 				List<EmiStack> stacks = Lists.newArrayList();
@@ -57,14 +78,19 @@ public class RecipeDefaultButtonWidget extends RecipeButtonWidget {
 				list.add(TooltipComponent.of(EmiPort.ordered(EmiPort.translatable("tooltip.emi.unset_default"))));
 				break;
 		}
-		if (recipe.getOutputs().size() > 1 && EmiConfig.helpLevel.has(HelpLevel.NORMAL) && EmiConfig.defaultStack.isBound()) {
-			list.add(TooltipComponent.of(EmiPort.ordered(EmiPort.translatable("tooltip.emi.set_default_stack", EmiConfig.defaultStack.getBindText()))));
-		}
 		return list;
 	}
 
 	@Override
 	public boolean mouseClicked(int mouseX, int mouseY, int button) {
+		long outputCount = recipe.getOutputs().stream().filter(stack -> !stack.isEmpty()).count();
+		if (outputCount > 1) {
+			MinecraftClient client = MinecraftClient.getInstance();
+			Screen parent = client.currentScreen;
+			client.setScreen(new RecipeDefaultOutputScreen(parent, recipe));
+			this.playButtonSound();
+			return true;
+		}
 		if (BoM.getRecipeStatus(recipe) == DefaultStatus.FULL) {
 			BoM.removeRecipe(recipe);
 		} else {

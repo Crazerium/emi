@@ -126,6 +126,7 @@ public final class FavoriteGroupSidebar {
 		}
 		if (EmiInput.isAltDown()) {
 			tooltip.add(line("LMB - Toggle Group Mode", Formatting.YELLOW));
+			tooltip.add(line("CTRL + LMB - Open Crafting Tree", Formatting.YELLOW));
 			tooltip.add(line("RMB - Toggle Crafting Chain", Formatting.YELLOW));
 			tooltip.add(line("CTRL + L - Send Bookmark Group to Chat", Formatting.YELLOW));
 			tooltip.add(line("ALT + LMB - Toggle Collapse/Expand", Formatting.YELLOW));
@@ -335,6 +336,12 @@ public final class FavoriteGroupSidebar {
 		Layout layout = layout();
 		GroupBox box = hoveredHandle(layout, (int) mouseX, (int) mouseY);
 		if (box != null) {
+			if (button == 0 && EmiInput.isControlDown() && !EmiInput.isShiftDown() && !EmiInput.isAltDown()) {
+				MinecraftClient client = MinecraftClient.getInstance();
+				client.setScreen(new BookmarkTreeScreen(client.currentScreen, box.group));
+				playSound();
+				return true;
+			}
 			if (button == 0 && EmiInput.isShiftDown() && !EmiInput.isControlDown() && !EmiInput.isAltDown()) {
 				clearDrag();
 				clearPageGroupDrag();

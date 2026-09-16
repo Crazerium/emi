@@ -1,5 +1,6 @@
 package dev.emi.emi.bom;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -197,6 +198,27 @@ public class BoM {
 			stack = err.ingredient;
 		}
 		addedRecipes.put(stack, recipe);
+		EmiPersistentData.save();
+		recalculate();
+	}
+
+	public static void setRecipeOutputs(EmiRecipe recipe, List<EmiStack> selectedOutputs) {
+		boolean disableFallback = false;
+		for (EmiStack output : recipe.getOutputs()) {
+			if (selectedOutputs.contains(output)) {
+				addedRecipes.put(output, recipe);
+			} else {
+				addedRecipes.remove(output, recipe);
+				if (defaultRecipes.get(output) == recipe) {
+					disableFallback = true;
+				}
+			}
+		}
+		if (disableFallback) {
+			disabledRecipes.add(recipe);
+		} else {
+			disabledRecipes.remove(recipe);
+		}
 		EmiPersistentData.save();
 		recalculate();
 	}
