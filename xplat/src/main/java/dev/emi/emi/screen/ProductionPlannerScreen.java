@@ -18,11 +18,15 @@ import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.api.widget.Bounds;
 import dev.emi.emi.input.EmiInput;
 import dev.emi.emi.planner.ProductionPlanner;
+import dev.emi.emi.planner.PlannerText;
 import dev.emi.emi.planner.ProductionPlanner.Entry;
+import dev.emi.emi.planner.ProductionPlanner.Group;
+import dev.emi.emi.planner.ProductionPlanner.LinkMode;
 import dev.emi.emi.planner.ProductionPlanner.Line;
 import dev.emi.emi.planner.ProductionPlanner.MachineProfile;
 import dev.emi.emi.planner.ProductionPlanner.MachineSizing;
 import dev.emi.emi.planner.ProductionPlanner.OcMode;
+import dev.emi.emi.planner.ProductionPlanner.Target;
 import dev.emi.emi.runtime.EmiDrawContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -59,11 +63,43 @@ public class ProductionPlannerScreen extends Screen {
 	private Bounds closeLineButton = EMPTY;
 	private Bounds targetIconBounds = EMPTY;
 	private Bounds targetRateBounds = EMPTY;
+	private List<TargetHitbox> targetHitboxes = List.of();
 	private Bounds balanceButton = EMPTY;
 	private Bounds clearTargetButton = EMPTY;
 	private Bounds powerBounds = EMPTY;
 	private Bounds standardVoltageBounds = EMPTY;
 	private Bounds applyStandardVoltageBounds = EMPTY;
+	private Bounds groupsButton = EMPTY;
+	private boolean groupsOpen;
+	private Group selectedGroup;
+	private Bounds groupsModalBounds = EMPTY;
+	private Bounds groupListArea = EMPTY;
+	private Bounds groupRecipeArea = EMPTY;
+	private Bounds groupLinkArea = EMPTY;
+	private Bounds groupAddButton = EMPTY;
+	private Bounds groupChildButton = EMPTY;
+	private Bounds groupDeleteButton = EMPTY;
+	private Bounds groupRenameButton = EMPTY;
+	private Bounds groupCollapseButton = EMPTY;
+	private Bounds groupCloseButton = EMPTY;
+	private Bounds groupSelectedNameBounds = EMPTY;
+	private List<GroupListHitbox> groupListHitboxes = List.of();
+	private List<GroupRecipeHitbox> groupRecipeHitboxes = List.of();
+	private List<GroupLinkHitbox> groupLinkHitboxes = List.of();
+	private int groupListScroll;
+	private int groupRecipeScroll;
+	private int groupLinkScroll;
+	private TextFieldWidget groupRenameField;
+	private Group groupRenameTarget;
+	private Group pendingGroupDrag;
+	private Entry pendingRecipeDrag;
+	private boolean groupDragActive;
+	private boolean recipeDragActive;
+	private double groupDragStartX;
+	private double groupDragStartY;
+	private double recipeDragStartX;
+	private double recipeDragStartY;
+	private List<GroupMainHitbox> groupMainHitboxes = List.of();
 	private Bounds activeDropdownBounds = EMPTY;
 	private Entry machineMenuEntry;
 	private Bounds machineMenuAnchor = EMPTY;
@@ -97,9 +133,11 @@ public class ProductionPlannerScreen extends Screen {
 	private EditKind editKind;
 	private TextFieldWidget targetRateField;
 	private Line targetEditLine;
+	private Target targetEditTarget;
+	private Bounds targetEditBounds = EMPTY;
 
 	public ProductionPlannerScreen(HandledScreen<?> old) {
-		super(EmiPort.literal("Production Planner"));
+		super(EmiPort.literal(PlannerText.tr("planner.title", "Production Planner")));
 		this.old = old;
 		ProductionPlanner.ensureLoaded();
 		ProductionPlanner.getOrCreateActiveLine();
@@ -130,11 +168,15 @@ public class ProductionPlannerScreen extends Screen {
 		if (targetRateField != null) {
 			targetRateField.render(raw, mouseX, mouseY, delta);
 		}
-		renderDropdowns(context, line, mouseX, mouseY);
-		if (isDropdownOpen()) {
-			renderDropdownTooltip(context, mouseX, mouseY);
+		if (groupsOpen) {
+			renderGroupsModal(context, line, mouseX, mouseY, delta);
 		} else {
-			renderTooltip(context, mouseX, mouseY);
+			renderDropdowns(context, line, mouseX, mouseY);
+			if (isDropdownOpen()) {
+				renderDropdownTooltip(context, mouseX, mouseY);
+			} else {
+				renderTooltip(context, mouseX, mouseY);
+			}
 		}
 	}
 
@@ -173,43 +215,74 @@ public class ProductionPlannerScreen extends Screen {
 		drawBorder(context, new Bounds(4, SUMMARY_TOP, width - 8, SUMMARY_HEIGHT), BORDER_COLOR);
 		int sectionWidth = Math.max(1, (width - 12) / 3);
 		flowHitboxes = new ArrayList<>();
-		renderFlowSection(context, line, "External Inputs/sec", totals.externalInputs(), 6, SUMMARY_TOP + 4, sectionWidth - 2, false);
-		renderFlowSection(context, line, "Internal Flow/sec", totals.internalFlow(), 6 + sectionWidth, SUMMARY_TOP + 4, sectionWidth - 2, false);
-		renderFlowSection(context, line, "Net Outputs/sec", totals.netOutputs(), 6 + sectionWidth * 2, SUMMARY_TOP + 4, sectionWidth - 2, true);
+		renderFlowSection(context, line, PlannerText.tr("summary.external", "External Inputs/sec"), totals.externalInputs(), 6, SUMMARY_TOP + 4, sectionWidth - 2, false);
+		renderFlowSection(context, line, PlannerText.tr("summary.internal", "Internal Flow/sec"), totals.internalFlow(), 6 + sectionWidth, SUMMARY_TOP + 4, sectionWidth - 2, false);
+		renderFlowSection(context, line, PlannerText.tr("summary.outputs", "Net Outputs/sec"), totals.netOutputs(), 6 + sectionWidth * 2, SUMMARY_TOP + 4, sectionWidth - 2, true);
 
 		int controlsY = SUMMARY_TOP + SUMMARY_HEIGHT - 21;
-		context.drawTextWithShadow(EmiPort.literal("Target:"), 8, controlsY + 5, 0xFFC8C8D0);
-		targetIconBounds = new Bounds(48, controlsY, 18, 18);
-		targetRateBounds = new Bounds(70, controlsY, 78, 18);
-		balanceButton = new Bounds(152, controlsY, 64, 18);
-		clearTargetButton = new Bounds(220, controlsY, 44, 18);
-		EmiStack target = line.getTarget();
+		PowerSummary power = calculatePower(line);
+		powerBounds = new Bounds(Math.max(272, width - 166), controlsY, Math.min(158, Math.max(80, width - 280)), 18);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("targets", "Targets:")), 8, controlsY + 5, 0xFFC8C8D0);
+		targetHitboxes = new ArrayList<>();
+		targetIconBounds = EMPTY;
+		targetRateBounds = EMPTY;
 		boolean capacityLimited = line.isBalanceEnabled() && line.hasMachineCapacityShortfall();
-		if (target != null && !target.isEmpty()) {
-			context.drawStack(target, targetIconBounds.x(), targetIconBounds.y(), EmiIngredient.RENDER_ICON);
-			drawBorder(context, targetIconBounds, capacityLimited ? 0xFFFFA04D : line.isBalanceEnabled() ? 0xFF7FD8A1 : 0xFFB0B0B8);
-			drawValueBox(context, targetRateBounds, mouseX, mouseY, formatRate(line.getTargetRate()) + unitSuffixShort(target), line.isBalanceEnabled() && !capacityLimited);
+		int targetX = 52;
+		List<Target> targets = line.getTargets();
+		if (!targets.isEmpty()) {
+			int targetAreaEnd = Math.max(targetX + 118, powerBounds.x() - 132);
+			int shown = 0;
+			for (Target target : targets) {
+				if (shown >= 4 || targetX + 118 > targetAreaEnd) {
+					break;
+				}
+				Bounds icon = new Bounds(targetX, controlsY, 18, 18);
+				Bounds rate = new Bounds(targetX + 22, controlsY, 78, 18);
+				Bounds remove = new Bounds(targetX + 104, controlsY + 1, 16, 16);
+				EmiStack stack = target.getStack();
+				context.drawStack(stack, icon.x(), icon.y(), EmiIngredient.RENDER_ICON);
+				drawBorder(context, icon, capacityLimited ? 0xFFFFA04D : line.isBalanceEnabled() ? 0xFF7FD8A1 : 0xFFB0B0B8);
+				drawValueBox(context, rate, mouseX, mouseY, formatRate(target.getRate()) + unitSuffixShort(stack), line.isBalanceEnabled() && !capacityLimited);
+				drawButton(context, remove, mouseX, mouseY, "x", false);
+				targetHitboxes.add(new TargetHitbox(target, icon, rate, remove));
+				if (shown == 0) {
+					targetIconBounds = icon;
+					targetRateBounds = rate;
+				}
+				targetX += 124;
+				shown++;
+			}
+			int hidden = targets.size() - shown;
+			if (hidden > 0) {
+				Bounds more = new Bounds(targetX, controlsY, 30, 18);
+				drawValueBox(context, more, mouseX, mouseY, "+" + hidden, false);
+				targetX += 34;
+			}
 		} else {
+			targetIconBounds = new Bounds(targetX, controlsY, 18, 18);
+			targetRateBounds = new Bounds(targetX + 22, controlsY, 78, 18);
 			context.fill(targetIconBounds.x(), targetIconBounds.y(), targetIconBounds.width(), targetIconBounds.height(), 0xFF222229);
 			drawBorder(context, targetIconBounds, BORDER_COLOR);
 			drawValueBox(context, targetRateBounds, mouseX, mouseY, "--", false);
+			targetX += 104;
 		}
-		drawButton(context, balanceButton, mouseX, mouseY, line.isBalanceEnabled() ? (capacityLimited ? "LIMITED" : "BALANCED") : "BALANCE", line.isBalanceEnabled() && !capacityLimited);
-		drawButton(context, clearTargetButton, mouseX, mouseY, "CLEAR", false);
+		balanceButton = new Bounds(targetX + 4, controlsY, 64, 18);
+		clearTargetButton = new Bounds(balanceButton.right() + 4, controlsY, 44, 18);
+		drawButton(context, balanceButton, mouseX, mouseY, line.isBalanceEnabled() ? (capacityLimited ? PlannerText.tr("limited", "LIMITED") : PlannerText.tr("balanced", "BALANCED")) : PlannerText.tr("balance", "BALANCE"), line.isBalanceEnabled() && !capacityLimited);
+		drawButton(context, clearTargetButton, mouseX, mouseY, PlannerText.tr("clear", "CLEAR"), false);
 		String message = line.getBalanceMessage();
 		if (message == null || message.isBlank()) {
-			message = "Click any recipe output to choose a target";
+			message = PlannerText.tr("status.add_targets", "Click recipe outputs to add one or more targets");
 		}
-		PowerSummary power = calculatePower(line);
-		powerBounds = new Bounds(Math.max(272, width - 166), controlsY, Math.min(158, Math.max(80, width - 280)), 18);
 		String powerText = power.knownEntries > 0
-			? "Power: " + formatCompactRate(power.averageEUt, false) + " EU/t" + (power.unknownEntries > 0 ? " +?" : "")
-			: "Power: --";
+			? PlannerText.tr("power", "Power") + ": " + formatCompactRate(power.averageEUt, false) + " EU/t" + (power.unknownEntries > 0 ? " +?" : "")
+			: PlannerText.tr("power", "Power") + ": --";
 		drawValueBox(context, powerBounds, mouseX, mouseY, powerText, power.knownEntries > 0);
 		int messageColor = capacityLimited ? 0xFFFFB05C : line.isBalanceEnabled() ? 0xFF8ED6A4 : 0xFF8D8D98;
-		int messageWidth = Math.max(20, powerBounds.x() - 280);
+		int messageX = clearTargetButton.right() + 8;
+		int messageWidth = Math.max(20, powerBounds.x() - messageX - 4);
 		String trimmed = textRenderer.trimToWidth(message, messageWidth);
-		context.drawTextWithShadow(EmiPort.literal(trimmed), 272, controlsY + 5, messageColor);
+		context.drawTextWithShadow(EmiPort.literal(trimmed), messageX, controlsY + 5, messageColor);
 	}
 
 	private void renderFlowSection(EmiDrawContext context, Line line, String label, List<Flow> flows, int x, int y, int w,
@@ -242,31 +315,57 @@ public class ProductionPlannerScreen extends Screen {
 		context.fill(0, TABLE_HEADER_Y, width, 16, 0xFF1B1B22);
 		int inputsX = inputsColumnX();
 		int outputsX = outputsColumnX();
-		context.drawTextWithShadow(EmiPort.literal("MODE"), 10, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("MACHINE"), 58, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("CFG"), 170, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("MACH"), 218, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("PAR"), 300, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("VOLT"), 364, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("OC"), 422, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("DURATION"), 472, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("RATE"), 538, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("RECIPE"), 610, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("INPUTS/sec"), inputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("OUTPUTS/sec"), outputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.mode", "MODE")), 10, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.machine", "MACHINE")), 58, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.cfg", "CFG")), 170, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.mach", "MACH")), 218, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.par", "PAR")), 300, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.volt", "VOLT")), 364, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.oc", "OC")), 422, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.duration", "DURATION")), 472, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.rate", "RATE")), 538, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.recipe", "RECIPE")), 610, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.inputs", "INPUTS/sec")), inputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.outputs", "OUTPUTS/sec")), outputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
 	}
 
 	private void renderRows(EmiDrawContext context, Line line, int mouseX, int mouseY, float delta) {
 		rowHitboxes = new ArrayList<>();
-		List<Entry> entries = line.getEntries();
+		groupMainHitboxes = new ArrayList<>();
+		List<PlannerDisplayRow> displayRows = buildPlannerDisplayRows(line);
 		int visibleRows = visibleRows();
 		clampScroll();
-		int end = Math.min(entries.size(), rowScroll + visibleRows);
+		int end = Math.min(displayRows.size(), rowScroll + visibleRows);
 		for (int visible = 0, index = rowScroll; index < end; visible++, index++) {
-			Entry entry = entries.get(index);
+			PlannerDisplayRow displayRow = displayRows.get(index);
 			int y = ROW_TOP + visible * ROW_HEIGHT;
 			int bg = (index & 1) == 0 ? 0xFF111118 : 0xFF16161D;
 			context.fill(0, y, width, ROW_HEIGHT - 1, bg);
+
+			if (displayRow.group != null) {
+				Group group = displayRow.group;
+				int indent = Math.min(96, displayRow.depth * 14);
+				Bounds rowBounds = new Bounds(6, y + 4, width - 12, ROW_HEIGHT - 9);
+				Bounds toggle = new Bounds(10 + indent, y + 9, 18, 18);
+				boolean hovered = rowBounds.contains(mouseX, mouseY);
+				context.fill(rowBounds.x(), rowBounds.y(), rowBounds.width(), rowBounds.height(), hovered ? 0xFF26312F : 0xFF1B2423);
+				drawBorder(context, rowBounds, hovered ? 0xFF7FAE9F : 0xFF40504B);
+				drawButton(context, toggle, mouseX, mouseY, group.isCollapsed() ? ">" : "v", group.isCollapsed());
+				String name = group.getDisplayName(line);
+				String suffix = group.isCollapsed()
+					? "  [" + PlannerText.tr("groups.collapsed", "collapsed") + "]"
+					: "";
+				String label = textRenderer.trimToWidth(name + suffix, Math.max(80, width - 120 - indent));
+				context.drawTextWithShadow(EmiPort.literal(label), 36 + indent, y + 13, 0xFFE8F2EE);
+				context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("groups.group_row", "GROUP")), Math.max(36 + indent, width - 62), y + 13, 0xFF88A39A);
+				groupMainHitboxes.add(new GroupMainHitbox(rowBounds, group));
+				continue;
+			}
+
+			Entry entry = displayRow.entry;
+			if (entry == null) {
+				continue;
+			}
 			EmiRecipe recipe = entry.getRecipe();
 
 			Bounds mode = new Bounds(8, y + 7, 42, 20);
@@ -311,17 +410,21 @@ public class ProductionPlannerScreen extends Screen {
 			drawValueBox(context, rate, mouseX, mouseY, formatRate(rowRate) + "/s", line.isBalanceEnabled() || !entry.isAutomatic());
 			drawButton(context, remove, mouseX, mouseY, "x", false);
 
+			int recipeIndent = Math.min(48, displayRow.depth * 9);
 			Bounds recipeBounds = new Bounds(608, y + 3, Math.max(30, inputsColumnX() - 614), ROW_HEIGHT - 7);
 			if (recipe == null) {
-				context.drawTextWithShadow(EmiPort.literal("Missing recipe: " + entry.getRecipeId()), 610, y + 9, 0xFFFF7777);
+				context.drawTextWithShadow(EmiPort.literal("Missing recipe: " + entry.getRecipeId()), 610 + recipeIndent, y + 9, 0xFFFF7777);
 			} else {
-				recipe.getCategory().renderSimplified(context.raw(), 610, y + 9, delta);
+				recipe.getCategory().renderSimplified(context.raw(), 610 + recipeIndent, y + 9, delta);
 				String name = recipeName(recipe);
-				String trimmed = textRenderer.trimToWidth(name, Math.max(20, recipeBounds.width() - 24));
-				context.drawTextWithShadow(EmiPort.literal(trimmed), 632, y + 7, 0xFFFFFFFF);
+				String trimmed = textRenderer.trimToWidth(name, Math.max(20, recipeBounds.width() - 24 - recipeIndent));
+				context.drawTextWithShadow(EmiPort.literal(trimmed), 632 + recipeIndent, y + 7, 0xFFFFFFFF);
 				String category = recipe.getCategory().getName().getString();
-				String categoryTrimmed = textRenderer.trimToWidth(category, Math.max(20, recipeBounds.width() - 24));
-				context.drawTextWithShadow(EmiPort.literal(categoryTrimmed), 632, y + 20, 0xFF90909B);
+				if (entry.getGroupId() > 0) {
+					category += " • " + line.getEntryGroupName(entry);
+				}
+				String categoryTrimmed = textRenderer.trimToWidth(category, Math.max(20, recipeBounds.width() - 24 - recipeIndent));
+				context.drawTextWithShadow(EmiPort.literal(categoryTrimmed), 632 + recipeIndent, y + 20, 0xFF90909B);
 				double effectiveRate = line.getEffectiveRate(entry);
 				renderRateStacks(context, line, recipeInputs(recipe, effectiveRate), inputsColumnX(), y + 9,
 					outputsColumnX() - inputsColumnX() - 8, false);
@@ -331,11 +434,34 @@ public class ProductionPlannerScreen extends Screen {
 			rowHitboxes.add(new RowHitbox(entry, mode, machineProfile, machineConfig, machinesLock, machinesMinus, machinesValue, machinesPlus, parallelLock, parallelMinus,
 				parallelValue, parallelPlus, voltage, oc, duration, rate, remove, recipeBounds));
 		}
-		if (entries.isEmpty()) {
+		if (line.getEntries().isEmpty()) {
 			context.drawCenteredText(EmiPort.literal("Open any EMI recipe and press the + planner button to add it to this line."),
 				width / 2, ROW_TOP + 32, 0xFFA0A0AA);
 			context.drawCenteredText(EmiPort.literal("New recipes use AUTO when a recipe duration can be detected; MAN keeps direct crafts/sec control."),
 				width / 2, ROW_TOP + 48, 0xFF777783);
+		}
+	}
+
+	private List<PlannerDisplayRow> buildPlannerDisplayRows(Line line) {
+		List<PlannerDisplayRow> rows = new ArrayList<>();
+		appendPlannerDisplayRows(line, 0, 0, rows);
+		return rows;
+	}
+
+	private void appendPlannerDisplayRows(Line line, int groupId, int depth, List<PlannerDisplayRow> rows) {
+		for (Entry entry : line.getEntries()) {
+			if (entry.getGroupId() == groupId) {
+				rows.add(new PlannerDisplayRow(entry, null, depth));
+			}
+		}
+		for (Group group : line.getGroups()) {
+			if (group.getParentId() != groupId) {
+				continue;
+			}
+			rows.add(new PlannerDisplayRow(null, group, depth));
+			if (!group.isCollapsed()) {
+				appendPlannerDisplayRows(line, group.getId(), depth + 1, rows);
+			}
 		}
 	}
 
@@ -364,18 +490,417 @@ public class ProductionPlannerScreen extends Screen {
 		int y = Math.max(ROW_TOP, height - FOOTER_HEIGHT);
 		context.fill(0, y, width, FOOTER_HEIGHT, HEADER_COLOR);
 		context.fill(0, y, width, 1, BORDER_COLOR);
-		context.drawTextWithShadow(EmiPort.literal("Standard Voltage for machines:"), 10, y + 10, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("footer.standard_voltage", "Standard Voltage for machines:")), 10, y + 10, 0xFFC8C8D0);
 		standardVoltageBounds = new Bounds(158, y + 5, 92, 20);
 		applyStandardVoltageBounds = new Bounds(256, y + 5, 70, 20);
-		String label = line.getStandardVoltageTier() < 0 ? "Recipe Min" : line.getStandardVoltageName();
+		groupsButton = new Bounds(332, y + 5, 78, 20);
+		String label = line.getStandardVoltageTier() < 0 ? PlannerText.tr("footer.recipe_min", "Recipe Min") : line.getStandardVoltageName();
 		drawValueBox(context, standardVoltageBounds, mouseX, mouseY, label, line.getStandardVoltageTier() >= 0,
 			ProductionPlanner.voltageTierColor(line.getStandardVoltageTier()));
-		drawButton(context, applyStandardVoltageBounds, mouseX, mouseY, "APPLY ALL", false);
-		String hint = "New machines inherit this voltage. Individual rows can override it.";
-		int hintX = applyStandardVoltageBounds.right() + 10;
+		drawButton(context, applyStandardVoltageBounds, mouseX, mouseY, PlannerText.tr("footer.apply_all", "APPLY ALL"), false);
+		drawButton(context, groupsButton, mouseX, mouseY, PlannerText.tr("footer.groups", "GROUPS") + " " + line.getGroups().size(), groupsOpen);
+		String hint = PlannerText.tr("footer.voltage_hint", "New machines inherit this voltage. Individual rows can override it.");
+		int hintX = groupsButton.right() + 10;
 		if (hintX < width - 20) {
 			context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(hint, width - hintX - 8)), hintX, y + 10, 0xFF858590);
 		}
+	}
+
+	private void renderGroupsModal(EmiDrawContext context, Line line, int mouseX, int mouseY, float delta) {
+		context.push();
+		context.matrices().translate(0, 0, 1000);
+		if (selectedGroup != null && !line.getGroups().contains(selectedGroup)) {
+			selectedGroup = null;
+		}
+		if (groupRenameTarget != null && !line.getGroups().contains(groupRenameTarget)) {
+			cancelGroupRename();
+		}
+		context.fill(0, 0, width, height, 0x88000000);
+		int modalWidth = Math.min(900, Math.max(640, width - 80));
+		int modalHeight = Math.min(500, Math.max(360, height - 120));
+		int x = (width - modalWidth) / 2;
+		int y = (height - modalHeight) / 2;
+		groupsModalBounds = new Bounds(x, y, modalWidth, modalHeight);
+		context.fill(x, y, modalWidth, modalHeight, 0xFF15151D);
+		drawBorder(context, groupsModalBounds, 0xFF8A8A96);
+		context.fill(x, y, modalWidth, 28, 0xFF24242D);
+		context.drawCenteredText(EmiPort.literal(PlannerText.tr("groups.title", "Groups and links")), x + modalWidth / 2, y + 9, 0xFFFFFFFF);
+
+		int leftWidth = Math.min(250, modalWidth / 3);
+		int listX = x + 10;
+		int listY = y + 38;
+		int listWidth = leftWidth - 20;
+		int footerButtonY = y + modalHeight - 28;
+		int footerHelpY = footerButtonY - 17;
+		int contentBottomY = footerHelpY - 7;
+		int listHeight = contentBottomY - listY;
+		groupListArea = new Bounds(listX - 2, listY - 2, listWidth + 4, listHeight + 4);
+		context.fill(groupListArea.x(), groupListArea.y(), groupListArea.width(), groupListArea.height(), 0xFF101017);
+		drawBorder(context, groupListArea, BORDER_COLOR);
+
+		List<Group> flattened = flattenGroups(line);
+		int totalRows = flattened.size() + 1;
+		int visibleRows = Math.max(1, listHeight / 24);
+		groupListScroll = Math.max(0, Math.min(groupListScroll, Math.max(0, totalRows - visibleRows)));
+		groupListHitboxes = new ArrayList<>();
+		for (int visible = 0, logical = groupListScroll; visible < visibleRows && logical < totalRows; visible++, logical++) {
+			Group group = logical == 0 ? null : flattened.get(logical - 1);
+			int rowY = listY + visible * 24;
+			int depth = group == null ? 0 : groupDepth(line, group);
+			Bounds bounds = new Bounds(listX, rowY, listWidth, 21);
+			Bounds collapse = group == null ? EMPTY : new Bounds(listX + 3 + Math.min(72, depth * 11), rowY + 2, 17, 17);
+			boolean selected = group == selectedGroup;
+			boolean hovered = bounds.contains(mouseX, mouseY);
+			context.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(), selected ? ACTIVE_COLOR : hovered ? HOVER_COLOR : 0xFF24242C);
+			drawBorder(context, bounds, selected ? 0xFF9ED5BE : BORDER_COLOR);
+			String name = group == null ? PlannerText.tr("groups.root", "Root") : group.getDisplayName(line);
+			int textX = bounds.x() + 5;
+			if (group != null) {
+				drawButton(context, collapse, mouseX, mouseY, group.isCollapsed() ? ">" : "v", group.isCollapsed());
+				textX = collapse.right() + 4;
+			}
+			String label = textRenderer.trimToWidth(name, Math.max(12, bounds.right() - textX - 5));
+			context.drawTextWithShadow(EmiPort.literal(label), textX, bounds.y() + 7, 0xFFFFFFFF);
+			groupListHitboxes.add(new GroupListHitbox(bounds, collapse, group));
+		}
+
+		groupAddButton = new Bounds(listX, footerButtonY, 72, 20);
+		groupChildButton = new Bounds(listX + 76, footerButtonY, 92, 20);
+		groupDeleteButton = new Bounds(listX + 172, footerButtonY, Math.max(48, listWidth - 172), 20);
+		drawButton(context, groupAddButton, mouseX, mouseY, PlannerText.tr("groups.new", "+ GROUP"), false);
+		drawButton(context, groupChildButton, mouseX, mouseY, PlannerText.tr("groups.child", "+ CHILD"), selectedGroup != null);
+		drawButton(context, groupDeleteButton, mouseX, mouseY, PlannerText.tr("groups.delete", "DELETE"), false);
+
+		int rightX = x + leftWidth + 8;
+		int rightWidth = modalWidth - leftWidth - 18;
+		String selectedName = selectedGroup == null ? PlannerText.tr("groups.root", "Root") : selectedGroup.getDisplayName(line);
+		groupSelectedNameBounds = new Bounds(rightX, y + 34, Math.min(210, Math.max(110, rightWidth - 270)), 20);
+		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(selectedName, groupSelectedNameBounds.width() - 4)), rightX, y + 39, 0xFFFFFFFF);
+		groupRenameButton = selectedGroup == null ? EMPTY : new Bounds(groupSelectedNameBounds.right() + 6, y + 34, 72, 20);
+		groupCollapseButton = selectedGroup == null ? EMPTY : new Bounds(groupRenameButton.right() + 6, y + 34, 78, 20);
+		if (selectedGroup != null) {
+			drawButton(context, groupRenameButton, mouseX, mouseY, PlannerText.tr("groups.rename", "RENAME"), false);
+			drawButton(context, groupCollapseButton, mouseX, mouseY,
+				selectedGroup.isCollapsed() ? PlannerText.tr("groups.expand", "EXPAND") : PlannerText.tr("groups.collapse", "COLLAPSE"), selectedGroup.isCollapsed());
+		}
+		if (selectedGroup != null) {
+			Group parent = selectedGroup.getParent(line);
+			String parentName = parent == null ? PlannerText.tr("groups.root", "Root") : parent.getDisplayName(line);
+			int parentX = groupCollapseButton == EMPTY ? rightX + 160 : groupCollapseButton.right() + 8;
+			if (parentX < rightX + rightWidth - 30) {
+				context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth("< " + parentName, rightX + rightWidth - parentX)), parentX, y + 39, 0xFF9696A2);
+			}
+		}
+
+		int recipesTitleY = y + 61;
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("groups.recipes", "Recipes")), rightX, recipesTitleY, 0xFFC8C8D0);
+		int recipesY = recipesTitleY + 16;
+		int recipesHeight = Math.max(110, (modalHeight - 126) / 2);
+		groupRecipeArea = new Bounds(rightX, recipesY, rightWidth, recipesHeight);
+		context.fill(groupRecipeArea.x(), groupRecipeArea.y(), groupRecipeArea.width(), groupRecipeArea.height(), 0xFF101017);
+		drawBorder(context, groupRecipeArea, BORDER_COLOR);
+		List<Entry> entries = line.getEntries();
+		int recipeVisible = Math.max(1, (recipesHeight - 4) / 25);
+		groupRecipeScroll = Math.max(0, Math.min(groupRecipeScroll, Math.max(0, entries.size() - recipeVisible)));
+		groupRecipeHitboxes = new ArrayList<>();
+		if (entries.isEmpty()) {
+			context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("groups.empty_recipes", "There are no recipes in this line yet")), rightX + 7, recipesY + 8, 0xFF8E8E99);
+		} else {
+			for (int visible = 0, index = groupRecipeScroll; visible < recipeVisible && index < entries.size(); visible++, index++) {
+				Entry entry = entries.get(index);
+				int rowY = recipesY + 3 + visible * 25;
+				Bounds rowBounds = new Bounds(rightX + 2, rowY, rightWidth - 4, 23);
+				if (recipeDragActive && pendingRecipeDrag == entry) {
+					context.fill(rowBounds.x(), rowBounds.y(), rowBounds.width(), rowBounds.height(), 0x553F806B);
+				}
+				EmiRecipe recipe = entry.getRecipe();
+				EmiStack icon = recipe == null ? EmiStack.EMPTY : firstOutput(recipe);
+				if (!icon.isEmpty()) {
+					context.drawStack(icon, rightX + 4, rowY + 2, EmiIngredient.RENDER_ICON);
+				}
+				String name = recipe == null ? entry.getRecipeId().toString() : recipeName(recipe);
+				int selectedId = selectedGroup == null ? 0 : selectedGroup.getId();
+				boolean inSelected = entry.getGroupId() == selectedId;
+				String currentGroup = line.getEntryGroupName(entry);
+				String display = textRenderer.trimToWidth(name + "  [" + currentGroup + "]", Math.max(80, rightWidth - 132));
+				context.drawTextWithShadow(EmiPort.literal(display), rightX + 27, rowY + 7, 0xFFE3E3E8);
+				Bounds move = new Bounds(rightX + rightWidth - 96, rowY + 2, 90, 20);
+				drawButton(context, move, mouseX, mouseY, inSelected ? PlannerText.tr("groups.in_group", "IN GROUP") : PlannerText.tr("groups.move_here", "MOVE HERE"), inSelected);
+				groupRecipeHitboxes.add(new GroupRecipeHitbox(rowBounds, move, entry));
+			}
+		}
+
+		int linksTitleY = recipesY + recipesHeight + 12;
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("groups.links", "Links")), rightX, linksTitleY, 0xFFC8C8D0);
+		int linksY = linksTitleY + 16;
+		int linksHeight = Math.max(72, contentBottomY - linksY);
+		groupLinkArea = new Bounds(rightX, linksY, rightWidth, linksHeight);
+		context.fill(groupLinkArea.x(), groupLinkArea.y(), groupLinkArea.width(), groupLinkArea.height(), 0xFF101017);
+		drawBorder(context, groupLinkArea, BORDER_COLOR);
+		List<EmiStack> links = ProductionPlanner.getGroupLinkCandidates(line, selectedGroup);
+		int linkVisible = Math.max(1, (linksHeight - 4) / 25);
+		groupLinkScroll = Math.max(0, Math.min(groupLinkScroll, Math.max(0, links.size() - linkVisible)));
+		groupLinkHitboxes = new ArrayList<>();
+		if (links.isEmpty()) {
+			String empty = PlannerText.tr("groups.empty_links", "No resources are both produced and consumed at this level");
+			context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(empty, rightWidth - 12)), rightX + 6, linksY + 8, 0xFF8E8E99);
+		} else {
+			for (int visible = 0, index = groupLinkScroll; visible < linkVisible && index < links.size(); visible++, index++) {
+				EmiStack stack = links.get(index);
+				int rowY = linksY + 3 + visible * 25;
+				context.drawStack(stack, rightX + 4, rowY + 2, EmiIngredient.RENDER_ICON);
+				String name = textRenderer.trimToWidth(stack.getName().getString(), Math.max(60, rightWidth - 130));
+				context.drawTextWithShadow(EmiPort.literal(name), rightX + 27, rowY + 7, 0xFFE3E3E8);
+				LinkMode mode = line.getLinkMode(selectedGroup, stack);
+				Bounds modeBounds = new Bounds(rightX + rightWidth - 96, rowY + 2, 90, 20);
+				String modeText = mode == LinkMode.MATCH ? PlannerText.tr("groups.match", "MATCH") : PlannerText.tr("groups.ignore", "IGNORE");
+				drawButton(context, modeBounds, mouseX, mouseY, modeText, mode == LinkMode.MATCH);
+				groupLinkHitboxes.add(new GroupLinkHitbox(modeBounds, stack, mode));
+			}
+		}
+
+		groupCloseButton = new Bounds(x + modalWidth - 82, footerButtonY, 72, 20);
+		drawButton(context, groupCloseButton, mouseX, mouseY, PlannerText.tr("groups.close", "CLOSE"), false);
+		String help = PlannerText.tr("groups.match_help", "MATCH: resource must balance inside this group") + "   |   "
+			+ PlannerText.tr("groups.ignore_help", "IGNORE: resource may flow to the parent group");
+		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(help, modalWidth - 20)), x + 10, footerHelpY, 0xFF80808C);
+
+		if (groupRenameField != null) {
+			groupRenameField.render(context.raw(), mouseX, mouseY, delta);
+		}
+		if (groupDragActive && pendingGroupDrag != null) {
+			renderGroupDragOverlay(context, line, mouseX, mouseY);
+		} else if (recipeDragActive && pendingRecipeDrag != null) {
+			renderRecipeDragOverlay(context, line, mouseX, mouseY);
+		}
+		context.pop();
+	}
+
+	private List<Group> flattenGroups(Line line) {
+		List<Group> result = new ArrayList<>();
+		appendGroupChildren(line, 0, result);
+		return result;
+	}
+
+	private void appendGroupChildren(Line line, int parentId, List<Group> result) {
+		for (Group group : line.getGroups()) {
+			if (group.getParentId() == parentId) {
+				result.add(group);
+				if (!group.isCollapsed()) {
+					appendGroupChildren(line, group.getId(), result);
+				}
+			}
+		}
+	}
+
+	private int groupDepth(Line line, Group group) {
+		int depth = 0;
+		Group cursor = group;
+		while (cursor != null && cursor.getParentId() > 0 && depth < 8) {
+			depth++;
+			cursor = cursor.getParent(line);
+		}
+		return depth;
+	}
+
+	private boolean applyGroupDrop(Line line, Group dragged, int mx, int my) {
+		if (line == null || dragged == null) {
+			return false;
+		}
+		for (GroupListHitbox hitbox : groupListHitboxes) {
+			if (!hitbox.bounds.contains(mx, my)) {
+				continue;
+			}
+			Group target = hitbox.group;
+			if (target == dragged) {
+				return false;
+			}
+			if (target == null) {
+				ProductionPlanner.moveGroup(line, dragged, null, siblingCount(line, 0));
+				selectedGroup = dragged;
+				groupListScroll = 0;
+				rowScroll = 0;
+				return true;
+			}
+			if (isGroupDescendant(line, target, dragged)) {
+				return false;
+			}
+			int localY = my - hitbox.bounds.y();
+			int edge = Math.max(5, hitbox.bounds.height() / 3);
+			if (localY < edge) {
+				Group parent = target.getParent(line);
+				ProductionPlanner.moveGroup(line, dragged, parent, siblingIndex(line, target));
+			} else if (localY >= hitbox.bounds.height() - edge) {
+				Group parent = target.getParent(line);
+				ProductionPlanner.moveGroup(line, dragged, parent, siblingIndex(line, target) + 1);
+			} else {
+				ProductionPlanner.moveGroup(line, dragged, target, siblingCount(line, target.getId()));
+			}
+			selectedGroup = dragged;
+			groupListScroll = 0;
+			rowScroll = 0;
+			return true;
+		}
+		if (groupListArea.contains(mx, my)) {
+			ProductionPlanner.moveGroup(line, dragged, null, siblingCount(line, 0));
+			selectedGroup = dragged;
+			groupListScroll = 0;
+			rowScroll = 0;
+			return true;
+		}
+		return false;
+	}
+
+	private boolean applyRecipeDrop(Line line, Entry dragged, int mx, int my) {
+		if (line == null || dragged == null) {
+			return false;
+		}
+		for (GroupListHitbox hitbox : groupListHitboxes) {
+			if (hitbox.bounds.contains(mx, my)) {
+				ProductionPlanner.setEntryGroup(line, dragged, hitbox.group);
+				selectedGroup = hitbox.group;
+				rowScroll = 0;
+				return true;
+			}
+		}
+		for (GroupRecipeHitbox hitbox : groupRecipeHitboxes) {
+			if (!hitbox.rowBounds.contains(mx, my) || hitbox.entry == dragged) {
+				continue;
+			}
+			int targetIndex = line.getEntries().indexOf(hitbox.entry);
+			if (targetIndex < 0) {
+				continue;
+			}
+			if (my >= hitbox.rowBounds.y() + hitbox.rowBounds.height() / 2) {
+				targetIndex++;
+			}
+			ProductionPlanner.moveEntry(line, dragged, targetIndex);
+			groupRecipeScroll = 0;
+			rowScroll = 0;
+			return true;
+		}
+		return false;
+	}
+
+	private int siblingIndex(Line line, Group target) {
+		if (line == null || target == null) {
+			return 0;
+		}
+		int index = 0;
+		for (Group group : line.getGroups()) {
+			if (group.getParentId() != target.getParentId()) {
+				continue;
+			}
+			if (group == target) {
+				return index;
+			}
+			index++;
+		}
+		return index;
+	}
+
+	private int siblingCount(Line line, int parentId) {
+		if (line == null) {
+			return 0;
+		}
+		int count = 0;
+		for (Group group : line.getGroups()) {
+			if (group.getParentId() == parentId) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	private boolean isGroupDescendant(Line line, Group candidate, Group ancestor) {
+		if (line == null || candidate == null || ancestor == null) {
+			return false;
+		}
+		Group cursor = candidate;
+		int guard = 0;
+		while (cursor != null && guard++ < line.getGroups().size() + 1) {
+			if (cursor == ancestor) {
+				return true;
+			}
+			cursor = cursor.getParent(line);
+		}
+		return false;
+	}
+
+	private void renderGroupDragOverlay(EmiDrawContext context, Line line, int mouseX, int mouseY) {
+		String action = PlannerText.tr("groups.drag_group", "Move group");
+		for (GroupListHitbox hitbox : groupListHitboxes) {
+			if (!hitbox.bounds.contains(mouseX, mouseY) || hitbox.group == pendingGroupDrag) {
+				continue;
+			}
+			Group target = hitbox.group;
+			if (target != null && isGroupDescendant(line, target, pendingGroupDrag)) {
+				drawBorder(context, hitbox.bounds, 0xFFFF6666);
+				action = PlannerText.tr("groups.invalid_drop", "Cannot move a group into itself");
+				break;
+			}
+			int localY = mouseY - hitbox.bounds.y();
+			int edge = Math.max(5, hitbox.bounds.height() / 3);
+			if (target == null) {
+				drawBorder(context, hitbox.bounds, 0xFF8CCFB8);
+				action = PlannerText.tr("groups.drop_root", "Move to Root");
+			} else if (localY < edge) {
+				context.fill(hitbox.bounds.x(), hitbox.bounds.y(), hitbox.bounds.width(), 2, 0xFF9FE2C9);
+				action = PlannerText.tr("groups.drop_before", "Place before") + " " + target.getDisplayName(line);
+			} else if (localY >= hitbox.bounds.height() - edge) {
+				context.fill(hitbox.bounds.x(), hitbox.bounds.bottom() - 2, hitbox.bounds.width(), 2, 0xFF9FE2C9);
+				action = PlannerText.tr("groups.drop_after", "Place after") + " " + target.getDisplayName(line);
+			} else {
+				drawBorder(context, hitbox.bounds, 0xFF9FE2C9);
+				action = PlannerText.tr("groups.drop_inside", "Move inside") + " " + target.getDisplayName(line);
+			}
+			break;
+		}
+		drawDragLabel(context, mouseX, mouseY, action);
+	}
+
+	private void renderRecipeDragOverlay(EmiDrawContext context, Line line, int mouseX, int mouseY) {
+		String action = PlannerText.tr("groups.drag_recipe", "Move recipe");
+		for (GroupListHitbox hitbox : groupListHitboxes) {
+			if (hitbox.bounds.contains(mouseX, mouseY)) {
+				drawBorder(context, hitbox.bounds, 0xFF9FE2C9);
+				String name = hitbox.group == null ? PlannerText.tr("groups.root", "Root") : hitbox.group.getDisplayName(line);
+				action = PlannerText.tr("groups.drop_recipe_group", "Move recipe to") + " " + name;
+				drawDragLabel(context, mouseX, mouseY, action);
+				return;
+			}
+		}
+		for (GroupRecipeHitbox hitbox : groupRecipeHitboxes) {
+			if (hitbox.rowBounds.contains(mouseX, mouseY) && hitbox.entry != pendingRecipeDrag) {
+				int lineY = mouseY < hitbox.rowBounds.y() + hitbox.rowBounds.height() / 2
+					? hitbox.rowBounds.y() : hitbox.rowBounds.bottom() - 2;
+				context.fill(hitbox.rowBounds.x(), lineY, hitbox.rowBounds.width(), 2, 0xFF9FE2C9);
+				action = PlannerText.tr("groups.reorder_recipe", "Reorder recipe");
+				break;
+			}
+		}
+		drawDragLabel(context, mouseX, mouseY, action);
+	}
+
+	private void drawDragLabel(EmiDrawContext context, int mouseX, int mouseY, String value) {
+		String label = textRenderer.trimToWidth(value, 220);
+		int w = textRenderer.getWidth(label) + 8;
+		int x = Math.min(width - w - 4, mouseX + 12);
+		int y = Math.min(height - 18, mouseY + 10);
+		context.fill(x, y, w, 16, 0xEE202027);
+		drawBorder(context, new Bounds(x, y, w, 16), 0xFF8A8A96);
+		context.drawTextWithShadow(EmiPort.literal(label), x + 4, y + 4, 0xFFFFFFFF);
+	}
+
+	private EmiStack firstOutput(EmiRecipe recipe) {
+		if (recipe != null) {
+			for (EmiStack stack : recipe.getOutputs()) {
+				if (stack != null && !stack.isEmpty()) {
+					return stack;
+				}
+			}
+		}
+		return EmiStack.EMPTY;
 	}
 
 	private void renderDropdowns(EmiDrawContext context, Line line, int mouseX, int mouseY) {
@@ -709,40 +1234,59 @@ public class ProductionPlannerScreen extends Screen {
 			return;
 		}
 		Line activeLine = ProductionPlanner.getOrCreateActiveLine();
-		if (targetIconBounds.contains(mouseX, mouseY)) {
-			EmiStack target = activeLine.getTarget();
-			if (target == null || target.isEmpty()) {
-				drawTooltip(context, mouseX, mouseY, "No balance target", "Click any recipe output to select one");
-			} else {
-				drawTooltip(context, mouseX, mouseY, target.getName().getString(),
-					"Target: " + formatExactRate(activeLine.getTargetRate()) + unitSuffix(target));
-			}
-			return;
-		}
-		if (targetRateBounds.contains(mouseX, mouseY)) {
-			List<String> lines = new ArrayList<>();
-			lines.add("Requested target output rate");
-			lines.add("Click to type an exact amount per second");
-			lines.add("Items use /s; fluids use mB/s");
-			if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
-				lines.add("Achievable after bottleneck propagation: " + formatExactRate(activeLine.getAchievableTargetRate()) + unitSuffix(activeLine.getTarget()));
-				if (!activeLine.getBottleneckName().isBlank()) {
-					lines.add("Bottleneck: " + activeLine.getBottleneckName());
+		for (TargetHitbox hitbox : targetHitboxes) {
+			Target target = hitbox.target;
+			EmiStack stack = target.getStack();
+			if (hitbox.icon.contains(mouseX, mouseY)) {
+				List<String> lines = new ArrayList<>();
+				lines.add(stack.getName().getString());
+				lines.add("Target: " + formatExactRate(target.getRate()) + unitSuffix(stack));
+				if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
+					lines.add("Achievable: " + formatExactRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
 				}
+				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
+				return;
 			}
-			drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
+			if (hitbox.rate.contains(mouseX, mouseY)) {
+				List<String> lines = new ArrayList<>();
+				lines.add("Requested target output rate");
+				lines.add(stack.getName().getString());
+				lines.add("Click to type an exact amount per second");
+				lines.add("Items use /s; fluids use mB/s");
+				if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
+					lines.add("Achievable: " + formatExactRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
+					if (!activeLine.getBottleneckName().isBlank()) {
+						lines.add("Bottleneck: " + activeLine.getBottleneckName());
+					}
+				}
+				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
+				return;
+			}
+			if (hitbox.remove.contains(mouseX, mouseY)) {
+				drawTooltip(context, mouseX, mouseY, "Remove target", stack.getName().getString());
+				return;
+			}
+		}
+		if (activeLine.getTargets().isEmpty() && targetIconBounds.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, "No balance targets", "Click recipe outputs to add one or more targets");
 			return;
 		}
 		if (balanceButton.contains(mouseX, mouseY)) {
 			List<String> lines = new ArrayList<>();
 			lines.add(activeLine.isBalanceEnabled() ? "Recalculate line balance" : "Auto-balance line");
 			lines.add("Matches internal produced/consumed resources");
-			lines.add("and scales the selected target to its requested rate");
+			lines.add("and solves every selected target at its requested rate");
 			lines.add("Fixed MACH/PAR values are treated as hard equipment constraints");
 			lines.add("A bottleneck is propagated through every recipe in the line");
 			if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
-				lines.add("Requested: " + formatExactRate(activeLine.getTargetRate()) + unitSuffix(activeLine.getTarget()));
-				lines.add("Achievable: " + formatExactRate(activeLine.getAchievableTargetRate()) + unitSuffix(activeLine.getTarget()));
+				if (activeLine.getTargets().size() == 1) {
+					lines.add("Requested: " + formatExactRate(activeLine.getTargetRate()) + unitSuffix(activeLine.getTarget()));
+					lines.add("Achievable: " + formatExactRate(activeLine.getAchievableTargetRate()) + unitSuffix(activeLine.getTarget()));
+				} else {
+					lines.add("Targets: " + activeLine.getTargets().size());
+					double percent = activeLine.getAchievableTargetRate() / Math.max(EPSILON, activeLine.getTargetRate()) * 100.0D;
+					lines.add("Achievable throughput: " + formatExactRate(percent) + "%");
+				}
 				if (!activeLine.getBottleneckName().isBlank()) {
 					lines.add("Bottleneck: " + activeLine.getBottleneckName());
 				}
@@ -751,7 +1295,7 @@ public class ProductionPlannerScreen extends Screen {
 			return;
 		}
 		if (clearTargetButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Clear target and leave balance mode");
+			drawTooltip(context, mouseX, mouseY, "Clear all targets and leave balance mode");
 			return;
 		}
 		if (standardVoltageBounds.contains(mouseX, mouseY)) {
@@ -764,6 +1308,12 @@ public class ProductionPlannerScreen extends Screen {
 		if (applyStandardVoltageBounds.contains(mouseX, mouseY)) {
 			drawTooltip(context, mouseX, mouseY, "Apply Standard Voltage to every recipe in this Line",
 				"Clears individual VOLT overrides and makes every row inherit the Line setting");
+			return;
+		}
+		if (groupsButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("groups.title", "Groups and links"),
+				PlannerText.tr("groups.tooltip", "Nested groups and resource link rules"),
+				PlannerText.tr("groups.tooltip2", "MATCH keeps a resource inside the group; IGNORE passes it to the parent"));
 			return;
 		}
 		if (powerBounds.contains(mouseX, mouseY)) {
@@ -991,7 +1541,9 @@ public class ProductionPlannerScreen extends Screen {
 					tooltip.add(line("Expected value: chance or alternative ingredient involved"));
 				}
 				if (hitbox.targetCandidate) {
-					tooltip.add(line("Left-click: set as Line Auto-Balance target"));
+					tooltip.add(line(isTarget(ProductionPlanner.getOrCreateActiveLine(), flow.stack)
+						? "Already selected as a Line target"
+						: "Left-click: add as a Line Auto-Balance target"));
 				}
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 				return;
@@ -1032,11 +1584,109 @@ public class ProductionPlannerScreen extends Screen {
 		return TooltipComponent.of(EmiPort.ordered(EmiPort.literal(value)));
 	}
 
+	private boolean handleGroupsClick(Line line, int mx, int my, int button) {
+		if (button == 0 && groupCloseButton.contains(mx, my)) {
+			commitGroupRename();
+			clearGroupDragState();
+			groupsOpen = false;
+			return true;
+		}
+		if (button == 0 && selectedGroup != null && groupRenameButton.contains(mx, my)) {
+			startGroupRename(selectedGroup, groupSelectedNameBounds);
+			return true;
+		}
+		if (button == 0 && selectedGroup != null && groupCollapseButton.contains(mx, my)) {
+			ProductionPlanner.setGroupCollapsed(line, selectedGroup, !selectedGroup.isCollapsed());
+			groupListScroll = 0;
+			rowScroll = 0;
+			return true;
+		}
+		for (GroupListHitbox hitbox : groupListHitboxes) {
+			if (hitbox.group != null && button == 0 && hitbox.collapse.contains(mx, my)) {
+				ProductionPlanner.setGroupCollapsed(line, hitbox.group, !hitbox.group.isCollapsed());
+				selectedGroup = hitbox.group;
+				groupListScroll = 0;
+				rowScroll = 0;
+				return true;
+			}
+			if (hitbox.bounds.contains(mx, my)) {
+				if (button == 1 && hitbox.group != null) {
+					selectedGroup = hitbox.group;
+					startGroupRename(hitbox.group, hitbox.bounds);
+					return true;
+				}
+				if (button == 0) {
+					selectedGroup = hitbox.group;
+					groupRecipeScroll = 0;
+					groupLinkScroll = 0;
+					if (hitbox.group != null) {
+						pendingGroupDrag = hitbox.group;
+						groupDragStartX = mx;
+						groupDragStartY = my;
+					}
+					return true;
+				}
+			}
+		}
+		if (button == 0 && groupAddButton.contains(mx, my)) {
+			selectedGroup = ProductionPlanner.createGroup(line, null);
+			groupListScroll = 0;
+			groupLinkScroll = 0;
+			return true;
+		}
+		if (button == 0 && groupChildButton.contains(mx, my) && selectedGroup != null) {
+			selectedGroup = ProductionPlanner.createGroup(line, selectedGroup);
+			groupListScroll = 0;
+			groupLinkScroll = 0;
+			return true;
+		}
+		if (button == 0 && groupDeleteButton.contains(mx, my) && selectedGroup != null) {
+			Group parent = selectedGroup.getParent(line);
+			ProductionPlanner.removeGroup(line, selectedGroup);
+			selectedGroup = parent;
+			groupListScroll = 0;
+			groupRecipeScroll = 0;
+			groupLinkScroll = 0;
+			rowScroll = 0;
+			return true;
+		}
+		for (GroupRecipeHitbox hitbox : groupRecipeHitboxes) {
+			if (button == 0 && hitbox.moveBounds.contains(mx, my)) {
+				ProductionPlanner.setEntryGroup(line, hitbox.entry, selectedGroup);
+				rowScroll = 0;
+				return true;
+			}
+			if (button == 0 && hitbox.rowBounds.contains(mx, my)) {
+				pendingRecipeDrag = hitbox.entry;
+				recipeDragStartX = mx;
+				recipeDragStartY = my;
+				return true;
+			}
+		}
+		for (GroupLinkHitbox hitbox : groupLinkHitboxes) {
+			if (button == 0 && hitbox.bounds.contains(mx, my)) {
+				ProductionPlanner.setGroupLinkMode(line, selectedGroup, hitbox.stack, hitbox.mode.toggled());
+				return true;
+			}
+		}
+		return true;
+	}
+
 	@Override
 	public boolean mouseClicked(double mouseX, double mouseY, int button) {
 		int mx = (int) mouseX;
 		int my = (int) mouseY;
 		Line currentLine = ProductionPlanner.getOrCreateActiveLine();
+		if (groupsOpen) {
+			if (groupRenameField != null) {
+				if (groupRenameField.mouseClicked(mouseX, mouseY, button)) {
+					EmiPort.focus(groupRenameField, true);
+					return true;
+				}
+				commitGroupRename();
+			}
+			return handleGroupsClick(currentLine, mx, my, button);
+		}
 		if (isDropdownOpen()) {
 			if (coilMenuOpen && machineConfigEntry != null) {
 				if (button == 0) {
@@ -1174,9 +1824,24 @@ public class ProductionPlannerScreen extends Screen {
 			ProductionPlanner.applyLineStandardVoltageToAll(line);
 			return true;
 		}
-		if ((button == 0 || button == 1) && targetRateBounds.contains(mx, my) && line.getTarget() != null && !line.getTarget().isEmpty()) {
-			startTargetRateEdit(line);
+		if (button == 0 && groupsButton.contains(mx, my)) {
+			closeDropdowns();
+			groupsOpen = true;
+			selectedGroup = null;
+			groupListScroll = 0;
+			groupRecipeScroll = 0;
+			groupLinkScroll = 0;
 			return true;
+		}
+		for (TargetHitbox hitbox : targetHitboxes) {
+			if (button == 0 && hitbox.remove.contains(mx, my)) {
+				ProductionPlanner.removeBalanceTarget(line, hitbox.target);
+				return true;
+			}
+			if ((button == 0 || button == 1) && hitbox.rate.contains(mx, my)) {
+				startTargetRateEdit(line, hitbox.target, hitbox.rate);
+				return true;
+			}
 		}
 		if (button == 0 && balanceButton.contains(mx, my)) {
 			ProductionPlanner.balanceLine(line);
@@ -1191,6 +1856,23 @@ public class ProductionPlannerScreen extends Screen {
 				double defaultRate = hitbox.flow.stack.getKey() instanceof Fluid ? 1000.0D : 1.0D;
 				ProductionPlanner.setBalanceTarget(line, hitbox.flow.stack, defaultRate);
 				return true;
+			}
+		}
+		for (GroupMainHitbox hitbox : groupMainHitboxes) {
+			if (hitbox.bounds.contains(mx, my)) {
+				if (button == 0) {
+					ProductionPlanner.setGroupCollapsed(line, hitbox.group, !hitbox.group.isCollapsed());
+					clampScroll();
+					return true;
+				}
+				if (button == 1) {
+					groupsOpen = true;
+					selectedGroup = hitbox.group;
+					groupListScroll = 0;
+					groupRecipeScroll = 0;
+					groupLinkScroll = 0;
+					return true;
+				}
 			}
 		}
 		for (RowHitbox row : rowHitboxes) {
@@ -1297,9 +1979,73 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	@Override
+	public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
+		if (groupsOpen && button == 0) {
+			if (pendingGroupDrag != null) {
+				double dx = mouseX - groupDragStartX;
+				double dy = mouseY - groupDragStartY;
+				if (groupDragActive || dx * dx + dy * dy >= 16.0D) {
+					groupDragActive = true;
+					return true;
+				}
+			}
+			if (pendingRecipeDrag != null) {
+				double dx = mouseX - recipeDragStartX;
+				double dy = mouseY - recipeDragStartY;
+				if (recipeDragActive || dx * dx + dy * dy >= 16.0D) {
+					recipeDragActive = true;
+					return true;
+				}
+			}
+		}
+		return super.mouseDragged(mouseX, mouseY, button, deltaX, deltaY);
+	}
+
+	@Override
+	public boolean mouseReleased(double mouseX, double mouseY, int button) {
+		if (groupsOpen && button == 0) {
+			Line line = ProductionPlanner.getOrCreateActiveLine();
+			int mx = (int) mouseX;
+			int my = (int) mouseY;
+			if (groupDragActive && pendingGroupDrag != null) {
+				applyGroupDrop(line, pendingGroupDrag, mx, my);
+			} else if (recipeDragActive && pendingRecipeDrag != null) {
+				applyRecipeDrop(line, pendingRecipeDrag, mx, my);
+			}
+			if (pendingGroupDrag != null || pendingRecipeDrag != null) {
+				clearGroupDragState();
+				return true;
+			}
+		}
+		return super.mouseReleased(mouseX, mouseY, button);
+	}
+
+	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double amount) {
 		int mx = (int) mouseX;
 		int my = (int) mouseY;
+		if (groupsOpen) {
+			Line line = ProductionPlanner.getOrCreateActiveLine();
+			int direction = (int) -Math.signum(amount);
+			if (groupListArea.contains(mx, my)) {
+				int total = flattenGroups(line).size() + 1;
+				int visible = Math.max(1, groupListArea.height() / 24);
+				groupListScroll = Math.max(0, Math.min(groupListScroll + direction, Math.max(0, total - visible)));
+				return true;
+			}
+			if (groupRecipeArea.contains(mx, my)) {
+				int visible = Math.max(1, (groupRecipeArea.height() - 4) / 25);
+				groupRecipeScroll = Math.max(0, Math.min(groupRecipeScroll + direction, Math.max(0, line.getEntries().size() - visible)));
+				return true;
+			}
+			if (groupLinkArea.contains(mx, my)) {
+				int total = ProductionPlanner.getGroupLinkCandidates(line, selectedGroup).size();
+				int visible = Math.max(1, (groupLinkArea.height() - 4) / 25);
+				groupLinkScroll = Math.max(0, Math.min(groupLinkScroll + direction, Math.max(0, total - visible)));
+				return true;
+			}
+			return true;
+		}
 		if (isDropdownOpen() && activeDropdownBounds.contains(mx, my)) {
 			if (machineConfigEntry != null) {
 				int direction = (int) Math.signum(amount);
@@ -1359,6 +2105,10 @@ public class ProductionPlannerScreen extends Screen {
 
 	@Override
 	public boolean charTyped(char chr, int modifiers) {
+		if (groupRenameField != null && groupRenameField.isFocused()) {
+			groupRenameField.charTyped(chr, modifiers);
+			return true;
+		}
 		if (editField != null && editField.isFocused()) {
 			editField.charTyped(chr, modifiers);
 			return true;
@@ -1376,6 +2126,23 @@ public class ProductionPlannerScreen extends Screen {
 
 	@Override
 	public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+		if (groupRenameField != null && groupRenameField.isFocused()) {
+			if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+				cancelGroupRename();
+				return true;
+			}
+			if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+				commitGroupRename();
+				return true;
+			}
+			groupRenameField.keyPressed(keyCode, scanCode, modifiers);
+			return true;
+		}
+		if (groupsOpen && keyCode == GLFW.GLFW_KEY_ESCAPE) {
+			clearGroupDragState();
+			groupsOpen = false;
+			return true;
+		}
 		if (keyCode == GLFW.GLFW_KEY_ESCAPE && isDropdownOpen()) {
 			closeDropdowns();
 			return true;
@@ -1482,23 +2249,25 @@ public class ProductionPlannerScreen extends Screen {
 		editKind = null;
 	}
 
-	private void startTargetRateEdit(Line line) {
-		if (line == null || line.getTarget() == null || line.getTarget().isEmpty()) {
+	private void startTargetRateEdit(Line line, Target target, Bounds bounds) {
+		if (line == null || target == null || target.getStack() == null || target.getStack().isEmpty()) {
 			return;
 		}
 		targetEditLine = line;
-		targetRateField = new TextFieldWidget(client.textRenderer, targetRateBounds.x() + 2, targetRateBounds.y() + 2,
-			Math.max(20, targetRateBounds.width() - 4), targetRateBounds.height() - 4, EmiPort.literal("Target rate"));
+		targetEditTarget = target;
+		targetEditBounds = bounds == null ? targetRateBounds : bounds;
+		targetRateField = new TextFieldWidget(client.textRenderer, targetEditBounds.x() + 2, targetEditBounds.y() + 2,
+			Math.max(20, targetEditBounds.width() - 4), targetEditBounds.height() - 4, EmiPort.literal("Target rate"));
 		targetRateField.setMaxLength(24);
-		targetRateField.setText(formatExactRate(line.getTargetRate()));
+		targetRateField.setText(formatExactRate(target.getRate()));
 		EmiPort.focus(targetRateField, true);
 	}
 
 	private void commitTargetRateEdit() {
-		if (targetRateField != null && targetEditLine != null) {
+		if (targetRateField != null && targetEditLine != null && targetEditTarget != null) {
 			try {
 				double rate = Double.parseDouble(targetRateField.getText().trim().replace(',', '.'));
-				ProductionPlanner.setTargetRate(targetEditLine, rate);
+				ProductionPlanner.setTargetRate(targetEditLine, targetEditTarget, rate);
 			} catch (Throwable ignored) {
 			}
 		}
@@ -1511,6 +2280,8 @@ public class ProductionPlannerScreen extends Screen {
 		}
 		targetRateField = null;
 		targetEditLine = null;
+		targetEditTarget = null;
+		targetEditBounds = EMPTY;
 	}
 
 	private void startRename(TabHitbox tab) {
@@ -1537,6 +2308,46 @@ public class ProductionPlannerScreen extends Screen {
 		renameIndex = -1;
 	}
 
+	private void startGroupRename(Group group, Bounds bounds) {
+		if (group == null || bounds == null) {
+			return;
+		}
+		cancelGroupRename();
+		groupRenameTarget = group;
+		int x = bounds.x() + 2;
+		int y = bounds.y() + 2;
+		int w = Math.max(60, bounds.width() - 4);
+		int h = Math.max(16, bounds.height() - 4);
+		groupRenameField = new TextFieldWidget(client.textRenderer, x, y, w, h, EmiPort.literal(PlannerText.tr("groups.rename_label", "Group name")));
+		groupRenameField.setMaxLength(64);
+		String current = group.getName();
+		groupRenameField.setText(current == null || current.isBlank()
+			? group.getDisplayName(ProductionPlanner.getOrCreateActiveLine()) : current);
+		EmiPort.focus(groupRenameField, true);
+	}
+
+	private void commitGroupRename() {
+		if (groupRenameField != null && groupRenameTarget != null) {
+			ProductionPlanner.renameGroup(ProductionPlanner.getOrCreateActiveLine(), groupRenameTarget, groupRenameField.getText());
+		}
+		cancelGroupRename();
+	}
+
+	private void cancelGroupRename() {
+		if (groupRenameField != null) {
+			EmiPort.focus(groupRenameField, false);
+		}
+		groupRenameField = null;
+		groupRenameTarget = null;
+	}
+
+	private void clearGroupDragState() {
+		pendingGroupDrag = null;
+		pendingRecipeDrag = null;
+		groupDragActive = false;
+		recipeDragActive = false;
+	}
+
 	@Override
 	public void close() {
 		if (editField != null) {
@@ -1547,6 +2358,9 @@ public class ProductionPlannerScreen extends Screen {
 		}
 		if (renameField != null) {
 			commitRename();
+		}
+		if (groupRenameField != null) {
+			commitGroupRename();
 		}
 		ProductionPlanner.save();
 		MinecraftClient.getInstance().setScreen(old);
@@ -1586,7 +2400,7 @@ public class ProductionPlannerScreen extends Screen {
 
 	private void clampScroll() {
 		Line line = ProductionPlanner.getOrCreateActiveLine();
-		int max = Math.max(0, line.getEntries().size() - visibleRows());
+		int max = Math.max(0, buildPlannerDisplayRows(line).size() - visibleRows());
 		rowScroll = Math.max(0, Math.min(rowScroll, max));
 	}
 
@@ -1648,9 +2462,10 @@ public class ProductionPlannerScreen extends Screen {
 		List<Flow> internal = new ArrayList<>();
 		List<Flow> outputs = new ArrayList<>();
 		for (MutableFlow mutable : map.values()) {
-			double internalAmount = Math.min(mutable.input, mutable.output);
-			double externalAmount = Math.max(0, mutable.input - mutable.output);
-			double outputAmount = Math.max(0, mutable.output - mutable.input);
+			boolean rootIgnored = !line.hasTarget(mutable.stack) && line.getLinkMode(null, mutable.stack) == LinkMode.IGNORE;
+			double internalAmount = rootIgnored ? 0.0D : Math.min(mutable.input, mutable.output);
+			double externalAmount = rootIgnored ? mutable.input : Math.max(0, mutable.input - mutable.output);
+			double outputAmount = rootIgnored ? mutable.output : Math.max(0, mutable.output - mutable.input);
 			if (externalAmount > EPSILON) {
 				external.add(new Flow(mutable.stack, mutable.input, mutable.output, internalAmount, externalAmount,
 					mutable.approximate, formatCompactRate(externalAmount, mutable.approximate)));
@@ -1765,10 +2580,7 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private boolean isTarget(Line line, EmiStack stack) {
-		if (line == null || stack == null || stack.isEmpty() || line.getTarget() == null || line.getTarget().isEmpty()) {
-			return false;
-		}
-		return normalize(stack).equals(normalize(line.getTarget()));
+		return line != null && stack != null && !stack.isEmpty() && line.hasTarget(stack);
 	}
 
 	private String unitSuffixShort(EmiStack stack) {
@@ -1839,6 +2651,24 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private record CoilOptionHitbox(Bounds bounds, int tier) {
+	}
+
+	private record TargetHitbox(Target target, Bounds icon, Bounds rate, Bounds remove) {
+	}
+
+	private record GroupListHitbox(Bounds bounds, Bounds collapse, Group group) {
+	}
+
+	private record GroupRecipeHitbox(Bounds rowBounds, Bounds moveBounds, Entry entry) {
+	}
+
+	private record GroupLinkHitbox(Bounds bounds, EmiStack stack, LinkMode mode) {
+	}
+
+	private record GroupMainHitbox(Bounds bounds, Group group) {
+	}
+
+	private record PlannerDisplayRow(Entry entry, Group group, int depth) {
 	}
 
 	private static final class RowHitbox {

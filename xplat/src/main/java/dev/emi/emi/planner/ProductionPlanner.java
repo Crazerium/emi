@@ -70,17 +70,91 @@ public final class ProductionPlanner {
 					String name = object.get("name").getAsString().trim();
 					line.name = name.isEmpty() ? null : name;
 				}
-				if (object.has("target")) {
+				if (object.has("groups") && object.get("groups").isJsonArray()) {
+					for (JsonElement groupElement : object.getAsJsonArray("groups")) {
+						if (!groupElement.isJsonObject()) {
+							continue;
+						}
+						try {
+							JsonObject groupObject = groupElement.getAsJsonObject();
+							int id = groupObject.has("id") ? Math.max(1, groupObject.get("id").getAsInt()) : line.nextGroupId;
+							int parentId = groupObject.has("parent") ? Math.max(0, groupObject.get("parent").getAsInt()) : 0;
+							String groupName = groupObject.has("name") ? groupObject.get("name").getAsString().trim() : "";
+							Group group = new Group(id, parentId, groupName.isEmpty() ? null : groupName);
+							group.collapsed = groupObject.has("collapsed") && groupObject.get("collapsed").getAsBoolean();
+							if (groupObject.has("links") && groupObject.get("links").isJsonArray()) {
+								for (JsonElement linkElement : groupObject.getAsJsonArray("links")) {
+									if (!linkElement.isJsonObject()) {
+										continue;
+									}
+									JsonObject linkObject = linkElement.getAsJsonObject();
+									if (!linkObject.has("stack")) {
+										continue;
+									}
+									EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(linkObject.get("stack"));
+									if (ingredient instanceof EmiStack stack && !stack.isEmpty()) {
+										LinkMode mode = linkObject.has("mode") ? LinkMode.fromSerialized(linkObject.get("mode").getAsString()) : LinkMode.MATCH;
+										group.links.put(normalizeStack(stack), mode);
+									}
+								}
+							}
+							line.groups.add(group);
+							line.nextGroupId = Math.max(line.nextGroupId, id + 1);
+						} catch (Throwable ignored) {
+						}
+					}
+					sanitizeGroups(line);
+				}
+				if (object.has("root_links") && object.get("root_links").isJsonArray()) {
+					for (JsonElement linkElement : object.getAsJsonArray("root_links")) {
+						if (!linkElement.isJsonObject()) {
+							continue;
+						}
+						try {
+							JsonObject linkObject = linkElement.getAsJsonObject();
+							EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(linkObject.get("stack"));
+							if (ingredient instanceof EmiStack stack && !stack.isEmpty()) {
+								LinkMode mode = linkObject.has("mode") ? LinkMode.fromSerialized(linkObject.get("mode").getAsString()) : LinkMode.MATCH;
+								if (mode != LinkMode.MATCH) {
+									line.rootLinks.put(normalizeStack(stack), mode);
+								}
+							}
+						} catch (Throwable ignored) {
+						}
+					}
+				}
+				if (object.has("targets") && object.get("targets").isJsonArray()) {
+					for (JsonElement targetElement : object.getAsJsonArray("targets")) {
+						if (!targetElement.isJsonObject()) {
+							continue;
+						}
+						try {
+							JsonObject targetObject = targetElement.getAsJsonObject();
+							if (!targetObject.has("stack")) {
+								continue;
+							}
+							EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(targetObject.get("stack"));
+							if (ingredient instanceof EmiStack stack && !stack.isEmpty()) {
+								double rate = targetObject.has("rate")
+									? sanitizeTargetRate(targetObject.get("rate").getAsDouble())
+									: defaultTargetRate(stack);
+								line.targets.add(new Target(normalizeStack(stack), rate));
+							}
+						} catch (Throwable ignored) {
+						}
+					}
+				}
+				if (line.targets.isEmpty() && object.has("target")) {
 					try {
 						EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(object.get("target"));
 						if (ingredient instanceof EmiStack stack && !stack.isEmpty()) {
-							line.target = normalizeStack(stack);
+							double rate = object.has("target_rate")
+								? sanitizeTargetRate(object.get("target_rate").getAsDouble())
+								: defaultTargetRate(stack);
+							line.targets.add(new Target(normalizeStack(stack), rate));
 						}
 					} catch (Throwable ignored) {
 					}
-				}
-				if (object.has("target_rate")) {
-					line.targetRate = sanitizeTargetRate(object.get("target_rate").getAsDouble());
 				}
 				if (object.has("achieved_target_rate")) {
 					line.achievedTargetRate = sanitizeAchievedTargetRate(object.get("achieved_target_rate").getAsDouble());
@@ -127,6 +201,7 @@ public final class ProductionPlanner {
 								sanitizeCount(parallel), sanitizeDurationTicks(durationOverrideTicks), sanitizeBalanceRate(balanceRate),
 								sanitizeMachineProfile(machineProfile), voltageTier, voltageOverride, ocMode, sanitizeCoilTier(coilTier),
 								machinesFixed, parallelFixed);
+							entry.groupId = entryObject.has("group_id") ? sanitizeGroupId(line, entryObject.get("group_id").getAsInt()) : 0;
 							if (!entry.voltageOverride) {
 								applyLineStandardVoltage(line, entry);
 							}
@@ -135,16 +210,16 @@ public final class ProductionPlanner {
 						}
 					}
 				}
-				if (line.balanceEnabled && (line.target == null || line.target.isEmpty())) {
+				if (line.balanceEnabled && line.targets.isEmpty()) {
 					line.balanceEnabled = false;
 				}
 				if (line.balanceEnabled && line.achievedTargetRate <= 0.0D) {
-					line.achievedTargetRate = line.targetRate;
+					line.achievedTargetRate = line.getTargetRate();
 				}
 				line.balanceMessage = line.balanceEnabled
 					? (line.hasMachineCapacityShortfall()
 						? buildBottleneckMessage(line)
-						: "Balanced rates restored")
+						: PlannerText.tr("status.restored", "Balanced rates restored"))
 					: "";
 				LINES.add(line);
 			}
@@ -238,10 +313,10 @@ public final class ProductionPlanner {
 	public static synchronized String displayName(int index) {
 		ensureLoaded();
 		if (index < 0 || index >= LINES.size()) {
-			return "Line";
+			return PlannerText.tr("line", "Line");
 		}
 		String custom = LINES.get(index).name;
-		return custom == null || custom.isBlank() ? "Line " + (index + 1) : custom;
+		return custom == null || custom.isBlank() ? PlannerText.tr("line", "Line") + " " + (index + 1) : custom;
 	}
 
 	public static synchronized void renameLine(int index, String value) {
@@ -261,28 +336,209 @@ public final class ProductionPlanner {
 		}
 	}
 
+	public static synchronized Group createGroup(Line line, Group parent) {
+		if (line == null) {
+			return null;
+		}
+		int parentId = parent == null ? 0 : parent.id;
+		Group group = new Group(line.nextGroupId++, parentId, null);
+		line.groups.add(group);
+		invalidateBalance(line);
+		save();
+		return group;
+	}
+
+	public static synchronized void removeGroup(Line line, Group group) {
+		if (line == null || group == null || !line.groups.contains(group)) {
+			return;
+		}
+		int parentId = sanitizeGroupId(line, group.parentId);
+		for (Entry entry : line.entries) {
+			if (entry.groupId == group.id) {
+				entry.groupId = parentId;
+			}
+		}
+		for (Group child : line.groups) {
+			if (child.parentId == group.id) {
+				child.parentId = parentId;
+			}
+		}
+		line.groups.remove(group);
+		invalidateBalance(line);
+		save();
+	}
+
+	public static synchronized void renameGroup(Line line, Group group, String value) {
+		if (line == null || group == null || !line.groups.contains(group)) {
+			return;
+		}
+		String name = value == null ? "" : value.trim();
+		group.name = name.isEmpty() ? null : name;
+		save();
+	}
+
+	public static synchronized void setGroupCollapsed(Line line, Group group, boolean collapsed) {
+		if (line == null || group == null || !line.groups.contains(group)) {
+			return;
+		}
+		group.collapsed = collapsed;
+		save();
+	}
+
+	public static synchronized void moveGroup(Line line, Group group, Group parent, int siblingIndex) {
+		if (line == null || group == null || !line.groups.contains(group)) {
+			return;
+		}
+		int oldParentId = group.parentId;
+		int oldSiblingIndex = 0;
+		for (Group candidate : line.groups) {
+			if (candidate.parentId != oldParentId) {
+				continue;
+			}
+			if (candidate == group) {
+				break;
+			}
+			oldSiblingIndex++;
+		}
+		int parentId = parent == null ? 0 : sanitizeGroupId(line, parent.id);
+		if (parentId == group.id || isGroupDescendant(line, parentId, group.id)) {
+			return;
+		}
+		if (oldParentId == parentId && oldSiblingIndex < siblingIndex) {
+			siblingIndex--;
+		}
+
+		line.groups.remove(group);
+		group.parentId = parentId;
+		if (parent != null) {
+			parent.collapsed = false;
+		}
+
+		List<Group> siblings = new ArrayList<>();
+		for (Group candidate : line.groups) {
+			if (candidate.parentId == parentId) {
+				siblings.add(candidate);
+			}
+		}
+		int targetSibling = Math.max(0, Math.min(siblingIndex, siblings.size()));
+		int insertAt;
+		if (siblings.isEmpty()) {
+			insertAt = line.groups.size();
+		} else if (targetSibling >= siblings.size()) {
+			Group lastSibling = siblings.get(siblings.size() - 1);
+			insertAt = line.groups.indexOf(lastSibling) + 1;
+		} else {
+			insertAt = line.groups.indexOf(siblings.get(targetSibling));
+		}
+		line.groups.add(Math.max(0, Math.min(insertAt, line.groups.size())), group);
+		invalidateBalance(line);
+		save();
+	}
+
+	public static synchronized void moveEntry(Line line, Entry entry, int index) {
+		if (line == null || entry == null || !line.entries.contains(entry)) {
+			return;
+		}
+		int oldIndex = line.entries.indexOf(entry);
+		int insertAt = Math.max(0, Math.min(index, line.entries.size()));
+		line.entries.remove(oldIndex);
+		if (oldIndex < insertAt) {
+			insertAt--;
+		}
+		line.entries.add(Math.max(0, Math.min(insertAt, line.entries.size())), entry);
+		save();
+	}
+
+	public static synchronized void setEntryGroup(Line line, Entry entry, Group group) {
+		if (line == null || entry == null || !line.entries.contains(entry)) {
+			return;
+		}
+		entry.groupId = group == null ? 0 : sanitizeGroupId(line, group.id);
+		invalidateBalance(line);
+		save();
+	}
+
+	public static synchronized void setGroupLinkMode(Line line, Group group, EmiStack stack, LinkMode mode) {
+		if (line == null || stack == null || stack.isEmpty()) {
+			return;
+		}
+		EmiStack normalized = normalizeStack(stack);
+		Map<EmiStack, LinkMode> links = group == null ? line.rootLinks : group.links;
+		LinkMode sanitized = mode == null ? LinkMode.MATCH : mode;
+		if (sanitized == LinkMode.MATCH) {
+			links.remove(normalized);
+		} else {
+			links.put(normalized, sanitized);
+		}
+		invalidateBalance(line);
+		save();
+	}
+
+	public static synchronized List<EmiStack> getGroupLinkCandidates(Line line, Group group) {
+		if (line == null) {
+			return List.of();
+		}
+		int groupId = group == null ? 0 : group.id;
+		Map<EmiStack, ResourceVector> residual = collectGroupResiduals(line, groupId, line.entries.size(), null, null, null, false);
+		List<EmiStack> result = new ArrayList<>();
+		for (ResourceVector vector : residual.values()) {
+			if (vector.hasInput && vector.hasOutput) {
+				result.add(vector.stack);
+			}
+		}
+		return result;
+	}
+
 	public static synchronized void setBalanceTarget(Line line, EmiStack stack, double defaultRate) {
 		if (line == null || stack == null || stack.isEmpty()) {
 			return;
 		}
-		line.target = normalizeStack(stack);
-		line.targetRate = sanitizeTargetRate(defaultRate);
+		EmiStack normalized = normalizeStack(stack);
+		for (Target target : line.targets) {
+			if (sameStack(target.stack, normalized)) {
+				return;
+			}
+		}
+		line.targets.add(new Target(normalized, sanitizeTargetRate(defaultRate)));
 		line.balanceEnabled = false;
 		line.achievedTargetRate = 0.0D;
 		line.bottleneckName = "";
-		line.balanceMessage = "Target selected. Press BALANCE.";
+		line.balanceMessage = line.targets.size() == 1
+			? PlannerText.tr("status.target_selected", "Target selected. Press BALANCE.")
+			: PlannerText.tr("status.target_added", "Target added. Press BALANCE.");
 		save();
 	}
 
 	public static synchronized void setTargetRate(Line line, double rate) {
-		if (line == null) {
+		if (line == null || line.targets.isEmpty()) {
 			return;
 		}
-		line.targetRate = sanitizeTargetRate(rate);
+		setTargetRate(line, line.targets.get(0), rate);
+	}
+
+	public static synchronized void setTargetRate(Line line, Target target, double rate) {
+		if (line == null || target == null || !line.targets.contains(target)) {
+			return;
+		}
+		target.rate = sanitizeTargetRate(rate);
 		line.balanceEnabled = false;
 		line.achievedTargetRate = 0.0D;
 		line.bottleneckName = "";
-		line.balanceMessage = "Target rate changed. Press BALANCE.";
+		line.balanceMessage = PlannerText.tr("status.target_changed", "Target rate changed. Press BALANCE.");
+		save();
+	}
+
+	public static synchronized void removeBalanceTarget(Line line, Target target) {
+		if (line == null || target == null || !line.targets.remove(target)) {
+			return;
+		}
+		line.balanceEnabled = false;
+		line.achievedTargetRate = 0.0D;
+		line.bottleneckName = "";
+		line.balanceMessage = line.targets.isEmpty() ? "" : PlannerText.tr("status.target_removed", "Target removed. Press BALANCE.");
+		for (Entry entry : line.entries) {
+			entry.balanceRate = 0.0D;
+		}
 		save();
 	}
 
@@ -290,8 +546,7 @@ public final class ProductionPlanner {
 		if (line == null) {
 			return;
 		}
-		line.target = EmiStack.EMPTY;
-		line.targetRate = 1.0D;
+		line.targets.clear();
 		line.balanceEnabled = false;
 		line.achievedTargetRate = 0.0D;
 		line.bottleneckName = "";
@@ -307,102 +562,90 @@ public final class ProductionPlanner {
 			line.balanceEnabled = false;
 			line.achievedTargetRate = 0.0D;
 			line.bottleneckName = "";
-			line.balanceMessage = "Balance disabled";
+			line.balanceMessage = PlannerText.tr("status.disabled", "Balance disabled");
 			save();
 		}
 	}
 
 	public static synchronized BalanceResult balanceLine(Line line) {
-		if (line == null || line.target == null || line.target.isEmpty()) {
-			return failBalance(line, "Choose a target output first");
+		if (line == null || line.targets.isEmpty()) {
+			return failBalance(line, PlannerText.tr("status.choose_target", "Choose at least one target output first"));
 		}
 		if (line.entries.isEmpty()) {
-			return failBalance(line, "Line has no recipes");
+			return failBalance(line, PlannerText.tr("status.no_recipes", "Line has no recipes"));
 		}
 		int n = line.entries.size();
-		Map<EmiStack, ResourceVector> resources = new LinkedHashMap<>();
-		for (int i = 0; i < n; i++) {
-			EmiRecipe recipe = line.entries.get(i).getRecipe();
-			if (recipe == null) {
-				return failBalance(line, "A recipe is missing");
+		for (Entry entry : line.entries) {
+			if (entry.getRecipe() == null) {
+				return failBalance(line, PlannerText.tr("status.missing_recipe", "A recipe is missing"));
 			}
-			for (EmiIngredient ingredient : recipe.getInputs()) {
-				if (ingredient == null || ingredient.isEmpty()) {
-					continue;
-				}
-				EmiStack stack = firstStack(ingredient);
-				if (stack == null || stack.isEmpty()) {
-					continue;
-				}
-				double amount = ingredient.getAmount() * Math.max(0.0D, ingredient.getChance());
-				ResourceVector vector = resources.computeIfAbsent(normalizeStack(stack), k -> new ResourceVector(k, n));
-				vector.net[i] -= amount;
-				vector.hasInput = true;
-			}
-			for (EmiStack stack : recipe.getOutputs()) {
-				if (stack == null || stack.isEmpty()) {
-					continue;
-				}
-				double amount = stack.getAmount() * Math.max(0.0D, stack.getChance());
-				ResourceVector vector = resources.computeIfAbsent(normalizeStack(stack), k -> new ResourceVector(k, n));
-				vector.net[i] += amount;
-				vector.hasOutput = true;
-			}
-		}
-		ResourceVector targetVector = resources.get(normalizeStack(line.target));
-		if (targetVector == null || maxPositive(targetVector.net) <= 0.0D) {
-			return failBalance(line, "No recipe in this line produces the target");
 		}
 
 		List<double[]> rows = new ArrayList<>();
 		List<Double> rhs = new ArrayList<>();
 		List<ResourceVector> internalVectors = new ArrayList<>();
-		for (ResourceVector vector : resources.values()) {
-			if (sameStack(vector.stack, line.target) || !vector.hasInput || !vector.hasOutput) {
-				continue;
+		Map<EmiStack, ResourceVector> rootResources = collectGroupResiduals(line, 0, n, rows, rhs, internalVectors, false);
+
+		List<TargetVector> targetVectors = new ArrayList<>();
+		for (Target target : line.targets) {
+			ResourceVector vector = rootResources.get(normalizeStack(target.stack));
+			if (vector == null || maxPositive(vector.net) <= 0.0D) {
+				return failBalance(line, PlannerText.tr("status.target_blocked", "No recipe in this line produces target outside matched groups") + ": " + target.stack.getName().getString());
 			}
-			double scale = maxAbs(vector.net);
-			if (scale <= 0.0D) {
-				continue;
-			}
-			double[] row = new double[n];
+			targetVectors.add(new TargetVector(target, vector));
+		}
+
+		for (TargetVector target : targetVectors) {
+			double targetScale = maxAbs(target.vector.net);
+			double[] targetRow = new double[n];
 			for (int i = 0; i < n; i++) {
-				row[i] = vector.net[i] / scale;
+				targetRow[i] = target.vector.net[i] / targetScale * 12.0D;
 			}
-			rows.add(row);
-			rhs.add(0.0D);
-			internalVectors.add(vector);
+			rows.add(targetRow);
+			rhs.add(target.target.rate / targetScale * 12.0D);
 		}
-		double targetScale = maxAbs(targetVector.net);
-		double[] targetRow = new double[n];
-		for (int i = 0; i < n; i++) {
-			targetRow[i] = targetVector.net[i] / targetScale * 12.0D;
+
+		for (ResourceVector vector : rootResources.values()) {
+			if (line.hasTarget(vector.stack) || !vector.hasInput || !vector.hasOutput || line.getLinkMode(null, vector.stack) == LinkMode.IGNORE) {
+				continue;
+			}
+			addMatchConstraint(vector, rows, rhs, internalVectors);
 		}
-		rows.add(targetRow);
-		rhs.add(line.targetRate / targetScale * 12.0D);
 
 		double[][] a = rows.toArray(double[][]::new);
 		double[] b = new double[rhs.size()];
 		for (int i = 0; i < b.length; i++) {
 			b[i] = rhs.get(i);
 		}
-		double[] x = nonNegativeLeastSquares(a, b, n);
-		double targetNet = dot(targetVector.net, x);
+		double[] objective = new double[n];
+		java.util.Arrays.fill(objective, 1.0D);
+		LinearBalanceSolver.Result solveResult = LinearBalanceSolver.minimizeEqualities(a, b, objective);
+		if (!solveResult.solved()) {
+			String message = switch (solveResult.status()) {
+				case INFEASIBLE -> PlannerText.tr("status.infeasible", "Production line constraints are infeasible");
+				case UNBOUNDED -> PlannerText.tr("status.unbounded", "Production line solver is unbounded");
+				default -> PlannerText.tr("status.failed", "Production line solver failed");
+			};
+			return failBalance(line, message);
+		}
+		double[] x = solveResult.solution();
+		TargetVector primaryTarget = targetVectors.get(0);
+		double targetNet = dot(primaryTarget.vector.net, x);
 		if (!Double.isFinite(targetNet) || targetNet <= 0.0D) {
-			return failBalance(line, "Could not build a positive target flow");
+			return failBalance(line, PlannerText.tr("status.positive_flow", "Could not build a positive target flow"));
 		}
-		double scaleToTarget = line.targetRate / targetNet;
-		for (int i = 0; i < x.length; i++) {
-			x[i] = sanitizeBalanceRate(x[i] * scaleToTarget);
-		}
-		targetNet = dot(targetVector.net, x);
 		double maxResidual = 0.0D;
 		for (ResourceVector vector : internalVectors) {
 			double denom = Math.max(1.0D, maxAbs(vector.net));
 			maxResidual = Math.max(maxResidual, Math.abs(dot(vector.net, x)) / denom);
 		}
+		for (TargetVector target : targetVectors) {
+			double actual = dot(target.vector.net, x);
+			double denom = Math.max(1.0D, target.target.rate);
+			maxResidual = Math.max(maxResidual, Math.abs(actual - target.target.rate) / denom);
+		}
 		for (int i = 0; i < n; i++) {
-			line.entries.get(i).balanceRate = x[i];
+			line.entries.get(i).balanceRate = sanitizeBalanceRate(x[i]);
 		}
 
 		MachineSizingStatus sizingStatus = autoSizeBalancedLine(line);
@@ -414,19 +657,109 @@ public final class ProductionPlanner {
 					entry.balanceRate = sanitizeBalanceRate(entry.balanceRate * propagationScale);
 				}
 			}
-			line.achievedTargetRate = sanitizeAchievedTargetRate(line.targetRate * propagationScale);
+			line.achievedTargetRate = sanitizeAchievedTargetRate(line.getTargetRate() * propagationScale);
 			line.bottleneckName = bottleneck.label();
-			targetNet = dotBalance(targetVector, line);
+			targetNet = dotBalance(primaryTarget.vector, line);
 			maxResidual = computeMaxResidual(internalVectors, line);
 			sizingStatus = autoSizeBalancedLine(line);
 		} else {
-			line.achievedTargetRate = line.targetRate;
+			line.achievedTargetRate = line.getTargetRate();
 			line.bottleneckName = "";
 		}
 		line.balanceEnabled = true;
 		line.balanceMessage = buildBalancedMessage(line, maxResidual, sizingStatus);
 		save();
 		return new BalanceResult(true, line.balanceMessage, targetNet, maxResidual);
+	}
+
+	private static Map<EmiStack, ResourceVector> collectGroupResiduals(Line line, int groupId, int n,
+			List<double[]> rows, List<Double> rhs, List<ResourceVector> internalVectors, boolean applyCurrentLinks) {
+		Map<EmiStack, ResourceVector> collection = new LinkedHashMap<>();
+		for (int i = 0; i < line.entries.size(); i++) {
+			Entry entry = line.entries.get(i);
+			if (entry.groupId != groupId) {
+				continue;
+			}
+			addRecipeResources(collection, entry.getRecipe(), i, n);
+		}
+		for (Group child : line.groups) {
+			if (child.parentId != groupId) {
+				continue;
+			}
+			Map<EmiStack, ResourceVector> childResiduals = collectGroupResiduals(line, child.id, n, rows, rhs, internalVectors, true);
+			mergeResourceCollections(collection, childResiduals, n);
+		}
+		if (applyCurrentLinks) {
+			Group group = line.getGroup(groupId);
+			List<EmiStack> matched = new ArrayList<>();
+			for (ResourceVector vector : collection.values()) {
+				if (!vector.hasInput || !vector.hasOutput || line.getLinkMode(group, vector.stack) == LinkMode.IGNORE) {
+					continue;
+				}
+				if (rows != null && rhs != null && internalVectors != null) {
+					addMatchConstraint(vector, rows, rhs, internalVectors);
+				}
+				matched.add(vector.stack);
+			}
+			for (EmiStack stack : matched) {
+				collection.remove(stack);
+			}
+		}
+		return collection;
+	}
+
+	private static void addRecipeResources(Map<EmiStack, ResourceVector> collection, EmiRecipe recipe, int index, int n) {
+		if (recipe == null) {
+			return;
+		}
+		for (EmiIngredient ingredient : recipe.getInputs()) {
+			if (ingredient == null || ingredient.isEmpty()) {
+				continue;
+			}
+			EmiStack stack = firstStack(ingredient);
+			if (stack == null || stack.isEmpty()) {
+				continue;
+			}
+			double amount = ingredient.getAmount() * Math.max(0.0D, ingredient.getChance());
+			ResourceVector vector = collection.computeIfAbsent(normalizeStack(stack), k -> new ResourceVector(k, n));
+			vector.net[index] -= amount;
+			vector.hasInput = true;
+		}
+		for (EmiStack stack : recipe.getOutputs()) {
+			if (stack == null || stack.isEmpty()) {
+				continue;
+			}
+			double amount = stack.getAmount() * Math.max(0.0D, stack.getChance());
+			ResourceVector vector = collection.computeIfAbsent(normalizeStack(stack), k -> new ResourceVector(k, n));
+			vector.net[index] += amount;
+			vector.hasOutput = true;
+		}
+	}
+
+	private static void mergeResourceCollections(Map<EmiStack, ResourceVector> target, Map<EmiStack, ResourceVector> source, int n) {
+		for (ResourceVector sourceVector : source.values()) {
+			ResourceVector targetVector = target.computeIfAbsent(sourceVector.stack, k -> new ResourceVector(k, n));
+			for (int i = 0; i < n; i++) {
+				targetVector.net[i] += sourceVector.net[i];
+			}
+			targetVector.hasInput |= sourceVector.hasInput;
+			targetVector.hasOutput |= sourceVector.hasOutput;
+		}
+	}
+
+	private static void addMatchConstraint(ResourceVector vector, List<double[]> rows, List<Double> rhs,
+			List<ResourceVector> internalVectors) {
+		double scale = maxAbs(vector.net);
+		if (scale <= 0.0D) {
+			return;
+		}
+		double[] row = new double[vector.net.length];
+		for (int i = 0; i < row.length; i++) {
+			row[i] = vector.net[i] / scale;
+		}
+		rows.add(row);
+		rhs.add(0.0D);
+		internalVectors.add(vector);
 	}
 
 	private static MachineSizingStatus autoSizeBalancedLine(Line line) {
@@ -473,30 +806,40 @@ public final class ProductionPlanner {
 			return buildBottleneckMessage(line);
 		}
 		String flow = maxResidual < 0.0001D
-			? "Balanced to target"
-			: "Balanced with residual " + formatSolverNumber(maxResidual);
+			? (line != null && line.targets.size() > 1
+				? PlannerText.tr("status.balanced_targets", "Balanced to all targets")
+				: PlannerText.tr("status.balanced_target", "Balanced to target"))
+			: PlannerText.tr("status.residual", "Balanced with residual") + " " + formatSolverNumber(maxResidual);
 		if (status.insufficient() > 0) {
-			return flow + "; machine constraints still report a capacity shortfall";
+			return flow + "; " + PlannerText.tr("status.capacity_shortfall", "machine constraints still report a capacity shortfall");
 		}
 		if (status.unavailable() > 0) {
-			return flow + "; some machine sizing unavailable";
+			return flow + "; " + PlannerText.tr("status.sizing_unavailable", "some machine sizing unavailable");
 		}
-		return flow + "; machines sized";
+		return flow + "; " + PlannerText.tr("status.machines_sized", "machines sized");
 	}
 
 	private static String buildBottleneckMessage(Line line) {
 		if (line == null) {
-			return "Machine bottleneck limits line throughput";
+			return PlannerText.tr("status.bottleneck", "Machine bottleneck limits line throughput");
 		}
 		String bottleneck = line.bottleneckName == null || line.bottleneckName.isBlank()
-			? "fixed machine setup"
+			? PlannerText.tr("status.fixed_setup", "fixed machine setup")
 			: line.bottleneckName;
-		return "Requested: " + formatSolverNumber(line.targetRate) + "/s | Achievable: "
-			+ formatSolverNumber(line.achievedTargetRate) + "/s | Bottleneck: " + bottleneck;
+		if (line.targets.size() > 1) {
+			double primary = Math.max(0.000000001D, line.getTargetRate());
+			double percent = Math.max(0.0D, Math.min(100.0D, line.achievedTargetRate / primary * 100.0D));
+			return PlannerText.tr("status.requested", "Requested") + ": " + line.targets.size() + " targets | "
+				+ PlannerText.tr("status.achievable", "Achievable") + ": " + formatSolverNumber(percent) + "% | "
+				+ PlannerText.tr("status.bottleneck_label", "Bottleneck") + ": " + bottleneck;
+		}
+		return PlannerText.tr("status.requested", "Requested") + ": " + formatSolverNumber(line.getTargetRate()) + "/s | "
+			+ PlannerText.tr("status.achievable", "Achievable") + ": " + formatSolverNumber(line.achievedTargetRate) + "/s | "
+			+ PlannerText.tr("status.bottleneck_label", "Bottleneck") + ": " + bottleneck;
 	}
 
 	private static BottleneckPropagation findBottleneckPropagation(Line line) {
-		if (line == null || line.targetRate <= 0.0D) {
+		if (line == null || line.targets.isEmpty() || line.getTargetRate() <= 0.0D) {
 			return BottleneckPropagation.none();
 		}
 		double scale = 1.0D;
@@ -870,9 +1213,18 @@ public final class ProductionPlanner {
 			if (line.name != null && !line.name.isBlank()) {
 				lineObject.addProperty("name", line.name);
 			}
-			if (line.target != null && !line.target.isEmpty()) {
-				lineObject.add("target", EmiIngredientSerializer.getSerialized(normalizeStack(line.target)));
-				lineObject.addProperty("target_rate", line.targetRate);
+			if (!line.targets.isEmpty()) {
+				JsonArray targets = new JsonArray();
+				for (Target target : line.targets) {
+					JsonObject targetObject = new JsonObject();
+					targetObject.add("stack", EmiIngredientSerializer.getSerialized(normalizeStack(target.stack)));
+					targetObject.addProperty("rate", target.rate);
+					targets.add(targetObject);
+				}
+				lineObject.add("targets", targets);
+				Target primary = line.targets.get(0);
+				lineObject.add("target", EmiIngredientSerializer.getSerialized(normalizeStack(primary.stack)));
+				lineObject.addProperty("target_rate", primary.rate);
 			}
 			lineObject.addProperty("balance_enabled", line.balanceEnabled);
 			if (line.balanceEnabled && line.achievedTargetRate > 0.0D) {
@@ -884,6 +1236,32 @@ public final class ProductionPlanner {
 			if (line.standardVoltageTier >= 0) {
 				lineObject.addProperty("standard_voltage_tier", line.standardVoltageTier);
 			}
+			if (!line.groups.isEmpty()) {
+				JsonArray groups = new JsonArray();
+				for (Group group : line.groups) {
+					JsonObject groupObject = new JsonObject();
+					groupObject.addProperty("id", group.id);
+					if (group.parentId > 0) {
+						groupObject.addProperty("parent", group.parentId);
+					}
+					if (group.name != null && !group.name.isBlank()) {
+						groupObject.addProperty("name", group.name);
+					}
+					if (group.collapsed) {
+						groupObject.addProperty("collapsed", true);
+					}
+					JsonArray links = serializeLinks(group.links);
+					if (links.size() > 0) {
+						groupObject.add("links", links);
+					}
+					groups.add(groupObject);
+				}
+				lineObject.add("groups", groups);
+			}
+			JsonArray rootLinks = serializeLinks(line.rootLinks);
+			if (rootLinks.size() > 0) {
+				lineObject.add("root_links", rootLinks);
+			}
 			JsonArray entries = new JsonArray();
 			for (Entry entry : line.entries) {
 				JsonObject entryObject = new JsonObject();
@@ -892,6 +1270,9 @@ public final class ProductionPlanner {
 				entryObject.addProperty("mode", entry.automatic ? "auto" : "manual");
 				entryObject.addProperty("machines", entry.machines);
 				entryObject.addProperty("parallel", entry.parallel);
+				if (entry.groupId > 0) {
+					entryObject.addProperty("group_id", entry.groupId);
+				}
 				if (entry.machinesFixed) {
 					entryObject.addProperty("machines_fixed", true);
 				}
@@ -923,6 +1304,67 @@ public final class ProductionPlanner {
 		EmiProductionPlannerPersistence.save(root);
 	}
 
+	private static JsonArray serializeLinks(Map<EmiStack, LinkMode> links) {
+		JsonArray array = new JsonArray();
+		for (Map.Entry<EmiStack, LinkMode> link : links.entrySet()) {
+			if (link.getValue() == null || link.getValue() == LinkMode.MATCH || link.getKey() == null || link.getKey().isEmpty()) {
+				continue;
+			}
+			JsonObject object = new JsonObject();
+			object.add("stack", EmiIngredientSerializer.getSerialized(normalizeStack(link.getKey())));
+			object.addProperty("mode", link.getValue().serialized());
+			array.add(object);
+		}
+		return array;
+	}
+
+	private static int sanitizeGroupId(Line line, int groupId) {
+		if (line == null || groupId <= 0) {
+			return 0;
+		}
+		return line.getGroup(groupId) == null ? 0 : groupId;
+	}
+
+	private static boolean isGroupDescendant(Line line, int candidateId, int ancestorId) {
+		if (line == null || candidateId <= 0 || ancestorId <= 0) {
+			return false;
+		}
+		Group cursor = line.getGroup(candidateId);
+		int guard = 0;
+		while (cursor != null && guard++ < line.groups.size() + 1) {
+			if (cursor.id == ancestorId) {
+				return true;
+			}
+			cursor = line.getGroup(cursor.parentId);
+		}
+		return false;
+	}
+
+	private static void sanitizeGroups(Line line) {
+		if (line == null) {
+			return;
+		}
+		Set<Integer> seenIds = new java.util.HashSet<>();
+		line.groups.removeIf(group -> group == null || !seenIds.add(group.id));
+		for (Group group : line.groups) {
+			if (group.parentId == group.id || group.parentId > 0 && line.getGroup(group.parentId) == null) {
+				group.parentId = 0;
+			}
+			Set<Integer> chain = new java.util.HashSet<>();
+			Group cursor = group;
+			while (cursor != null && cursor.parentId > 0) {
+				if (!chain.add(cursor.id)) {
+					group.parentId = 0;
+					break;
+				}
+				cursor = line.getGroup(cursor.parentId);
+			}
+		}
+		for (Entry entry : line.entries) {
+			entry.groupId = sanitizeGroupId(line, entry.groupId);
+		}
+	}
+
 	private static double sanitizeRate(double rate) {
 		if (!Double.isFinite(rate)) {
 			return 1.0D;
@@ -935,6 +1377,13 @@ public final class ProductionPlanner {
 			return 1.0D;
 		}
 		return Math.max(0.000001D, Math.min(rate, 1_000_000_000_000D));
+	}
+
+	private static double defaultTargetRate(EmiStack stack) {
+		if (stack != null && stack.getKey() instanceof net.minecraft.fluid.Fluid) {
+			return 1000.0D;
+		}
+		return 1.0D;
 	}
 
 	private static double sanitizeAchievedTargetRate(double rate) {
@@ -962,7 +1411,7 @@ public final class ProductionPlanner {
 		line.balanceEnabled = false;
 		line.achievedTargetRate = 0.0D;
 		line.bottleneckName = "";
-		line.balanceMessage = line.target != null && !line.target.isEmpty() ? "Line changed. Press BALANCE." : "";
+		line.balanceMessage = !line.targets.isEmpty() ? PlannerText.tr("status.line_changed", "Line changed. Press BALANCE.") : "";
 	}
 
 	private static EmiStack firstStack(EmiIngredient ingredient) {
@@ -1004,42 +1453,6 @@ public final class ProductionPlanner {
 			value += a[i] * b[i];
 		}
 		return value;
-	}
-
-	private static double[] nonNegativeLeastSquares(double[][] a, double[] b, int columns) {
-		double[] x = new double[columns];
-		double[] residual = new double[b.length];
-		for (int r = 0; r < b.length; r++) {
-			residual[r] = -b[r];
-		}
-		for (int pass = 0; pass < 6000; pass++) {
-			double maxDelta = 0.0D;
-			for (int c = 0; c < columns; c++) {
-				double norm = 0.0D;
-				double grad = 0.0D;
-				for (int r = 0; r < a.length; r++) {
-					double v = a[r][c];
-					norm += v * v;
-					grad += v * residual[r];
-				}
-				if (norm <= 1.0E-18D) {
-					continue;
-				}
-				double next = Math.max(0.0D, x[c] - grad / norm);
-				double delta = next - x[c];
-				if (Math.abs(delta) > 0.0D) {
-					x[c] = next;
-					for (int r = 0; r < a.length; r++) {
-						residual[r] += a[r][c] * delta;
-					}
-					maxDelta = Math.max(maxDelta, Math.abs(delta));
-				}
-			}
-			if (maxDelta < 1.0E-10D) {
-				break;
-			}
-		}
-		return x;
 	}
 
 	private static String formatSolverNumber(double value) {
@@ -1176,8 +1589,10 @@ public final class ProductionPlanner {
 	public static final class Line {
 		private String name;
 		private final List<Entry> entries = new ArrayList<>();
-		private EmiStack target = EmiStack.EMPTY;
-		private double targetRate = 1.0D;
+		private final List<Target> targets = new ArrayList<>();
+		private final List<Group> groups = new ArrayList<>();
+		private final Map<EmiStack, LinkMode> rootLinks = new LinkedHashMap<>();
+		private int nextGroupId = 1;
 		private double achievedTargetRate;
 		private String bottleneckName = "";
 		private boolean balanceEnabled;
@@ -1192,12 +1607,55 @@ public final class ProductionPlanner {
 			return entries;
 		}
 
+		public List<Target> getTargets() {
+			return Collections.unmodifiableList(targets);
+		}
+
+		public List<Group> getGroups() {
+			return Collections.unmodifiableList(groups);
+		}
+
+		public Group getGroup(int id) {
+			if (id <= 0) {
+				return null;
+			}
+			for (Group group : groups) {
+				if (group.id == id) {
+					return group;
+				}
+			}
+			return null;
+		}
+
+		public String getEntryGroupName(Entry entry) {
+			Group group = entry == null ? null : getGroup(entry.groupId);
+			return group == null ? PlannerText.tr("groups.root", "Root") : group.getDisplayName(this);
+		}
+
+		public LinkMode getLinkMode(Group group, EmiStack stack) {
+			Map<EmiStack, LinkMode> links = group == null ? rootLinks : group.links;
+			LinkMode mode = links.get(normalizeStack(stack));
+			return mode == null ? LinkMode.MATCH : mode;
+		}
+
 		public EmiStack getTarget() {
-			return target;
+			return targets.isEmpty() ? EmiStack.EMPTY : targets.get(0).stack;
 		}
 
 		public double getTargetRate() {
-			return targetRate;
+			return targets.isEmpty() ? 1.0D : targets.get(0).rate;
+		}
+
+		public boolean hasTarget(EmiStack stack) {
+			if (stack == null || stack.isEmpty()) {
+				return false;
+			}
+			for (Target target : targets) {
+				if (sameStack(target.stack, stack)) {
+					return true;
+				}
+			}
+			return false;
 		}
 
 		public boolean isBalanceEnabled() {
@@ -1225,11 +1683,23 @@ public final class ProductionPlanner {
 
 		public boolean hasMachineCapacityShortfall() {
 			return balanceEnabled && achievedTargetRate > 0.0D
-				&& achievedTargetRate + Math.max(1.0E-9D, targetRate * 1.0E-9D) < targetRate;
+				&& achievedTargetRate + Math.max(1.0E-9D, getTargetRate() * 1.0E-9D) < getTargetRate();
 		}
 
 		public double getAchievableTargetRate() {
-			return balanceEnabled && achievedTargetRate > 0.0D ? achievedTargetRate : targetRate;
+			return balanceEnabled && achievedTargetRate > 0.0D ? achievedTargetRate : getTargetRate();
+		}
+
+		public double getAchievableTargetRate(Target target) {
+			if (target == null || !targets.contains(target)) {
+				return 0.0D;
+			}
+			if (!balanceEnabled || achievedTargetRate <= 0.0D || targets.isEmpty()) {
+				return target.rate;
+			}
+			double primaryRate = Math.max(0.000000001D, getTargetRate());
+			double scale = achievedTargetRate / primaryRate;
+			return target.rate * scale;
 		}
 
 		public String getBottleneckName() {
@@ -1237,10 +1707,104 @@ public final class ProductionPlanner {
 		}
 	}
 
+	public enum LinkMode {
+		MATCH("match"),
+		IGNORE("ignore");
+
+		private final String serialized;
+
+		LinkMode(String serialized) {
+			this.serialized = serialized;
+		}
+
+		public String serialized() {
+			return serialized;
+		}
+
+		public LinkMode toggled() {
+			return this == MATCH ? IGNORE : MATCH;
+		}
+
+		private static LinkMode fromSerialized(String value) {
+			return value != null && "ignore".equalsIgnoreCase(value) ? IGNORE : MATCH;
+		}
+	}
+
+	public static final class Group {
+		private final int id;
+		private int parentId;
+		private String name;
+		private boolean collapsed;
+		private final Map<EmiStack, LinkMode> links = new LinkedHashMap<>();
+
+		private Group(int id, int parentId, String name) {
+			this.id = Math.max(1, id);
+			this.parentId = Math.max(0, parentId);
+			this.name = name;
+		}
+
+		public int getId() {
+			return id;
+		}
+
+		public int getParentId() {
+			return parentId;
+		}
+
+		public Group getParent(Line line) {
+			return line == null ? null : line.getGroup(parentId);
+		}
+
+		public String getName() {
+			return name;
+		}
+
+		public String getDisplayName(Line line) {
+			if (name != null && !name.isBlank()) {
+				return name;
+			}
+			int number = 1;
+			if (line != null) {
+				for (Group group : line.groups) {
+					if (group == this) {
+						break;
+					}
+					number++;
+				}
+			}
+			return PlannerText.tr("group.default", "Group") + " " + number;
+		}
+
+		public boolean isCollapsed() {
+			return collapsed;
+		}
+	}
+
+	public static final class Target {
+		private final EmiStack stack;
+		private double rate;
+
+		private Target(EmiStack stack, double rate) {
+			this.stack = normalizeStack(stack);
+			this.rate = sanitizeTargetRate(rate);
+		}
+
+		public EmiStack getStack() {
+			return stack;
+		}
+
+		public double getRate() {
+			return rate;
+		}
+	}
+
 	public record BalanceResult(boolean success, String message, double targetNet, double maxInternalResidual) {
 	}
 
 	private record MachineSizingStatus(int active, int unavailable, int insufficient) {
+	}
+
+	private record TargetVector(Target target, ResourceVector vector) {
 	}
 
 	private record BottleneckPropagation(double scale, String label) {
@@ -1342,6 +1906,7 @@ public final class ProductionPlanner {
 		private int coilTier;
 		private boolean machinesFixed;
 		private boolean parallelFixed;
+		private int groupId;
 		private double detectedDurationTicks = Double.NaN;
 		private long detectedRecipeEUt = Long.MIN_VALUE;
 
@@ -1390,6 +1955,10 @@ public final class ProductionPlanner {
 
 		public int getParallel() {
 			return parallel;
+		}
+
+		public int getGroupId() {
+			return groupId;
 		}
 
 		public boolean isMachinesFixed() {

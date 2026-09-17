@@ -86,10 +86,13 @@ public class RecipeDefaultOutputScreen extends Screen {
 		} else {
 			this.renderBackgroundTexture(raw);
 		}
+
+		EmiDrawContext context = EmiDrawContext.wrap(raw);
+		context.push();
+		context.matrices().translate(0, 0, 1000);
 		raw.fill(0, 0, width, height, 0x88000000);
 		raw.fill(panelX, panelY, panelX + panelWidth, panelY + panelHeight, 0xFF15151B);
 		drawBorder(raw, panelX, panelY, panelWidth, panelHeight, 0xFF7B7B84);
-		EmiDrawContext context = EmiDrawContext.wrap(raw);
 		context.drawCenteredTextWithShadow(title, panelX + panelWidth / 2, panelY + 9, 0xFFFFFFFF);
 
 		for (int i = 0; i < outputs.size(); i++) {
@@ -130,6 +133,7 @@ public class RecipeDefaultOutputScreen extends Screen {
 		if (hovered >= 0) {
 			EmiRenderHelper.drawTooltip(this, context, outputs.get(hovered).getTooltip(), mouseX, mouseY);
 		}
+		context.pop();
 	}
 
 	@Override
