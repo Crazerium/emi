@@ -2,6 +2,7 @@ package dev.emi.emi.planner;
 
 import java.util.Map;
 
+import dev.emi.emi.planner.compat.PlannerMachineCompatRegistry;
 import net.minecraft.client.MinecraftClient;
 
 public final class PlannerText {
@@ -34,6 +35,15 @@ public final class PlannerText {
 		Map.entry("footer.apply_all", "ВСЕМ"),
 		Map.entry("footer.groups", "ГРУППЫ"),
 		Map.entry("footer.voltage_hint", "Новые машины наследуют это напряжение; строку можно переопределить."),
+		Map.entry("machine.settings", "Настройки машины"),
+		Map.entry("machine.select", "Выбор машины"),
+		Map.entry("machine.coils", "Катушки"),
+		Map.entry("machine.select_coils", "Выбор катушек"),
+		Map.entry("machine.parallel_control", "Контроль параллелей"),
+		Map.entry("machine.coil_help", "Бонус катушек умножает время и EU/t"),
+		Map.entry("machine.parallel_help", "Контроль параллелей повторяет значение PAR в строке"),
+		Map.entry("machine.special_help", "Специальные параметры машины применяются к расчету линии"),
+		Map.entry("machine.throughput_multiplier", "Текущий множитель пропускной способности"),
 		Map.entry("groups.title", "Группы и связи"),
 		Map.entry("groups.root", "Корень"),
 		Map.entry("groups.new", "+ ГРУППА"),
@@ -102,7 +112,14 @@ public final class PlannerText {
 
 	public static String tr(String key, String english) {
 		if (isRussian()) {
-			return RU.getOrDefault(key, english);
+			String builtIn = RU.get(key);
+			if (builtIn != null) {
+				return builtIn;
+			}
+			String compat = PlannerMachineCompatRegistry.russianText(key);
+			if (compat != null) {
+				return compat;
+			}
 		}
 		return english;
 	}

@@ -24,6 +24,7 @@ import dev.emi.emi.planner.ProductionPlanner.Group;
 import dev.emi.emi.planner.ProductionPlanner.LinkMode;
 import dev.emi.emi.planner.ProductionPlanner.Line;
 import dev.emi.emi.planner.ProductionPlanner.MachineProfile;
+import dev.emi.emi.planner.ProductionPlanner.MachineSettingSpec;
 import dev.emi.emi.planner.ProductionPlanner.MachineSizing;
 import dev.emi.emi.planner.ProductionPlanner.OcMode;
 import dev.emi.emi.planner.ProductionPlanner.Target;
@@ -112,6 +113,7 @@ public class ProductionPlannerScreen extends Screen {
 	private Bounds configParallelMinus = EMPTY;
 	private Bounds configParallelValue = EMPTY;
 	private Bounds configParallelPlus = EMPTY;
+	private List<MachineSettingControl> configSpecialControls = List.of();
 	private boolean coilMenuOpen;
 	private Bounds coilMenuAnchor = EMPTY;
 	private List<CoilOptionHitbox> coilOptionHitboxes = List.of();
@@ -401,7 +403,7 @@ public class ProductionPlannerScreen extends Screen {
 			drawButton(context, parallelPlus, mouseX, mouseY, "+", false);
 			drawValueBox(context, voltage, mouseX, mouseY, entry.getVoltageName(), entry.getRecipeEUt() > 0L,
 				ProductionPlanner.voltageTierColor(entry.getVoltageTier()));
-			drawButton(context, oc, mouseX, mouseY, entry.getOcMode().label(), entry.getOcMode() != OcMode.NONE);
+			drawButton(context, oc, mouseX, mouseY, entry.getOcDisplayLabel(), entry.getOcMode() != OcMode.NONE);
 
 			double durationSeconds = entry.getProcessedDurationSeconds();
 			String durationText = durationSeconds > 0.0D ? formatDuration(durationSeconds) + (entry.isDurationOverridden() ? "*" : "") : "--";
@@ -937,7 +939,7 @@ public class ProductionPlannerScreen extends Screen {
 		context.fill(x, y, menuWidth, menuHeight, 0xFF111118);
 		drawBorder(context, activeDropdownBounds, 0xFFD0D0D8);
 		context.fill(x + 1, y + 1, menuWidth - 2, MENU_HEADER_HEIGHT - 1, 0xFF262630);
-		context.drawTextWithShadow(EmiPort.literal("Select machine"), x + 7, y + 6, 0xFFFFFFFF);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("machine.select", "Select machine")), x + 7, y + 6, 0xFFFFFFFF);
 		if (profiles.size() > visible) {
 			String marker = (machineMenuScroll > 0 ? "^ " : "") + (machineMenuScroll + visible < profiles.size() ? "v" : "");
 			context.drawTextWithShadow(EmiPort.literal(marker), x + menuWidth - 20, y + 6, 0xFFB8B8C0);
@@ -1029,8 +1031,9 @@ public class ProductionPlannerScreen extends Screen {
 		}
 		boolean coils = profile.coilEfficiencyPerTier() > 0.0D;
 		boolean parallelControl = profile.parallelControl();
-		int rows = (coils ? 1 : 0) + (parallelControl ? 1 : 0);
-		int menuWidth = 264;
+		List<MachineSettingSpec> specialSettings = ProductionPlanner.getMachineSettingSpecs(machineConfigEntry);
+		int rows = (coils ? 1 : 0) + (parallelControl ? 1 : 0) + specialSettings.size();
+		int menuWidth = specialSettings.isEmpty() ? 264 : 316;
 		int menuHeight = MENU_HEADER_HEIGHT + rows * 26 + 20;
 		int x = Math.max(4, Math.min(machineConfigAnchor.x(), width - menuWidth - 4));
 		int y = machineConfigAnchor.bottom() + 2;
@@ -1041,7 +1044,8 @@ public class ProductionPlannerScreen extends Screen {
 		context.fill(x, y, menuWidth, menuHeight, 0xFF111118);
 		drawBorder(context, activeDropdownBounds, 0xFFD0D0D8);
 		context.fill(x + 1, y + 1, menuWidth - 2, MENU_HEADER_HEIGHT - 1, 0xFF262630);
-		String title = textRenderer.trimToWidth("Machine settings - " + profile.displayName(), menuWidth - 12);
+		String titleText = PlannerText.tr("machine.settings", "Machine settings") + " - " + profile.displayName();
+		String title = textRenderer.trimToWidth(titleText, menuWidth - 12);
 		context.drawTextWithShadow(EmiPort.literal(title), x + 7, y + 6, 0xFFFFFFFF);
 
 		configCoilMinus = EMPTY;
@@ -1050,9 +1054,10 @@ public class ProductionPlannerScreen extends Screen {
 		configParallelMinus = EMPTY;
 		configParallelValue = EMPTY;
 		configParallelPlus = EMPTY;
+		List<MachineSettingControl> specialControls = new ArrayList<>();
 		int cy = y + MENU_HEADER_HEIGHT + 4;
 		if (coils) {
-			context.drawTextWithShadow(EmiPort.literal("Coils:"), x + 8, cy + 5, 0xFFC8C8D0);
+			context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("machine.coils", "Coils") + ":"), x + 8, cy + 5, 0xFFC8C8D0);
 			configCoilMinus = new Bounds(x + 70, cy + 1, 18, 18);
 			configCoilValue = new Bounds(x + 90, cy, 136, 20);
 			configCoilPlus = new Bounds(x + 228, cy + 1, 18, 18);
@@ -1062,18 +1067,44 @@ public class ProductionPlannerScreen extends Screen {
 			cy += 26;
 		}
 		if (parallelControl) {
-			context.drawTextWithShadow(EmiPort.literal("Parallel Control:"), x + 8, cy + 5, 0xFFC8C8D0);
-			configParallelMinus = new Bounds(x + 132, cy + 1, 18, 18);
-			configParallelValue = new Bounds(x + 152, cy, 74, 20);
-			configParallelPlus = new Bounds(x + 228, cy + 1, 18, 18);
+			String parallelLabel = PlannerText.tr("machine.parallel_control", "Parallel Control") + ":";
+			context.drawTextWithShadow(EmiPort.literal(parallelLabel), x + 8, cy + 5, 0xFFC8C8D0);
+			int plusX = x + menuWidth - 36;
+			configParallelMinus = new Bounds(plusX - 96, cy + 1, 18, 18);
+			configParallelValue = new Bounds(plusX - 76, cy, 74, 20);
+			configParallelPlus = new Bounds(plusX, cy + 1, 18, 18);
 			drawButton(context, configParallelMinus, mouseX, mouseY, "-", false);
 			drawValueBox(context, configParallelValue, mouseX, mouseY, Integer.toString(machineConfigEntry.getParallel()), true);
 			drawButton(context, configParallelPlus, mouseX, mouseY, "+", false);
 			cy += 26;
 		}
-		String info = coils
-			? "Coil bonus affects both duration and EU/t multiplicatively"
-			: "Parallel Control mirrors the row PAR setting";
+		for (MachineSettingSpec spec : specialSettings) {
+			int plusX = x + menuWidth - 36;
+			int valueWidth = 84;
+			int valueX = plusX - valueWidth - 2;
+			int minusX = valueX - 20;
+			String label = PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ":";
+			label = textRenderer.trimToWidth(label, Math.max(40, minusX - x - 16));
+			context.drawTextWithShadow(EmiPort.literal(label), x + 8, cy + 5, 0xFFC8C8D0);
+			Bounds minus = new Bounds(minusX, cy + 1, 18, 18);
+			Bounds value = new Bounds(valueX, cy, valueWidth, 20);
+			Bounds plus = new Bounds(plusX, cy + 1, 18, 18);
+			drawButton(context, minus, mouseX, mouseY, "-", false);
+			drawValueBox(context, value, mouseX, mouseY, machineConfigEntry.getMachineSettingDisplayValue(spec),
+				machineConfigEntry.getMachineSettingValue(spec) != spec.defaultValue());
+			drawButton(context, plus, mouseX, mouseY, "+", false);
+			specialControls.add(new MachineSettingControl(spec, minus, value, plus));
+			cy += 26;
+		}
+		configSpecialControls = List.copyOf(specialControls);
+		String info;
+		if (!specialSettings.isEmpty()) {
+			info = PlannerText.tr("machine.special_help", "Special machine settings are applied to line calculations");
+		} else if (coils) {
+			info = PlannerText.tr("machine.coil_help", "Coil bonus affects both duration and EU/t multiplicatively");
+		} else {
+			info = PlannerText.tr("machine.parallel_help", "Parallel Control mirrors the row PAR setting");
+		}
 		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(info, menuWidth - 16)), x + 8, y + menuHeight - 14, 0xFF858590);
 	}
 
@@ -1090,7 +1121,7 @@ public class ProductionPlannerScreen extends Screen {
 		context.fill(x, y, menuWidth, menuHeight, 0xFF111118);
 		drawBorder(context, activeDropdownBounds, 0xFFD0D0D8);
 		context.fill(x + 1, y + 1, menuWidth - 2, MENU_HEADER_HEIGHT - 1, 0xFF262630);
-		context.drawTextWithShadow(EmiPort.literal("Select coils"), x + 7, y + 6, 0xFFFFFFFF);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("machine.select_coils", "Select coils")), x + 7, y + 6, 0xFFFFFFFF);
 		List<CoilOptionHitbox> hitboxes = new ArrayList<>();
 		for (int tier = 0; tier < count; tier++) {
 			Bounds row = new Bounds(x + 2, y + MENU_HEADER_HEIGHT + tier * MENU_ROW_HEIGHT, menuWidth - 4, MENU_ROW_HEIGHT);
@@ -1125,6 +1156,7 @@ public class ProductionPlannerScreen extends Screen {
 		configParallelMinus = EMPTY;
 		configParallelValue = EMPTY;
 		configParallelPlus = EMPTY;
+		configSpecialControls = List.of();
 		coilMenuOpen = false;
 		coilMenuAnchor = EMPTY;
 		coilOptionHitboxes = List.of();
@@ -1200,10 +1232,33 @@ public class ProductionPlannerScreen extends Screen {
 				return;
 			}
 			if (configParallelValue.contains(mouseX, mouseY)) {
-				drawTooltip(context, mouseX, mouseY, "Parallel Control: " + machineConfigEntry.getParallel(),
-					"This mirrors PAR for the selected machine",
+				drawTooltip(context, mouseX, mouseY, PlannerText.tr("machine.parallel_control", "Parallel Control") + ": " + machineConfigEntry.getParallel(),
+					PlannerText.tr("machine.parallel_help", "Parallel Control mirrors the row PAR setting"),
 					"Use +/- here or edit PAR in the recipe row");
 				return;
+			}
+			for (MachineSettingControl control : configSpecialControls) {
+				if (control.minus.contains(mouseX, mouseY) || control.value.contains(mouseX, mouseY) || control.plus.contains(mouseX, mouseY)) {
+					MachineSettingSpec spec = control.spec;
+					List<String> lines = new ArrayList<>();
+					lines.add(PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ": " + machineConfigEntry.getMachineSettingDisplayValue(spec));
+					if (!spec.englishHelp().isBlank()) {
+						lines.add(PlannerText.tr(spec.helpKey(), spec.englishHelp()));
+					}
+					lines.addAll(ProductionPlanner.getMachineSettingDetailLines(machineConfigEntry, spec));
+					double durationMultiplier = machineConfigEntry.getMachineSettingDurationMultiplier();
+					if (Math.abs(durationMultiplier - 1.0D) > EPSILON) {
+						lines.add("Current duration multiplier: x" + formatExactRate(durationMultiplier));
+					}
+					double throughputMultiplier = machineConfigEntry.getMachineSettingThroughputMultiplier();
+					if (Math.abs(throughputMultiplier - 1.0D) > EPSILON) {
+						lines.add(PlannerText.tr("machine.throughput_multiplier", "Current throughput multiplier") + ": x"
+							+ formatExactRate(throughputMultiplier));
+					}
+					lines.add("Use +/- or mouse wheel");
+					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
+					return;
+				}
 			}
 		}
 		if (machineMenuEntry != null) {
@@ -1384,7 +1439,10 @@ public class ProductionPlannerScreen extends Screen {
 					lines.add("Coils: " + entry.getCoilName() + " (tier +" + entry.getCoilTier() + ")");
 				}
 				if (entry.getMachineProfile().parallelControl()) {
-					lines.add("Parallel Control: " + entry.getParallel());
+					lines.add(PlannerText.tr("machine.parallel_control", "Parallel Control") + ": " + entry.getParallel());
+				}
+				for (MachineSettingSpec spec : ProductionPlanner.getMachineSettingSpecs(entry)) {
+					lines.add(PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ": " + entry.getMachineSettingDisplayValue(spec));
 				}
 				lines.add("Click to configure this machine");
 				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
@@ -1418,19 +1476,19 @@ public class ProductionPlannerScreen extends Screen {
 				return;
 			}
 			if (row.parallelArea().contains(mouseX, mouseY)) {
-				MachineProfile profile = entry.getMachineProfile();
+				int configuredMaxParallel = entry.getConfiguredMaxParallel();
 				if (activeLine.isBalanceEnabled()) {
 					List<String> lines = new ArrayList<>();
 					lines.add("Parallel per machine: " + entry.getParallel());
-					if (profile.maxParallel() > 0) {
-						lines.add("Machine profile limit: " + profile.maxParallel());
+					if (configuredMaxParallel > 0) {
+						lines.add("Configured max parallel: " + configuredMaxParallel);
 					}
 					addMachineSizingTooltip(lines, entry, activeLine.getEffectiveRate(entry));
 					lines.add(entry.isParallelFixed() ? "PAR is fixed for BALANCE" : "Use the F button to fix PAR during BALANCE");
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
-				} else if (profile.maxParallel() > 0) {
+				} else if (configuredMaxParallel > 0) {
 					drawTooltip(context, mouseX, mouseY, "Parallel per machine: " + entry.getParallel(),
-						"Machine profile limit: " + profile.maxParallel(), "Use +/- or mouse wheel",
+						"Configured max parallel: " + configuredMaxParallel, "Use +/- or mouse wheel",
 						"Shift changes by 10", "Right-click the number to type an exact value");
 				} else {
 					drawTooltip(context, mouseX, mouseY, "Parallel per machine: " + entry.getParallel(),
@@ -1462,10 +1520,12 @@ public class ProductionPlannerScreen extends Screen {
 			if (row.oc.contains(mouseX, mouseY)) {
 				String behavior = switch (entry.getOcMode()) {
 					case NONE -> "No voltage overclocking";
-					case STANDARD -> "Each OC: 4x EU/t, 2x speed";
+					case STANDARD -> Math.abs(entry.getOcDurationMultiplierPerStep() - 0.5D) > EPSILON
+						? "Each OC: 4x EU/t, x" + formatExactRate(entry.getOcDurationMultiplierPerStep()) + " duration"
+						: "Each OC: 4x EU/t, 2x speed";
 					case PERFECT -> "Each OC: 4x EU/t, 4x speed";
 				};
-				drawTooltip(context, mouseX, mouseY, "OC mode: " + entry.getOcMode().label(), behavior,
+				drawTooltip(context, mouseX, mouseY, "OC mode: " + entry.getOcDisplayLabel(), behavior,
 					"Left-click: next mode", "Right-click: previous mode",
 					entry.getMachineProfile().allowsPerfectOc() ? "Perfect OC is allowed by this profile" : "This machine profile does not allow Perfect OC");
 				return;
@@ -1483,6 +1543,12 @@ public class ProductionPlannerScreen extends Screen {
 				}
 				if (entry.getMachineProfile().coilEfficiencyPerTier() > 0.0D) {
 					lines.add("Coils: " + entry.getCoilName() + " -> x" + formatExactRate(entry.getCoilMultiplier()) + " duration/EU");
+				}
+				if (Math.abs(entry.getMachineSettingDurationMultiplier() - 1.0D) > EPSILON) {
+					lines.add("Machine settings -> x" + formatExactRate(entry.getMachineSettingDurationMultiplier()) + " duration");
+				}
+				if (Math.abs(entry.getMachineSettingThroughputMultiplier() - 1.0D) > EPSILON) {
+					lines.add("Machine settings -> x" + formatExactRate(entry.getMachineSettingThroughputMultiplier()) + " throughput");
 				}
 				if (entry.isDurationOverridden()) {
 					double detected = entry.getDetectedDurationSeconds();
@@ -1732,6 +1798,20 @@ public class ProductionPlannerScreen extends Screen {
 				if (button == 0 && configParallelPlus.contains(mx, my)) {
 					ProductionPlanner.setParallel(machineConfigEntry, machineConfigEntry.getParallel() + countAdjustmentStep());
 					return true;
+				}
+				for (MachineSettingControl control : configSpecialControls) {
+					if (control.minus.contains(mx, my) && (button == 0 || button == 1)) {
+						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, -1);
+						return true;
+					}
+					if (control.plus.contains(mx, my) && (button == 0 || button == 1)) {
+						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, 1);
+						return true;
+					}
+					if (control.value.contains(mx, my) && (button == 0 || button == 1)) {
+						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, button == 0 ? 1 : -1);
+						return true;
+					}
 				}
 			}
 			if (button == 0 && machineMenuEntry != null) {
@@ -2056,6 +2136,12 @@ public class ProductionPlannerScreen extends Screen {
 				if (configParallelValue.contains(mx, my) || configParallelMinus.contains(mx, my) || configParallelPlus.contains(mx, my)) {
 					ProductionPlanner.setParallel(machineConfigEntry, machineConfigEntry.getParallel() + direction * countAdjustmentStep());
 					return true;
+				}
+				for (MachineSettingControl control : configSpecialControls) {
+					if (control.minus.contains(mx, my) || control.value.contains(mx, my) || control.plus.contains(mx, my)) {
+						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, direction);
+						return true;
+					}
 				}
 				return true;
 			}
@@ -2651,6 +2737,9 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private record CoilOptionHitbox(Bounds bounds, int tier) {
+	}
+
+	private record MachineSettingControl(MachineSettingSpec spec, Bounds minus, Bounds value, Bounds plus) {
 	}
 
 	private record TargetHitbox(Target target, Bounds icon, Bounds rate, Bounds remove) {

@@ -23,6 +23,9 @@ import dev.emi.emi.api.recipe.EmiRecipe;
 import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.api.stack.serializer.EmiIngredientSerializer;
+import dev.emi.emi.planner.compat.PlannerMachineCompatRegistry;
+import dev.emi.emi.planner.compat.PlannerMachineRule;
+import dev.emi.emi.planner.compat.PlannerMachineRuntimeOverride;
 import dev.emi.emi.registry.EmiRecipes;
 import dev.emi.emi.runtime.EmiProductionPlannerPersistence;
 import net.minecraft.text.Text;
@@ -45,6 +48,8 @@ public final class ProductionPlanner {
 	private static final List<String> STANDARD_COIL_NAMES = List.of(
 		"Cupronickel", "Kanthal", "Nichrome", "RTM Alloy", "HSS-G", "Naquadah", "Trinium", "Tritanium"
 	);
+
+	private static final int MAX_MACHINE_SETTING_VALUE = 1_000_000_000;
 
 	private ProductionPlanner() {
 	}
@@ -201,6 +206,17 @@ public final class ProductionPlanner {
 								sanitizeCount(parallel), sanitizeDurationTicks(durationOverrideTicks), sanitizeBalanceRate(balanceRate),
 								sanitizeMachineProfile(machineProfile), voltageTier, voltageOverride, ocMode, sanitizeCoilTier(coilTier),
 								machinesFixed, parallelFixed);
+							if (entryObject.has("machine_settings") && entryObject.get("machine_settings").isJsonObject()) {
+								JsonObject settingsObject = entryObject.getAsJsonObject("machine_settings");
+								for (Map.Entry<String, JsonElement> setting : settingsObject.entrySet()) {
+									try {
+										if (setting.getValue().isJsonPrimitive() && setting.getValue().getAsJsonPrimitive().isNumber()) {
+											entry.machineSettings.put(sanitizeMachineSettingKey(setting.getKey()), sanitizeMachineSettingValue(setting.getValue().getAsInt()));
+										}
+									} catch (Throwable ignored) {
+									}
+								}
+							}
 							entry.groupId = entryObject.has("group_id") ? sanitizeGroupId(line, entryObject.get("group_id").getAsInt()) : 0;
 							if (!entry.voltageOverride) {
 								applyLineStandardVoltage(line, entry);
@@ -629,6 +645,15 @@ public final class ProductionPlanner {
 			return failBalance(line, message);
 		}
 		double[] x = solveResult.solution();
+		for (int i = 0; i < n; i++) {
+			if (x[i] <= 1.0E-12D) {
+				continue;
+			}
+			String constraintError = machineSettingsConstraintError(line.entries.get(i));
+			if (!constraintError.isBlank()) {
+				return failBalance(line, constraintError);
+			}
+		}
 		TargetVector primaryTarget = targetVectors.get(0);
 		double targetNet = dot(primaryTarget.vector.net, x);
 		if (!Double.isFinite(targetNet) || targetNet <= 0.0D) {
@@ -1029,7 +1054,11 @@ public final class ProductionPlanner {
 		if (!profile.supports(entry.getRecipe())) {
 			profile = BUILTIN_MACHINE_PROFILES.get(0);
 		}
+		boolean profileChanged = !profile.id().equals(entry.machineProfileId);
 		entry.machineProfileId = profile.id();
+		if (profileChanged) {
+			entry.machineSettings.clear();
+		}
 		entry.parallel = clampParallelForProfile(entry, entry.parallel);
 		if (profile.coilEfficiencyPerTier() <= 0.0D) {
 			entry.coilTier = 0;
@@ -1138,14 +1167,21 @@ public final class ProductionPlanner {
 		}
 		String id = "workstation:" + stack.getId();
 		String description = runtime.modeled()
-			? "EMI/GTO workstation; detected runtime machine properties are applied"
-			: "EMI/GTO workstation; unknown bonuses use Generic GT math";
+			? "EMI workstation; detected machine properties are applied"
+			: "EMI workstation; unknown bonuses use Generic GT math";
 		return MachineProfile.runtime(id, displayName, description, icon, runtime);
 	}
 
-	private static int clampParallelForProfile(Entry entry, int parallel) {
+	private static int configuredMaxParallel(Entry entry) {
+		if (entry == null) {
+			return 0;
+		}
 		MachineProfile profile = getMachineProfile(entry);
-		int limit = profile.maxParallel();
+		return profile.machineRule().configuredMaxParallel(entry, profile.maxParallel());
+	}
+
+	private static int clampParallelForProfile(Entry entry, int parallel) {
+		int limit = configuredMaxParallel(entry);
 		return limit > 0 ? Math.min(parallel, limit) : parallel;
 	}
 
@@ -1171,6 +1207,83 @@ public final class ProductionPlanner {
 	public static String coilTierName(int tier) {
 		int safe = sanitizeCoilTier(tier);
 		return STANDARD_COIL_NAMES.get(safe);
+	}
+
+	public static List<MachineSettingSpec> getMachineSettingSpecs(Entry entry) {
+		if (entry == null) {
+			return List.of();
+		}
+		return machineSettingSpecsFor(entry.getMachineProfile());
+	}
+
+	public static synchronized void setMachineSetting(Entry entry, MachineSettingSpec spec, int value) {
+		if (entry == null || spec == null || !getMachineSettingSpecs(entry).contains(spec)) {
+			return;
+		}
+		int sanitized = spec.sanitize(value);
+		if (sanitized == spec.defaultValue()) {
+			entry.machineSettings.remove(spec.key());
+		} else {
+			entry.machineSettings.put(spec.key(), sanitized);
+		}
+		entry.parallel = clampParallelForProfile(entry, entry.parallel);
+		refreshBalancedSizing(entry);
+	}
+
+	public static synchronized void cycleMachineSetting(Entry entry, MachineSettingSpec spec, int direction) {
+		if (entry == null || spec == null || direction == 0) {
+			return;
+		}
+		int current = entry.getMachineSettingValue(spec);
+		int step = Math.max(1, spec.step());
+		if (spec.type() == MachineSettingType.TOGGLE) {
+			setMachineSetting(entry, spec, current == 0 ? 1 : 0);
+		} else {
+			setMachineSetting(entry, spec, current + Integer.signum(direction) * step);
+		}
+	}
+
+	private static List<MachineSettingSpec> machineSettingSpecsFor(MachineProfile profile) {
+		if (profile == null) {
+			return List.of();
+		}
+		return List.copyOf(profile.machineRule().settings(profile));
+	}
+
+	private static boolean machineSettingsAllowRecipe(Entry entry) {
+		return entry != null && entry.getMachineProfile().machineRule().allowsRecipe(entry);
+	}
+
+	private static String machineSettingsConstraintError(Entry entry) {
+		if (entry == null) {
+			return "";
+		}
+		return entry.getMachineProfile().machineRule().constraintError(entry);
+	}
+
+	private static double machineSettingDurationMultiplier(Entry entry) {
+		if (entry == null) {
+			return 1.0D;
+		}
+		return entry.getMachineProfile().machineRule().durationMultiplier(entry);
+	}
+
+	private static double machineSettingThroughputMultiplier(Entry entry) {
+		if (entry == null) {
+			return 1.0D;
+		}
+		double multiplier = entry.getMachineProfile().machineRule().throughputMultiplier(entry);
+		if (!Double.isFinite(multiplier) || multiplier <= 0.0D) {
+			return 1.0D;
+		}
+		return multiplier;
+	}
+
+	public static List<String> getMachineSettingDetailLines(Entry entry, MachineSettingSpec spec) {
+		if (entry == null || spec == null) {
+			return List.of();
+		}
+		return List.copyOf(entry.getMachineProfile().machineRule().settingDetails(entry, spec));
 	}
 
 	public static synchronized void setDurationOverrideSeconds(Entry entry, double seconds) {
@@ -1287,6 +1400,13 @@ public final class ProductionPlanner {
 				entryObject.addProperty("oc_mode", entry.ocMode.serialized());
 				if (entry.coilTier > 0) {
 					entryObject.addProperty("coil_tier", entry.coilTier);
+				}
+				if (!entry.machineSettings.isEmpty()) {
+					JsonObject settingsObject = new JsonObject();
+					for (Map.Entry<String, Integer> setting : entry.machineSettings.entrySet()) {
+						settingsObject.addProperty(setting.getKey(), setting.getValue());
+					}
+					entryObject.add("machine_settings", settingsObject);
 				}
 				if (entry.durationOverrideTicks > 0.0D) {
 					entryObject.addProperty("duration_ticks", entry.durationOverrideTicks);
@@ -1491,21 +1611,95 @@ public final class ProductionPlanner {
 		return normalized.length() > 160 ? normalized.substring(0, 160) : normalized;
 	}
 
+	private static String sanitizeMachineSettingKey(String value) {
+		if (value == null) {
+			return "";
+		}
+		String normalized = value.trim().toLowerCase(Locale.ROOT).replace(' ', '_');
+		return normalized.length() > 96 ? normalized.substring(0, 96) : normalized;
+	}
+
+	private static int sanitizeMachineSettingValue(int value) {
+		return Math.max(-MAX_MACHINE_SETTING_VALUE, Math.min(MAX_MACHINE_SETTING_VALUE, value));
+	}
+
+	public enum MachineSettingType {
+		INTEGER, CHOICE, TOGGLE
+	}
+
+	public record MachineSettingSpec(String key, String labelKey, String englishLabel, MachineSettingType type,
+			int minValue, int maxValue, int defaultValue, int step, List<String> choices, String helpKey, String englishHelp) {
+		public MachineSettingSpec {
+			key = sanitizeMachineSettingKey(key);
+			type = type == null ? MachineSettingType.INTEGER : type;
+			if (maxValue < minValue) {
+				int temp = maxValue;
+				maxValue = minValue;
+				minValue = temp;
+			}
+			defaultValue = Math.max(minValue, Math.min(maxValue, defaultValue));
+			step = Math.max(1, step);
+			choices = choices == null ? List.of() : List.copyOf(choices);
+			labelKey = labelKey == null ? "" : labelKey;
+			englishLabel = englishLabel == null ? key : englishLabel;
+			helpKey = helpKey == null ? "" : helpKey;
+			englishHelp = englishHelp == null ? "" : englishHelp;
+		}
+
+		public static MachineSettingSpec integer(String key, String labelKey, String englishLabel, int min, int max,
+				int defaultValue, int step, String helpKey, String englishHelp) {
+			return new MachineSettingSpec(key, labelKey, englishLabel, MachineSettingType.INTEGER, min, max, defaultValue, step,
+				List.of(), helpKey, englishHelp);
+		}
+
+		public static MachineSettingSpec choice(String key, String labelKey, String englishLabel, List<String> choices,
+				int defaultValue, String helpKey, String englishHelp) {
+			int max = choices == null || choices.isEmpty() ? 0 : choices.size() - 1;
+			return new MachineSettingSpec(key, labelKey, englishLabel, MachineSettingType.CHOICE, 0, max, defaultValue, 1,
+				choices, helpKey, englishHelp);
+		}
+
+		public static MachineSettingSpec toggle(String key, String labelKey, String englishLabel, boolean defaultValue,
+				String helpKey, String englishHelp) {
+			return new MachineSettingSpec(key, labelKey, englishLabel, MachineSettingType.TOGGLE, 0, 1, defaultValue ? 1 : 0, 1,
+				List.of("OFF", "ON"), helpKey, englishHelp);
+		}
+
+		public int sanitize(int value) {
+			return Math.max(minValue, Math.min(maxValue, sanitizeMachineSettingValue(value)));
+		}
+
+		public String displayValue(int value) {
+			int safe = sanitize(value);
+			if ((type == MachineSettingType.CHOICE || type == MachineSettingType.TOGGLE) && safe >= 0 && safe < choices.size()) {
+				return choices.get(safe);
+			}
+			return Integer.toString(safe);
+		}
+	}
+
 	public record MachineProfile(String id, String displayName, String description, String categoryNeedle, int maxParallel,
 			boolean allowsPerfectOc, EmiStack icon, int fixedVoltageTier, boolean perfectOcKnown,
 			double durationMultiplier, double energyMultiplier, boolean parallelControl,
-			double coilEfficiencyPerTier, List<String> runtimeNotes) {
+			double coilEfficiencyPerTier, double standardOcDurationMultiplier, PlannerMachineRule machineRule,
+			List<String> runtimeNotes) {
+		public MachineProfile {
+			machineRule = machineRule == null ? PlannerMachineRule.NONE : machineRule;
+			runtimeNotes = runtimeNotes == null ? List.of() : List.copyOf(runtimeNotes);
+		}
+
 		public MachineProfile(String id, String displayName, String description, String categoryNeedle, int maxParallel,
 				boolean allowsPerfectOc, EmiStack icon) {
 			this(id, displayName, description, categoryNeedle, maxParallel, allowsPerfectOc, icon, -1, false,
-				1.0D, 1.0D, false, 0.0D, List.of());
+				1.0D, 1.0D, false, 0.0D, 0.5D, PlannerMachineRule.NONE, List.of());
 		}
 
 		private static MachineProfile runtime(String id, String displayName, String description, EmiStack icon,
 				MachineRuntimeInfo runtime) {
 			return new MachineProfile(id, displayName, description, "", runtime.maxParallel(), runtime.allowsPerfectOc(), icon,
 				runtime.fixedVoltageTier(), runtime.perfectOcKnown(), runtime.durationMultiplier(), runtime.energyMultiplier(),
-				runtime.parallelControl(), runtime.coilEfficiencyPerTier(), runtime.notes());
+				runtime.parallelControl(), runtime.coilEfficiencyPerTier(), runtime.standardOcDurationMultiplier(),
+				runtime.machineRule(), runtime.notes());
 		}
 
 		private MachineProfile withRuntime(String name, EmiStack runtimeIcon, MachineRuntimeInfo runtime) {
@@ -1513,7 +1707,8 @@ public final class ProductionPlanner {
 			boolean detectedPerfect = runtime.perfectOcKnown() ? runtime.allowsPerfectOc() : allowsPerfectOc;
 			return new MachineProfile(id, name, description, "", detectedParallel, detectedPerfect, runtimeIcon,
 				runtime.fixedVoltageTier(), runtime.perfectOcKnown(), runtime.durationMultiplier(), runtime.energyMultiplier(),
-				runtime.parallelControl(), runtime.coilEfficiencyPerTier(), runtime.notes());
+				runtime.parallelControl(), runtime.coilEfficiencyPerTier(), runtime.standardOcDurationMultiplier(),
+				runtime.machineRule(), runtime.notes());
 		}
 
 		public boolean supports(EmiRecipe recipe) {
@@ -1542,11 +1737,16 @@ public final class ProductionPlanner {
 		public boolean hasRuntimeModifiers() {
 			return fixedVoltageTier >= 0 || perfectOcKnown || maxParallel > 0 || parallelControl
 				|| Math.abs(durationMultiplier - 1.0D) > 0.0000001D || Math.abs(energyMultiplier - 1.0D) > 0.0000001D
-				|| coilEfficiencyPerTier > 0.0D || !runtimeNotes.isEmpty();
+				|| coilEfficiencyPerTier > 0.0D || Math.abs(standardOcDurationMultiplier - 0.5D) > 0.0000001D
+				|| machineRule != PlannerMachineRule.NONE || !machineSettingSpecsFor(this).isEmpty() || !runtimeNotes.isEmpty();
 		}
 
 		public boolean hasConfigurableSettings() {
-			return coilEfficiencyPerTier > 0.0D || parallelControl;
+			return coilEfficiencyPerTier > 0.0D || parallelControl || !machineSettingSpecsFor(this).isEmpty();
+		}
+
+		public List<MachineSettingSpec> specialSettings() {
+			return machineSettingSpecsFor(this);
 		}
 
 		public List<String> modifierDescriptions() {
@@ -1572,6 +1772,13 @@ public final class ProductionPlanner {
 				lines.add("Coil efficiency: -" + formatSolverNumber(coilEfficiencyPerTier * 100.0D) + "% duration/EU per tier");
 				lines.add("Coil tier is configurable in Machine Settings");
 			}
+			if (Math.abs(standardOcDurationMultiplier - 0.5D) > 0.0000001D) {
+				lines.add("Special OC: each 4x EU/t multiplies duration by x" + formatSolverNumber(standardOcDurationMultiplier));
+			}
+			lines.addAll(machineRule.modifierDescriptions(this));
+			for (MachineSettingSpec spec : machineSettingSpecsFor(this)) {
+				lines.add(spec.englishLabel() + " is configurable in Machine Settings");
+			}
 			lines.addAll(runtimeNotes);
 			return List.copyOf(lines);
 		}
@@ -1583,7 +1790,8 @@ public final class ProductionPlanner {
 
 	private record MachineRuntimeInfo(int fixedVoltageTier, int maxParallel, boolean perfectOcKnown,
 			boolean allowsPerfectOc, double durationMultiplier, double energyMultiplier,
-			boolean parallelControl, double coilEfficiencyPerTier, boolean modeled, List<String> notes) {
+			boolean parallelControl, double coilEfficiencyPerTier, double standardOcDurationMultiplier,
+			PlannerMachineRule machineRule, boolean modeled, List<String> notes) {
 	}
 
 	public static final class Line {
@@ -1821,7 +2029,12 @@ public final class ProductionPlanner {
 			double requiredEffectiveParallel, double installedEffectiveParallel, double capacityRate,
 			double headroomPercent, String note) {
 		private static MachineSizing unavailable() {
-			return new MachineSizing(false, false, 1, 1, 0.0D, 1.0D, 0.0D, 0.0D, "Machine sizing unavailable");
+			return unavailable("Machine sizing unavailable");
+		}
+
+		private static MachineSizing unavailable(String note) {
+			return new MachineSizing(false, false, 1, 1, 0.0D, 1.0D, 0.0D, 0.0D,
+				note == null || note.isBlank() ? "Machine sizing unavailable" : note);
 		}
 
 		public boolean sufficient() {
@@ -1904,6 +2117,7 @@ public final class ProductionPlanner {
 		private boolean voltageOverride;
 		private OcMode ocMode;
 		private int coilTier;
+		private final Map<String, Integer> machineSettings = new LinkedHashMap<>();
 		private boolean machinesFixed;
 		private boolean parallelFixed;
 		private int groupId;
@@ -2005,6 +2219,54 @@ public final class ProductionPlanner {
 			return Math.pow(Math.max(0.01D, 1.0D - efficiency), coilTier);
 		}
 
+		public int getMachineSettingValue(MachineSettingSpec spec) {
+			if (spec == null) {
+				return 0;
+			}
+			return spec.sanitize(machineSettings.getOrDefault(spec.key(), spec.defaultValue()));
+		}
+
+		public String getMachineSettingDisplayValue(MachineSettingSpec spec) {
+			return spec == null ? "" : spec.displayValue(getMachineSettingValue(spec));
+		}
+
+		public double getMachineSettingDurationMultiplier() {
+			return machineSettingDurationMultiplier(this);
+		}
+
+		public double getMachineSettingThroughputMultiplier() {
+			return machineSettingThroughputMultiplier(this);
+		}
+
+		public int getConfiguredMaxParallel() {
+			return configuredMaxParallel(this);
+		}
+
+		public double getOcDurationMultiplierPerStep() {
+			return getOcDurationMultiplierForStep(0);
+		}
+
+		public double getOcDurationMultiplierForStep(int overclockIndex) {
+			return switch (ocMode) {
+				case NONE -> 1.0D;
+				case PERFECT -> 0.25D;
+				case STANDARD -> {
+					double base = getMachineProfile().standardOcDurationMultiplier();
+					double modified = getMachineProfile().machineRule().standardOcDurationMultiplier(this, base);
+					modified = getMachineProfile().machineRule().ocDurationMultiplierForStep(this, Math.max(0, overclockIndex), modified);
+					yield Math.max(0.000001D, Math.min(1.0D, modified));
+				}
+			};
+		}
+
+		public String getOcDisplayLabel() {
+			if (ocMode == OcMode.STANDARD && getOverclockCount() > 0
+					&& Math.abs(getOcDurationMultiplierPerStep() - 0.5D) > 0.0000001D) {
+				return Math.round(getOcDurationMultiplierPerStep() * 100.0D) + "%";
+			}
+			return ocMode.label();
+		}
+
 		public boolean isDurationOverridden() {
 			return durationOverrideTicks > 0.0D;
 		}
@@ -2072,7 +2334,7 @@ public final class ProductionPlanner {
 		}
 
 		public int getOverclockCount() {
-			long baseEUt = getRecipeEUt();
+			long baseEUt = getRuleAdjustedPreOverclockEUt();
 			double duration = getDurationTicks();
 			long selectedVoltage = getSelectedVoltage();
 			if (baseEUt <= 0L || duration <= 0.0D || selectedVoltage <= 0L || ocMode == OcMode.NONE) {
@@ -2082,7 +2344,7 @@ public final class ProductionPlanner {
 			int overclocks = 0;
 			while (overclocks < 32 && duration > 1.0D && eut <= selectedVoltage / 4L) {
 				eut = multiplyByFourSaturated(eut);
-				duration = Math.max(1.0D, duration / ocMode.durationDivisor());
+				duration = Math.max(1.0D, duration * getOcDurationMultiplierForStep(overclocks));
 				overclocks++;
 			}
 			return overclocks;
@@ -2095,9 +2357,9 @@ public final class ProductionPlanner {
 			}
 			int overclocks = getOverclockCount();
 			for (int i = 0; i < overclocks; i++) {
-				duration = Math.max(1.0D, duration / ocMode.durationDivisor());
+				duration = Math.max(1.0D, duration * getOcDurationMultiplierForStep(i));
 			}
-			duration = Math.max(1.0D, duration * getMachineProfile().durationMultiplier() * getCoilMultiplier());
+			duration = Math.max(1.0D, duration * getMachineProfile().durationMultiplier() * getCoilMultiplier() * getMachineSettingDurationMultiplier());
 			return duration;
 		}
 
@@ -2106,8 +2368,24 @@ public final class ProductionPlanner {
 			return ticks > 0.0D ? ticks / TICKS_PER_SECOND : -1.0D;
 		}
 
+		private long getRuleAdjustedPreOverclockEUt() {
+			long base = getRecipeEUt();
+			if (base <= 0L) {
+				return 0L;
+			}
+			double multiplier = getMachineProfile().machineRule().energyMultiplier(this);
+			if (!Double.isFinite(multiplier) || multiplier <= 0.0D) {
+				multiplier = 1.0D;
+			}
+			double modified = base * multiplier;
+			if (!Double.isFinite(modified) || modified >= Long.MAX_VALUE) {
+				return Long.MAX_VALUE;
+			}
+			return Math.max(1L, Math.round(modified));
+		}
+
 		public long getProcessedEUt() {
-			long eut = getRecipeEUt();
+			long eut = getRuleAdjustedPreOverclockEUt();
 			if (eut <= 0L) {
 				return 0L;
 			}
@@ -2150,8 +2428,13 @@ public final class ProductionPlanner {
 		}
 
 		public MachineSizing getMachineSizing(double craftsPerSecond) {
+			String constraintError = machineSettingsConstraintError(this);
+			if (!constraintError.isBlank()) {
+				return MachineSizing.unavailable(constraintError);
+			}
 			double seconds = getProcessedDurationSeconds();
 			double required = getRequiredEffectiveParallel(craftsPerSecond);
+			double throughput = getMachineSettingThroughputMultiplier();
 			if (seconds <= 0.0D || !Double.isFinite(required) || required <= 0.0D) {
 				return MachineSizing.unavailable();
 			}
@@ -2160,7 +2443,7 @@ public final class ProductionPlanner {
 			int parallel;
 			boolean exact;
 			String note;
-			int maxParallel = profile.maxParallel();
+			int maxParallel = getConfiguredMaxParallel();
 
 			if (machinesFixed && parallelFixed) {
 				machines = sanitizeCount(this.machines);
@@ -2170,11 +2453,11 @@ public final class ProductionPlanner {
 			} else if (machinesFixed) {
 				machines = sanitizeCount(this.machines);
 				if (maxParallel > 0) {
-					parallel = Math.min(maxParallel, ceilCount(required / machines));
+					parallel = Math.min(maxParallel, ceilCount(required / (machines * throughput)));
 					exact = true;
 					note = "MACH is fixed; PAR is sized up to detected max parallel " + maxParallel;
 				} else if (profile.parallelControl() || "generic".equals(profile.id())) {
-					parallel = ceilCount(required / machines);
+					parallel = ceilCount(required / (machines * throughput));
 					exact = false;
 					note = "MACH is fixed; PAR is provisional because the machine parallel limit is unknown";
 				} else {
@@ -2184,34 +2467,37 @@ public final class ProductionPlanner {
 				}
 			} else if (parallelFixed) {
 				parallel = clampParallelForProfile(this, sanitizeCount(this.parallel));
-				machines = ceilCount(required / parallel);
+				machines = ceilCount(required / (parallel * throughput));
 				exact = maxParallel > 0;
 				note = maxParallel > 0
 					? "PAR is fixed; MACH is sized from the fixed parallel"
 					: "PAR is fixed by the user; MACH sizing is provisional because the profile parallel limit is unknown";
 			} else if (maxParallel > 0) {
-				machines = ceilCount(required / maxParallel);
-				parallel = Math.min(maxParallel, ceilCount(required / machines));
+				machines = ceilCount(required / (maxParallel * throughput));
+				parallel = Math.min(maxParallel, ceilCount(required / (machines * throughput)));
 				exact = true;
 				note = "Sized from detected max parallel " + maxParallel + " per machine";
 			} else if (profile.parallelControl()) {
 				machines = 1;
-				parallel = ceilCount(required);
+				parallel = ceilCount(required / throughput);
 				exact = false;
 				note = "Parallel Control detected, but its maximum parallel is unknown";
 			} else if ("generic".equals(profile.id())) {
 				machines = 1;
-				parallel = ceilCount(required);
+				parallel = ceilCount(required / throughput);
 				exact = false;
 				note = "Generic profile assumes the requested effective parallel can be supplied";
 			} else {
-				machines = ceilCount(required);
+				machines = ceilCount(required / throughput);
 				parallel = 1;
 				exact = false;
 				note = "Parallel limit is unknown; conservative 1 parallel per machine sizing";
 			}
-			double installed = machines * (double) parallel;
+			double installed = machines * (double) parallel * throughput;
 			double capacityRate = installed / seconds;
+			if (throughput > 1.0D + 0.0000001D) {
+				note += "; machine throughput multiplier x" + formatSolverNumber(throughput);
+			}
 			double headroom = craftsPerSecond > 0.0D
 				? Math.max(0.0D, (capacityRate / craftsPerSecond - 1.0D) * 100.0D)
 				: 0.0D;
@@ -2219,14 +2505,18 @@ public final class ProductionPlanner {
 		}
 
 		public double getEffectiveRate() {
+			if (!machineSettingsAllowRecipe(this)) {
+				return 0.0D;
+			}
 			if (automatic) {
 				double ticks = getProcessedDurationTicks();
 				if (ticks > 0.0D) {
-					return (machines * (double) parallel * TICKS_PER_SECOND) / ticks;
+					return (machines * (double) parallel * getMachineSettingThroughputMultiplier() * TICKS_PER_SECOND) / ticks;
 				}
 			}
 			return rate;
 		}
+
 
 		public EmiRecipe getRecipe() {
 			return EmiRecipes.manager.getRecipe(recipeId);
@@ -2280,6 +2570,8 @@ public final class ProductionPlanner {
 			double coilEfficiency = 0.0D;
 			double durationMultiplier = 1.0D;
 			double energyMultiplier = 1.0D;
+			double standardOcDurationMultiplier = 0.5D;
+			PlannerMachineRule machineRule = PlannerMachineRule.NONE;
 			List<String> notes = new ArrayList<>();
 			List<String> tooltipLines = tooltipLines(stack);
 			for (String line : tooltipLines) {
@@ -2304,7 +2596,7 @@ public final class ProductionPlanner {
 					allowsPerfect = !isNegativeFeatureLine(lower);
 				}
 				if (lower.contains("parallel control")) {
-					parallelControl = !isNegativeFeatureLine(lower);
+					parallelControl = !isNegativeFeatureLine(lower) && !lower.contains("no parallel control");
 				}
 				int parsedParallel = parseParallel(line);
 				if (parsedParallel > 0) {
@@ -2340,7 +2632,41 @@ public final class ProductionPlanner {
 					}
 				}
 			}
-			boolean tieredSingleblock = fixedVoltageTier >= 0 && !parallelControl;
+			String machineId = stack == null || stack.isEmpty() ? "" : stack.getId().toString();
+			PlannerMachineRuntimeOverride compat = PlannerMachineCompatRegistry.resolve(stack, machineId, tooltipLines);
+			if (compat != null) {
+				if (compat.fixedVoltageTier() != null) {
+					fixedVoltageTier = compat.fixedVoltageTier();
+				}
+				if (compat.maxParallel() != null) {
+					maxParallel = Math.max(0, compat.maxParallel());
+				}
+				if (compat.perfectOcKnown() != null) {
+					perfectKnown = compat.perfectOcKnown();
+				}
+				if (compat.allowsPerfectOc() != null) {
+					allowsPerfect = compat.allowsPerfectOc();
+				}
+				if (compat.durationMultiplier() != null) {
+					durationMultiplier = compat.durationMultiplier();
+				}
+				if (compat.energyMultiplier() != null) {
+					energyMultiplier = compat.energyMultiplier();
+				}
+				if (compat.parallelControl() != null) {
+					parallelControl = compat.parallelControl();
+				}
+				if (compat.coilEfficiencyPerTier() != null) {
+					coilEfficiency = compat.coilEfficiencyPerTier();
+				}
+				if (compat.standardOcDurationMultiplier() != null) {
+					standardOcDurationMultiplier = compat.standardOcDurationMultiplier();
+				}
+				machineRule = compat.machineRule();
+				notes.addAll(compat.notes());
+			}
+
+			boolean tieredSingleblock = fixedVoltageTier >= 0 && !parallelControl && machineRule == PlannerMachineRule.NONE;
 			if (tieredSingleblock && maxParallel <= 0) {
 				maxParallel = 1;
 			}
@@ -2352,9 +2678,11 @@ public final class ProductionPlanner {
 				notes.add("Voltage tier was read from the machine definition/tooltip");
 			}
 			boolean modeled = fixedVoltageTier >= 0 || maxParallel > 0 || perfectKnown || parallelControl || coilEfficiency > 0.0D
-				|| Math.abs(durationMultiplier - 1.0D) > 0.0000001D || Math.abs(energyMultiplier - 1.0D) > 0.0000001D;
+				|| Math.abs(durationMultiplier - 1.0D) > 0.0000001D || Math.abs(energyMultiplier - 1.0D) > 0.0000001D
+				|| Math.abs(standardOcDurationMultiplier - 0.5D) > 0.0000001D || machineRule != PlannerMachineRule.NONE;
 			return new MachineRuntimeInfo(fixedVoltageTier, maxParallel, perfectKnown, allowsPerfect,
-				durationMultiplier, energyMultiplier, parallelControl, coilEfficiency, modeled, List.copyOf(notes));
+				durationMultiplier, energyMultiplier, parallelControl, coilEfficiency, standardOcDurationMultiplier,
+				machineRule, modeled, List.copyOf(notes));
 		}
 
 		private static int definitionTier(EmiStack stack) {
