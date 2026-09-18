@@ -1,7 +1,9 @@
 package dev.emi.emi.jemi.runtime;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import dev.emi.emi.api.EmiDragDropHandler;
 import dev.emi.emi.api.stack.EmiIngredient;
@@ -24,6 +26,74 @@ public class JemiDragDropHandler implements EmiDragDropHandler<Screen> {
 		} catch (Exception e) {
 			return false;
 		}
+	}
+
+
+	@Override
+	@SuppressWarnings({"rawtypes", "unchecked"})
+	public boolean dropStacks(Screen screen, List<? extends EmiIngredient> stacks, int x, int y) {
+		if (stacks == null || stacks.isEmpty()) {
+			return false;
+		}
+
+		boolean insideGhostTarget = false;
+		for (EmiIngredient stack : stacks) {
+			if (stack == null || stack.isEmpty() || stack.getEmiStacks().isEmpty()) {
+				continue;
+			}
+			try {
+				Optional<ITypedIngredient<Object>> typed = (Optional) JemiUtil.getTyped(stack.getEmiStacks().get(0));
+				if (typed.isEmpty()) {
+					continue;
+				}
+				for (IGhostIngredientHandler.Target<Object> target : getTargets(screen, typed.get())) {
+					if (target.getArea().contains(x, y)) {
+						insideGhostTarget = true;
+						break;
+					}
+				}
+			} catch (Throwable ignored) {
+			}
+			if (insideGhostTarget) {
+				break;
+			}
+		}
+		if (!insideGhostTarget) {
+			return false;
+		}
+
+		Set<String> usedAreas = new HashSet<>();
+		boolean placed = false;
+		for (EmiIngredient stack : stacks) {
+			if (stack == null || stack.isEmpty() || stack.getEmiStacks().isEmpty()) {
+				continue;
+			}
+			try {
+				Optional<ITypedIngredient<Object>> typed = (Optional) JemiUtil.getTyped(stack.getEmiStacks().get(0));
+				if (typed.isEmpty()) {
+					continue;
+				}
+				List<IGhostIngredientHandler.Target<Object>> targets = new java.util.ArrayList<>(getTargets(screen, typed.get()));
+				targets.sort((a, b) -> {
+					Rect2i ar = a.getArea();
+					Rect2i br = b.getArea();
+					int row = Integer.compare(ar.getY(), br.getY());
+					return row != 0 ? row : Integer.compare(ar.getX(), br.getX());
+				});
+				for (IGhostIngredientHandler.Target<Object> target : targets) {
+					Rect2i area = target.getArea();
+					String key = area.getX() + ":" + area.getY() + ":" + area.getWidth() + ":" + area.getHeight();
+					if (!usedAreas.add(key)) {
+						continue;
+					}
+					target.accept(typed.get().getIngredient());
+					placed = true;
+					break;
+				}
+			} catch (Throwable ignored) {
+			}
+		}
+		return placed;
 	}
 
 	@Override

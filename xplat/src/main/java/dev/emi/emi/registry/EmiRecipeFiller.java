@@ -1,5 +1,6 @@
 package dev.emi.emi.registry;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiFunction;
@@ -140,46 +141,60 @@ public class EmiRecipeFiller {
 				List<EmiIngredient> ingredients = recipe.getInputs();
 				List<DiscoveredItem> discovered = Lists.newArrayList();
 				Object2IntMap<EmiStack> weightDivider = new Object2IntOpenHashMap<>();
+				Map<Integer, Integer> reservedToolSlots = new HashMap<>();
 				for (int i = 0; i < ingredients.size(); i++) {
 					List<DiscoveredItem> d = Lists.newArrayList();
 					EmiIngredient ingredient = ingredients.get(i);
-					List<EmiStack> emiStacks = ingredient.getEmiStacks();
 					if (ingredient.isEmpty()) {
 						discovered.add(null);
 						continue;
 					}
-					for (int e = 0; e < emiStacks.size(); e++) {
-						EmiStack stack = emiStacks.get(e);
-						slotLoop:
-						for (Slot s : slots) {
-							ItemStack ss = s.getStack();
-							if (EmiCraftingToolCompat.matches(stack, EmiStack.of(s.getStack()))) {
-								for (DiscoveredItem di : d) {
-									if (EmiCraftingToolCompat.matches(ss, di.stack)) {
-										di.amount += ss.getCount();
-										continue slotLoop;
-									}
-								}
-								d.add(new DiscoveredItem(stack, ss, ss.getCount(), (int) ingredient.getAmount(), ss.getMaxCount()));
+					slotLoop:
+					for (Slot source : slots) {
+						ItemStack ss = source.getStack();
+						if (ss == null || ss.isEmpty()) {
+							continue;
+						}
+						EmiStack actual = EmiStack.of(ss);
+						EmiStack matched = matchingOption(ingredient, actual);
+						if (matched == null) {
+							continue;
+						}
+						if (EmiCraftingToolCompat.isReusable(matched) && EmiCraftingToolCompat.isGtTool(actual)) {
+							d.add(new DiscoveredItem(matched, ss, ss.getCount(), (int) ingredient.getAmount(), ss.getMaxCount(), source.id));
+							continue;
+						}
+						for (DiscoveredItem di : d) {
+							if (!di.gtToolCatalyst() && EmiCraftingToolCompat.matches(ss, di.stack)) {
+								di.amount += ss.getCount();
+								continue slotLoop;
 							}
 						}
+						d.add(new DiscoveredItem(matched, ss, ss.getCount(), (int) ingredient.getAmount(), ss.getMaxCount(), -1));
 					}
 					DiscoveredItem biggest = null;
 					for (DiscoveredItem di : d) {
-						if (biggest == null) {
+						if (di.gtToolCatalyst()) {
+							int reserved = reservedToolSlots.getOrDefault(di.sourceSlotId, 0);
+							if (di.amount - reserved <= 0) {
+								continue;
+							}
+							if (biggest == null || !biggest.gtToolCatalyst()
+									|| EmiCraftingToolCompat.getSafeCraftingUses(di.stack) > EmiCraftingToolCompat.getSafeCraftingUses(biggest.stack)) {
+								biggest = di;
+							}
+							continue;
+						}
+						if (biggest == null || biggest.gtToolCatalyst()) {
+							if (biggest == null) {
+								biggest = di;
+							}
+							continue;
+						}
+						int a = di.amount / (weightDivider.getOrDefault(di.ingredient, 0) + di.consumed);
+						int ba = biggest.amount / (weightDivider.getOrDefault(biggest.ingredient, 0) + biggest.consumed);
+						if (ba < a) {
 							biggest = di;
-						} else if (di.catalyst() && biggest.catalyst() && EmiCraftingToolCompat.isGtTool(di.stack)
-								&& EmiCraftingToolCompat.isGtTool(biggest.stack)) {
-							if (EmiCraftingToolCompat.getSafeCraftingUses(di.stack)
-									> EmiCraftingToolCompat.getSafeCraftingUses(biggest.stack)) {
-								biggest = di;
-							}
-						} else {
-							int a = di.amount / (weightDivider.getOrDefault(di.ingredient, 0) + di.consumed);
-							int ba = biggest.amount / (weightDivider.getOrDefault(biggest.ingredient, 0) + biggest.consumed);
-							if (ba < a) {
-								biggest = di;
-							}
 						}
 					}
 					if (biggest == null || i >= craftingSlots.size()) {
@@ -189,7 +204,11 @@ public class EmiRecipeFiller {
 					if (slot == null) {
 						return null;
 					}
-					weightDivider.put(biggest.ingredient, weightDivider.getOrDefault(biggest.ingredient, 0) + biggest.consumed);
+					if (biggest.gtToolCatalyst()) {
+						reservedToolSlots.put(biggest.sourceSlotId, reservedToolSlots.getOrDefault(biggest.sourceSlotId, 0) + 1);
+					} else {
+						weightDivider.put(biggest.ingredient, weightDivider.getOrDefault(biggest.ingredient, 0) + biggest.consumed);
+					}
 					biggest.max = Math.min(biggest.max, slot.getMaxItemCount());
 					discovered.add(biggest);
 				}
@@ -203,13 +222,17 @@ public class EmiRecipeFiller {
 					if (di == null) {
 						continue;
 					}
+					if (di.gtToolCatalyst()) {
+						unique.add(new DiscoveredItem(di.ingredient, di.stack, di.amount, di.consumed, di.max, di.sourceSlotId));
+						continue;
+					}
 					for (DiscoveredItem ui : unique) {
-						if (EmiCraftingToolCompat.matches(di.stack, ui.stack)) {
+						if (!ui.gtToolCatalyst() && EmiCraftingToolCompat.matches(di.stack, ui.stack)) {
 							ui.consumed += di.consumed;
 							continue outer;
 						}
 					}
-					unique.add(new DiscoveredItem(di.ingredient, di.stack, di.amount, di.consumed, di.max));
+					unique.add(new DiscoveredItem(di.ingredient, di.stack, di.amount, di.consumed, di.max, di.sourceSlotId));
 				}
 				int maxAmount = Integer.MAX_VALUE;
 				for (DiscoveredItem ui : unique) {
@@ -245,6 +268,19 @@ public class EmiRecipeFiller {
 			}
 		} catch (Exception e) {
 			EmiLog.error("Error collecting stacks", e);
+		}
+		return null;
+	}
+
+
+	private static EmiStack matchingOption(EmiIngredient ingredient, EmiStack actual) {
+		if (ingredient == null || actual == null || actual.isEmpty()) {
+			return null;
+		}
+		for (EmiStack option : ingredient.getEmiStacks()) {
+			if (option != null && !option.isEmpty() && EmiCraftingToolCompat.matches(option, actual)) {
+				return option;
+			}
 		}
 		return null;
 	}
@@ -376,17 +412,27 @@ public class EmiRecipeFiller {
 		public int consumed;
 		public int amount;
 		public int max;
+		public int sourceSlotId;
 
 		public DiscoveredItem(EmiStack ingredient, ItemStack stack, int amount, int consumed, int max) {
+			this(ingredient, stack, amount, consumed, max, -1);
+		}
+
+		public DiscoveredItem(EmiStack ingredient, ItemStack stack, int amount, int consumed, int max, int sourceSlotId) {
 			this.ingredient = ingredient;
 			this.stack = stack.copy();
 			this.amount = amount;
 			this.consumed = consumed;
 			this.max = max;
+			this.sourceSlotId = sourceSlotId;
 		}
 
 		public boolean catalyst() {
 			return EmiCraftingToolCompat.isReusable(ingredient);
+		}
+
+		public boolean gtToolCatalyst() {
+			return catalyst() && EmiCraftingToolCompat.isGtTool(stack);
 		}
 	}
 }

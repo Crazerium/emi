@@ -5,6 +5,7 @@ import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 import org.lwjgl.glfw.GLFW;
@@ -27,11 +28,13 @@ import dev.emi.emi.planner.ProductionPlanner.Entry;
 import dev.emi.emi.planner.ProductionPlanner.Group;
 import dev.emi.emi.planner.ProductionPlanner.LinkMode;
 import dev.emi.emi.planner.ProductionPlanner.Line;
+import dev.emi.emi.planner.ProductionPlanner.LineTransferResult;
 import dev.emi.emi.planner.ProductionPlanner.MachineProfile;
 import dev.emi.emi.planner.ProductionPlanner.MachineSettingSpec;
 import dev.emi.emi.planner.ProductionPlanner.MachineSizing;
 import dev.emi.emi.planner.ProductionPlanner.OcMode;
 import dev.emi.emi.planner.ProductionPlanner.Target;
+import dev.emi.emi.planner.ProductionPlanner.TargetMode;
 import dev.emi.emi.runtime.EmiDrawContext;
 import dev.emi.emi.runtime.EmiHistory;
 import dev.emi.emi.runtime.EmiSidebars;
@@ -78,8 +81,13 @@ public class ProductionPlannerScreen extends Screen {
 	private Bounds standardVoltageBounds = EMPTY;
 	private Bounds applyStandardVoltageBounds = EMPTY;
 	private Bounds groupsButton = EMPTY;
+	private Bounds exportLineButton = EMPTY;
+	private Bounds importLineButton = EMPTY;
+	private Bounds timeUnitButton = EMPTY;
+	private Bounds buildSummaryButton = EMPTY;
 	private Bounds gtoAuditButton = EMPTY;
 	private String gtoAuditStatus = "";
+	private String lineTransferStatus = "";
 	private boolean groupsOpen;
 	private Group selectedGroup;
 	private Bounds groupsModalBounds = EMPTY;
@@ -148,6 +156,25 @@ public class ProductionPlannerScreen extends Screen {
 	private Bounds targetEditBounds = EMPTY;
 	private EmiStack pendingStackClick = EmiStack.EMPTY;
 	private int pendingStackButton = -1;
+	private boolean searchOpen;
+	private TextFieldWidget searchField;
+	private Bounds searchPanelBounds = EMPTY;
+	private Bounds searchCloseButton = EMPTY;
+	private List<Integer> searchMatchRows = List.of();
+	private int searchMatchIndex = -1;
+	private static DisplayTimeUnit displayTimeUnit = DisplayTimeUnit.SECOND;
+	private boolean buildSummaryOpen;
+	private int buildSummaryScroll;
+	private Bounds buildSummaryModalBounds = EMPTY;
+	private Bounds buildSummaryCloseButton = EMPTY;
+	private Bounds buildSummaryCopyButton = EMPTY;
+	private Bounds buildSummarySaveButton = EMPTY;
+	private Bounds buildSummaryMachinesButton = EMPTY;
+	private Bounds buildSummaryFlowsButton = EMPTY;
+	private Bounds buildSummaryListArea = EMPTY;
+	private List<BuildSummaryHitbox> buildSummaryHitboxes = List.of();
+	private boolean buildSummaryFlowsView;
+	private String buildSummaryTransferStatus = "";
 
 
 	public ProductionPlannerScreen(HandledScreen<?> old) {
@@ -159,8 +186,13 @@ public class ProductionPlannerScreen extends Screen {
 
 	@Override
 	protected void init() {
+		ProductionPlanner.cancelPendingRecipeReplacement();
 		newLineButton = new Bounds(6, 4, 18, 18);
 		closeLineButton = new Bounds(28, 4, 18, 18);
+		if (searchOpen) {
+			String query = searchField == null ? "" : searchField.getText();
+			createSearchField(query);
+		}
 		clampScroll();
 	}
 
@@ -171,6 +203,9 @@ public class ProductionPlannerScreen extends Screen {
 		context.fill(0, 0, width, HEADER_HEIGHT, HEADER_COLOR);
 		renderHeader(context, raw, mouseX, mouseY, delta);
 		Line line = ProductionPlanner.getOrCreateActiveLine();
+		if (searchOpen) {
+			refreshSearchMatches(line, false);
+		}
 		PlanTotals totals = calculate(line);
 		renderSummary(context, line, totals, mouseX, mouseY);
 		renderTableHeader(context);
@@ -182,7 +217,9 @@ public class ProductionPlannerScreen extends Screen {
 		if (targetRateField != null) {
 			targetRateField.render(raw, mouseX, mouseY, delta);
 		}
-		if (groupsOpen) {
+		if (buildSummaryOpen) {
+			renderBuildSummaryModal(context, line, mouseX, mouseY);
+		} else if (groupsOpen) {
 			renderGroupsModal(context, line, mouseX, mouseY, delta);
 		} else {
 			renderDropdowns(context, line, mouseX, mouseY);
@@ -191,6 +228,9 @@ public class ProductionPlannerScreen extends Screen {
 			} else {
 				renderTooltip(context, mouseX, mouseY);
 			}
+		}
+		if (searchOpen && !buildSummaryOpen) {
+			renderSearchOverlay(context, raw, line, mouseX, mouseY, delta);
 		}
 	}
 
@@ -229,9 +269,9 @@ public class ProductionPlannerScreen extends Screen {
 		drawBorder(context, new Bounds(4, SUMMARY_TOP, width - 8, SUMMARY_HEIGHT), BORDER_COLOR);
 		int sectionWidth = Math.max(1, (width - 12) / 3);
 		flowHitboxes = new ArrayList<>();
-		renderFlowSection(context, line, PlannerText.tr("summary.external", "External Inputs/sec"), totals.externalInputs(), 6, SUMMARY_TOP + 4, sectionWidth - 2, false);
-		renderFlowSection(context, line, PlannerText.tr("summary.internal", "Internal Flow/sec"), totals.internalFlow(), 6 + sectionWidth, SUMMARY_TOP + 4, sectionWidth - 2, false);
-		renderFlowSection(context, line, PlannerText.tr("summary.outputs", "Net Outputs/sec"), totals.netOutputs(), 6 + sectionWidth * 2, SUMMARY_TOP + 4, sectionWidth - 2, true);
+		renderFlowSection(context, line, "External Inputs/" + displayTimeUnit.suffix, totals.externalInputs(), 6, SUMMARY_TOP + 4, sectionWidth - 2, TargetMode.INPUT);
+		renderFlowSection(context, line, "Internal Flow/" + displayTimeUnit.suffix, totals.internalFlow(), 6 + sectionWidth, SUMMARY_TOP + 4, sectionWidth - 2, null);
+		renderFlowSection(context, line, "Net Outputs/" + displayTimeUnit.suffix, totals.netOutputs(), 6 + sectionWidth * 2, SUMMARY_TOP + 4, sectionWidth - 2, TargetMode.OUTPUT);
 
 		int controlsY = SUMMARY_TOP + SUMMARY_HEIGHT - 21;
 		PowerSummary power = calculatePower(line);
@@ -256,7 +296,7 @@ public class ProductionPlannerScreen extends Screen {
 				EmiStack stack = target.getStack();
 				context.drawStack(stack, icon.x(), icon.y(), EmiIngredient.RENDER_ICON);
 				drawBorder(context, icon, capacityLimited ? 0xFFFFA04D : line.isBalanceEnabled() ? 0xFF7FD8A1 : 0xFFB0B0B8);
-				drawValueBox(context, rate, mouseX, mouseY, formatRate(target.getRate()) + unitSuffixShort(stack), line.isBalanceEnabled() && !capacityLimited);
+				drawValueBox(context, rate, mouseX, mouseY, target.getMode().label() + " " + formatDisplayRate(target.getRate()) + unitSuffixShort(stack), line.isBalanceEnabled() && !capacityLimited);
 				drawButton(context, remove, mouseX, mouseY, "x", false);
 				targetHitboxes.add(new TargetHitbox(target, icon, rate, remove));
 				if (shown == 0) {
@@ -286,7 +326,7 @@ public class ProductionPlannerScreen extends Screen {
 		drawButton(context, clearTargetButton, mouseX, mouseY, PlannerText.tr("clear", "CLEAR"), false);
 		String message = line.getBalanceMessage();
 		if (message == null || message.isBlank()) {
-			message = PlannerText.tr("status.add_targets", "Click recipe outputs to add one or more targets");
+			message = "Click outputs for OUT targets; Ctrl + click inputs for IN goals";
 		}
 		String powerText = power.knownEntries > 0
 			? PlannerText.tr("power", "Power") + ": " + formatCompactRate(power.averageEUt, false) + " EU/t" + (power.unknownEntries > 0 ? " +?" : "")
@@ -300,7 +340,7 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private void renderFlowSection(EmiDrawContext context, Line line, String label, List<Flow> flows, int x, int y, int w,
-			boolean targetCandidate) {
+			TargetMode goalMode) {
 		context.drawCenteredText(EmiPort.literal(label), x + w / 2, y, 0xFFE8E8EE);
 		int available = Math.max(1, w - 8);
 		int perRow = Math.max(1, available / ICON_STEP);
@@ -313,11 +353,12 @@ public class ProductionPlannerScreen extends Screen {
 			int ix = x + 4 + col * ICON_STEP;
 			int iy = y + 15 + row * 20;
 			context.drawStack(flow.stack, ix, iy, EmiIngredient.RENDER_ICON);
-			if (isTarget(line, flow.stack)) {
-				drawBorder(context, new Bounds(ix, iy, 18, 18), 0xFFFFFF66);
+			TargetMode selectedMode = targetMode(line, flow.stack);
+			if (selectedMode != null) {
+				drawBorder(context, new Bounds(ix, iy, 18, 18), selectedMode == TargetMode.INPUT ? 0xFF66D9FF : 0xFFFFFF66);
 			}
-			EmiRenderHelper.renderAmount(context, ix, iy, EmiPort.literal(flow.displayAmount));
-			flowHitboxes.add(new FlowHitbox(new Bounds(ix, iy, 18, 18), flow, targetCandidate));
+			EmiRenderHelper.renderAmount(context, ix, iy, EmiPort.literal(formatCompactDisplayRate(flow.displayValue, flow.approximate)));
+			flowHitboxes.add(new FlowHitbox(new Bounds(ix, iy, 18, 18), flow, goalMode));
 		}
 		if (flows.size() > capacity) {
 			String more = "+" + (flows.size() - capacity);
@@ -339,8 +380,8 @@ public class ProductionPlannerScreen extends Screen {
 		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.duration", "DURATION")), 472, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
 		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.rate", "RATE")), 538, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
 		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.recipe", "RECIPE")), 610, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.inputs", "INPUTS/sec")), inputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.outputs", "OUTPUTS/sec")), outputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal("INPUTS/" + displayTimeUnit.suffix), inputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal("OUTPUTS/" + displayTimeUnit.suffix), outputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
 	}
 
 	private void renderRows(EmiDrawContext context, Line line, int mouseX, int mouseY, float delta) {
@@ -373,6 +414,7 @@ public class ProductionPlannerScreen extends Screen {
 				context.drawTextWithShadow(EmiPort.literal(label), 36 + indent, y + 13, 0xFFE8F2EE);
 				context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("groups.group_row", "GROUP")), Math.max(36 + indent, width - 62), y + 13, 0xFF88A39A);
 				groupMainHitboxes.add(new GroupMainHitbox(rowBounds, group));
+				renderSearchRowOverlay(context, index, y);
 				continue;
 			}
 
@@ -397,6 +439,7 @@ public class ProductionPlannerScreen extends Screen {
 			Bounds oc = new Bounds(420, y + 7, 44, 20);
 			Bounds duration = new Bounds(468, y + 7, 62, 20);
 			Bounds rate = new Bounds(534, y + 7, 68, 20);
+			Bounds replace = new Bounds(inputsColumnX() - 22, y + 9, 16, 16);
 			Bounds remove = new Bounds(width - 22, y + 9, 16, 16);
 
 			String modeLabel = line.isBalanceEnabled() ? "BAL" : entry.isAutomatic() ? "AUTO" : "MAN";
@@ -421,11 +464,12 @@ public class ProductionPlannerScreen extends Screen {
 			String durationText = durationSeconds > 0.0D ? formatDuration(durationSeconds) + (entry.isDurationOverridden() ? "*" : "") : "--";
 			drawValueBox(context, duration, mouseX, mouseY, durationText, entry.isAutomatic());
 			double rowRate = line.getEffectiveRate(entry);
-			drawValueBox(context, rate, mouseX, mouseY, formatRate(rowRate) + "/s", line.isBalanceEnabled() || !entry.isAutomatic());
+			drawValueBox(context, rate, mouseX, mouseY, formatDisplayRate(rowRate) + "/" + displayTimeUnit.suffix, line.isBalanceEnabled() || !entry.isAutomatic());
+			drawButton(context, replace, mouseX, mouseY, "R", false);
 			drawButton(context, remove, mouseX, mouseY, "x", false);
 
 			int recipeIndent = Math.min(48, displayRow.depth * 9);
-			Bounds recipeBounds = new Bounds(608, y + 3, Math.max(30, inputsColumnX() - 614), ROW_HEIGHT - 7);
+			Bounds recipeBounds = new Bounds(608, y + 3, Math.max(30, replace.x() - 612), ROW_HEIGHT - 7);
 			if (recipe == null) {
 				context.drawTextWithShadow(EmiPort.literal("Missing recipe: " + entry.getRecipeId()), 610 + recipeIndent, y + 9, 0xFFFF7777);
 			} else {
@@ -434,7 +478,7 @@ public class ProductionPlannerScreen extends Screen {
 					int recipeIconX = 610 + recipeIndent;
 					context.drawStack(recipeIcon, recipeIconX, y + 9, EmiIngredient.RENDER_ICON);
 					flowHitboxes.add(new FlowHitbox(new Bounds(recipeIconX, y + 9, 18, 18),
-						new Flow(recipeIcon, 0, 0, 0, 0, false, "", 0), false));
+						new Flow(recipeIcon, 0, 0, 0, 0, false, "", 0), null));
 				} else {
 					recipe.getCategory().renderSimplified(context.raw(), 610 + recipeIndent, y + 9, delta);
 				}
@@ -449,17 +493,18 @@ public class ProductionPlannerScreen extends Screen {
 				context.drawTextWithShadow(EmiPort.literal(categoryTrimmed), 632 + recipeIndent, y + 20, 0xFF90909B);
 				double effectiveRate = line.getEffectiveRate(entry);
 				renderRateStacks(context, line, recipeInputs(recipe, effectiveRate), inputsColumnX(), y + 9,
-					outputsColumnX() - inputsColumnX() - 8, false);
+					outputsColumnX() - inputsColumnX() - 8, TargetMode.INPUT);
 				renderRateStacks(context, line, recipeOutputs(recipe, effectiveRate), outputsColumnX(), y + 9,
-					width - outputsColumnX() - 32, true);
+					width - outputsColumnX() - 32, TargetMode.OUTPUT);
 			}
 			rowHitboxes.add(new RowHitbox(entry, mode, machineProfile, machineConfig, machinesLock, machinesMinus, machinesValue, machinesPlus, parallelLock, parallelMinus,
-				parallelValue, parallelPlus, voltage, oc, duration, rate, remove, recipeBounds));
+				parallelValue, parallelPlus, voltage, oc, duration, rate, replace, remove, recipeBounds));
+			renderSearchRowOverlay(context, index, y);
 		}
 		if (line.getEntries().isEmpty()) {
 			context.drawCenteredText(EmiPort.literal("Open any EMI recipe and press the + planner button to add it to this line."),
 				width / 2, ROW_TOP + 32, 0xFFA0A0AA);
-			context.drawCenteredText(EmiPort.literal("New recipes use AUTO when a recipe duration can be detected; MAN keeps direct crafts/sec control."),
+			context.drawCenteredText(EmiPort.literal("New recipes use AUTO when a recipe duration can be detected; MAN keeps direct rate control."),
 				width / 2, ROW_TOP + 48, 0xFF777783);
 		}
 	}
@@ -488,19 +533,20 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private void renderRateStacks(EmiDrawContext context, Line line, List<RateStack> stacks, int x, int y,
-			int availableWidth, boolean targetCandidate) {
+			int availableWidth, TargetMode goalMode) {
 		int capacity = Math.max(1, availableWidth / 42);
 		int count = Math.min(capacity, stacks.size());
 		for (int i = 0; i < count; i++) {
 			RateStack rate = stacks.get(i);
 			int ix = x + i * 42;
 			context.drawStack(rate.stack, ix, y, EmiIngredient.RENDER_ICON);
-			if (isTarget(line, rate.stack)) {
-				drawBorder(context, new Bounds(ix, y, 18, 18), 0xFFFFFF66);
+			TargetMode selectedMode = targetMode(line, rate.stack);
+			if (selectedMode != null) {
+				drawBorder(context, new Bounds(ix, y, 18, 18), selectedMode == TargetMode.INPUT ? 0xFF66D9FF : 0xFFFFFF66);
 			}
-			EmiRenderHelper.renderAmount(context, ix, y, EmiPort.literal(formatCompactRate(rate.amount, rate.approximate)));
+			EmiRenderHelper.renderAmount(context, ix, y, EmiPort.literal(formatCompactDisplayRate(rate.amount, rate.approximate)));
 			flowHitboxes.add(new FlowHitbox(new Bounds(ix, y, 18, 18), new Flow(rate.stack, 0, 0, 0, 0,
-				rate.approximate, formatCompactRate(rate.amount, rate.approximate), rate.amount), targetCandidate));
+				rate.approximate, formatCompactDisplayRate(rate.amount, rate.approximate), rate.amount), goalMode));
 		}
 		if (stacks.size() > capacity) {
 			context.drawTextWithShadow(EmiPort.literal("+" + (stacks.size() - capacity)), x + capacity * 42 - 18, y + 9, 0xFFB8B8C0);
@@ -516,22 +562,347 @@ public class ProductionPlannerScreen extends Screen {
 		standardVoltageBounds = new Bounds(158, y + 5, 92, 20);
 		applyStandardVoltageBounds = new Bounds(256, y + 5, 70, 20);
 		groupsButton = new Bounds(332, y + 5, 78, 20);
-		gtoAuditButton = SHOW_GTO_AUDIT ? new Bounds(416, y + 5, 78, 20) : EMPTY;
+		exportLineButton = new Bounds(416, y + 5, 68, 20);
+		importLineButton = new Bounds(490, y + 5, 68, 20);
+		timeUnitButton = new Bounds(564, y + 5, 66, 20);
+		buildSummaryButton = new Bounds(636, y + 5, 88, 20);
+		gtoAuditButton = SHOW_GTO_AUDIT ? new Bounds(730, y + 5, 78, 20) : EMPTY;
 		String label = line.getStandardVoltageTier() < 0 ? PlannerText.tr("footer.recipe_min", "Recipe Min") : line.getStandardVoltageName();
 		drawValueBox(context, standardVoltageBounds, mouseX, mouseY, label, line.getStandardVoltageTier() >= 0,
 			ProductionPlanner.voltageTierColor(line.getStandardVoltageTier()));
 		drawButton(context, applyStandardVoltageBounds, mouseX, mouseY, PlannerText.tr("footer.apply_all", "APPLY ALL"), false);
 		drawButton(context, groupsButton, mouseX, mouseY, PlannerText.tr("footer.groups", "GROUPS") + " " + line.getGroups().size(), groupsOpen);
+		drawButton(context, exportLineButton, mouseX, mouseY, "EXPORT", false);
+		drawButton(context, importLineButton, mouseX, mouseY, "IMPORT", false);
+		drawButton(context, timeUnitButton, mouseX, mouseY, "TIME /" + displayTimeUnit.suffix, false);
+		drawButton(context, buildSummaryButton, mouseX, mouseY, "SUMMARY", buildSummaryOpen);
 		if (SHOW_GTO_AUDIT) {
 			drawButton(context, gtoAuditButton, mouseX, mouseY, "GTO AUDIT", false);
 		}
-		String hint = SHOW_GTO_AUDIT && !gtoAuditStatus.isBlank()
-			? gtoAuditStatus
-			: PlannerText.tr("footer.voltage_hint", "New machines inherit this voltage. Individual rows can override it.");
-		int hintX = (SHOW_GTO_AUDIT ? gtoAuditButton : groupsButton).right() + 10;
+		String hint = !lineTransferStatus.isBlank()
+			? lineTransferStatus
+			: SHOW_GTO_AUDIT && !gtoAuditStatus.isBlank()
+				? gtoAuditStatus
+				: PlannerText.tr("footer.voltage_hint", "New machines inherit this voltage. Individual rows can override it.");
+		if (ProductionPlanner.canUndo()) {
+			hint += "  |  Ctrl+Z: Undo";
+		}
+		hint += "  |  Ctrl+F: Search";
+		int hintX = (SHOW_GTO_AUDIT ? gtoAuditButton : buildSummaryButton).right() + 10;
 		if (hintX < width - 20) {
 			context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(hint, width - hintX - 8)), hintX, y + 10, 0xFF858590);
 		}
+	}
+
+	private void renderBuildSummaryModal(EmiDrawContext context, Line line, int mouseX, int mouseY) {
+		context.push();
+		context.matrices().translate(0, 0, 1200);
+		context.fill(0, 0, width, height, 0x99000000);
+		int modalWidth = Math.max(420, Math.min(920, width - 40));
+		int modalHeight = Math.max(300, Math.min(540, height - 60));
+		int x = (width - modalWidth) / 2;
+		int y = (height - modalHeight) / 2;
+		buildSummaryModalBounds = new Bounds(x, y, modalWidth, modalHeight);
+		context.fill(x, y, modalWidth, modalHeight, 0xFF15151D);
+		drawBorder(context, buildSummaryModalBounds, 0xFF8A8A96);
+		context.fill(x, y, modalWidth, 30, 0xFF24242D);
+		context.drawCenteredText(EmiPort.literal("Line Report - " + ProductionPlanner.displayName(ProductionPlanner.getActiveIndex())),
+			x + modalWidth / 2, y + 10, 0xFFFFFFFF);
+		buildSummaryCloseButton = new Bounds(x + modalWidth - 25, y + 5, 19, 19);
+		buildSummarySaveButton = new Bounds(x + modalWidth - 119, y + 5, 86, 19);
+		buildSummaryCopyButton = new Bounds(x + modalWidth - 211, y + 5, 86, 19);
+		drawButton(context, buildSummaryCopyButton, mouseX, mouseY, "COPY REPORT", false);
+		drawButton(context, buildSummarySaveButton, mouseX, mouseY, "SAVE REPORT", false);
+		drawButton(context, buildSummaryCloseButton, mouseX, mouseY, "x", false);
+
+		List<BuildSummaryRow> rows = collectBuildSummary(line);
+		PowerSummary power = calculatePower(line);
+		PlanTotals totals = calculate(line);
+		List<FlowSummaryRow> flowRows = collectFlowSummary(line, totals);
+		int totalMachines = 0;
+		for (BuildSummaryRow row : rows) {
+			totalMachines += row.machines;
+		}
+		String powerText = power.knownEntries > 0 ? formatCompactRate(power.averageEUt, false) + " EU/t" : "--";
+		if (power.unknownEntries > 0) {
+			powerText += " +?";
+		}
+		String stats = "Machines: " + totalMachines + "   Setups: " + rows.size() + "   External inputs: " + totals.externalInputs().size()
+			+ "   Net outputs: " + totals.netOutputs().size() + "   Average power: " + powerText;
+		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(stats, modalWidth - 24)), x + 12, y + 39, 0xFFD5D5DE);
+
+		int tabsY = y + 55;
+		buildSummaryMachinesButton = new Bounds(x + 12, tabsY, 92, 18);
+		buildSummaryFlowsButton = new Bounds(x + 108, tabsY, 76, 18);
+		drawButton(context, buildSummaryMachinesButton, mouseX, mouseY, "MACHINES", !buildSummaryFlowsView);
+		drawButton(context, buildSummaryFlowsButton, mouseX, mouseY, "FLOWS", buildSummaryFlowsView);
+		String unitLabel = "Display unit: /" + displayTimeUnit.suffix;
+		context.drawTextWithShadow(EmiPort.literal(unitLabel), x + 194, tabsY + 5, 0xFF8E8E99);
+
+		int listY = y + 78;
+		int listBottom = y + modalHeight - 42;
+		buildSummaryListArea = new Bounds(x + 10, listY, modalWidth - 20, Math.max(40, listBottom - listY));
+		context.fill(buildSummaryListArea.x(), buildSummaryListArea.y(), buildSummaryListArea.width(), buildSummaryListArea.height(), 0xFF101017);
+		drawBorder(context, buildSummaryListArea, BORDER_COLOR);
+		buildSummaryHitboxes = new ArrayList<>();
+
+		if (!buildSummaryFlowsView) {
+			int rowHeight = 38;
+			int visible = Math.max(1, buildSummaryListArea.height() / rowHeight);
+			buildSummaryScroll = Math.max(0, Math.min(buildSummaryScroll, Math.max(0, rows.size() - visible)));
+			for (int v = 0, i = buildSummaryScroll; v < visible && i < rows.size(); v++, i++) {
+				BuildSummaryRow row = rows.get(i);
+				int ry = listY + v * rowHeight;
+				Bounds rb = new Bounds(x + 12, ry + 2, modalWidth - 24, rowHeight - 4);
+				context.fill(rb.x(), rb.y(), rb.width(), rb.height(), (i & 1) == 0 ? 0xFF17171F : 0xFF1C1C24);
+				drawBorder(context, rb, row.provisional ? 0xFFFFB05C : 0xFF454550);
+				int tx = rb.x() + 8;
+				if (row.icon != null && !row.icon.isEmpty()) {
+					context.drawStack(row.icon, tx, rb.y() + 8, EmiIngredient.RENDER_ICON);
+					tx += 23;
+				}
+				String left = row.machines + "x " + row.machineName;
+				String right = row.voltageName + "  |  PAR " + row.parallel + "  |  "
+					+ (row.unknownPower ? (row.averageEUt > EPSILON ? formatCompactRate(row.averageEUt, false) + " EU/t +?" : "Power ?") : formatCompactRate(row.averageEUt, false) + " EU/t");
+				int rightWidth = textRenderer.getWidth(right);
+				context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(left, Math.max(40, rb.width() - rightWidth - (tx - rb.x()) - 18))),
+					tx, rb.y() + 6, 0xFFFFFFFF);
+				context.drawTextWithShadow(EmiPort.literal(right), rb.right() - rightWidth - 7, rb.y() + 6,
+					ProductionPlanner.voltageTierColor(row.voltageTier));
+				String details = row.config + (row.recipeRows > 1 ? "  |  " + row.recipeRows + " recipe rows" : "")
+					+ (row.provisional ? "  |  provisional sizing" : "");
+				context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(details, rb.width() - (tx - rb.x()) - 12)),
+					tx, rb.y() + 20, row.provisional ? 0xFFFFC27A : 0xFF9696A2);
+				buildSummaryHitboxes.add(new BuildSummaryHitbox(rb, row));
+			}
+			if (rows.isEmpty()) {
+				context.drawCenteredText(EmiPort.literal("No active machine rows in this Line"), x + modalWidth / 2, listY + 24, 0xFF9A9AA5);
+			}
+		} else {
+			int rowHeight = 26;
+			int visible = Math.max(1, buildSummaryListArea.height() / rowHeight);
+			buildSummaryScroll = Math.max(0, Math.min(buildSummaryScroll, Math.max(0, flowRows.size() - visible)));
+			for (int v = 0, i = buildSummaryScroll; v < visible && i < flowRows.size(); v++, i++) {
+				FlowSummaryRow row = flowRows.get(i);
+				int ry = listY + v * rowHeight;
+				Bounds rb = new Bounds(x + 12, ry + 2, modalWidth - 24, rowHeight - 4);
+				context.fill(rb.x(), rb.y(), rb.width(), rb.height(), (i & 1) == 0 ? 0xFF17171F : 0xFF1C1C24);
+				drawBorder(context, rb, row.color);
+				int tx = rb.x() + 7;
+				if (row.stack != null && !row.stack.isEmpty()) {
+					context.drawStack(row.stack, tx, rb.y() + 3, EmiIngredient.RENDER_ICON);
+					tx += 23;
+				}
+				String left = row.section + "  |  " + row.stack.getName().getString();
+				String right = formatCompactDisplayRate(row.rate, row.approximate) + unitSuffix(row.stack);
+				int rightWidth = textRenderer.getWidth(right);
+				context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(left, Math.max(40, rb.width() - rightWidth - (tx - rb.x()) - 16))),
+					tx, rb.y() + 7, 0xFFFFFFFF);
+				context.drawTextWithShadow(EmiPort.literal(right), rb.right() - rightWidth - 7, rb.y() + 7, row.color);
+			}
+			if (flowRows.isEmpty()) {
+				context.drawCenteredText(EmiPort.literal("No flows in this Line"), x + modalWidth / 2, listY + 24, 0xFF9A9AA5);
+			}
+		}
+
+		String footer = buildSummaryTransferStatus.isBlank()
+			? "COPY/SAVE exports machines, targets, external inputs, internal flow, net outputs and power."
+			: buildSummaryTransferStatus;
+		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(footer, modalWidth - 24)),
+			x + 12, y + modalHeight - 25, buildSummaryTransferStatus.isBlank() ? 0xFF8E8E99 : 0xFFB7E8C9);
+		if (buildSummaryCopyButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, "Copy full Line Report to clipboard",
+				"Includes machine build list, targets, all major flows and power");
+		} else if (buildSummarySaveButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, "Save full Line Report as .txt",
+				"Saved to config/emi-production-planner-exports");
+		}
+		if (!buildSummaryFlowsView) {
+			for (BuildSummaryHitbox hitbox : buildSummaryHitboxes) {
+				if (hitbox.bounds.contains(mouseX, mouseY)) {
+					BuildSummaryRow row = hitbox.row;
+					List<String> tooltip = new ArrayList<>();
+					tooltip.add(row.machines + "x " + row.machineName);
+					tooltip.add("Voltage: " + row.voltageName + "   Parallel: " + row.parallel);
+					tooltip.add(row.config);
+					tooltip.add(row.unknownPower ? "Average power: partially unknown" : "Average power: " + formatSummaryPower(row.averageEUt));
+					if (row.provisional) {
+						tooltip.add("At least one row uses provisional/unknown machine sizing");
+					}
+					drawTooltip(context, mouseX, mouseY, tooltip.toArray(String[]::new));
+					break;
+				}
+			}
+		}
+		context.pop();
+	}
+
+
+	private String buildSummaryText(Line line) {
+		List<BuildSummaryRow> rows = collectBuildSummary(line);
+		PowerSummary power = calculatePower(line);
+		PlanTotals totals = calculate(line);
+		int totalMachines = 0;
+		for (BuildSummaryRow row : rows) {
+			totalMachines += row.machines;
+		}
+		StringBuilder out = new StringBuilder();
+		out.append("Production Planner Line Report - ")
+			.append(ProductionPlanner.displayName(ProductionPlanner.getActiveIndex())).append('\n');
+		out.append("Display unit: /").append(displayTimeUnit.suffix).append('\n');
+		out.append("Total machines: ").append(totalMachines).append('\n');
+		out.append("Distinct setups: ").append(rows.size()).append('\n');
+		out.append("Recipe rows: ").append(line.getEntries().size()).append('\n');
+		if (power.knownEntries > 0) {
+			out.append("Average power: ").append(formatSummaryPower(power.averageEUt));
+			if (power.unknownEntries > 0) {
+				out.append(" + unknown entries");
+			}
+			out.append('\n');
+		}
+
+		out.append("\nTARGETS\n");
+		if (line.getTargets().isEmpty()) {
+			out.append("- none\n");
+		} else {
+			for (Target target : line.getTargets()) {
+				out.append("- ").append(target.getMode().label()).append(' ')
+					.append(target.getStack().getName().getString()).append(": ")
+					.append(formatReportRate(target.getStack(), target.getRate(), false)).append('\n');
+			}
+		}
+
+		appendFlowReportSection(out, "EXTERNAL INPUTS", totals.externalInputs());
+		appendFlowReportSection(out, "INTERNAL FLOW", totals.internalFlow());
+		appendFlowReportSection(out, "NET OUTPUTS", totals.netOutputs());
+
+		out.append("\nMACHINES\n");
+		if (rows.isEmpty()) {
+			out.append("- none\n");
+		}
+		for (BuildSummaryRow row : rows) {
+			out.append("- ").append(row.machines).append("x ").append(row.machineName)
+				.append(" | ").append(row.voltageName)
+				.append(" | PAR ").append(row.parallel)
+				.append(" | ").append(row.config);
+			if (row.unknownPower) {
+				out.append(" | Power ?");
+			} else {
+				out.append(" | ").append(formatSummaryPower(row.averageEUt));
+			}
+			if (row.recipeRows > 1) {
+				out.append(" | ").append(row.recipeRows).append(" recipe rows");
+			}
+			if (row.provisional) {
+				out.append(" | provisional sizing");
+			}
+			out.append('\n');
+		}
+		return out.toString();
+	}
+
+	private void appendFlowReportSection(StringBuilder out, String title, List<Flow> flows) {
+		out.append('\n').append(title).append('\n');
+		if (flows.isEmpty()) {
+			out.append("- none\n");
+			return;
+		}
+		for (Flow flow : flows) {
+			out.append("- ").append(flow.stack.getName().getString()).append(": ")
+				.append(formatReportRate(flow.stack, flow.displayValue, flow.approximate)).append('\n');
+		}
+	}
+
+	private String formatReportRate(EmiStack stack, double perSecond, boolean approximate) {
+		double display = toDisplayRate(perSecond);
+		String compact = formatCompactRate(display, approximate);
+		String exact = formatGroupedExact(display);
+		String suffix = stack.getKey() instanceof Fluid ? " mB/" + displayTimeUnit.suffix : "/" + displayTimeUnit.suffix;
+		String compactWithUnit = compact + suffix;
+		String exactWithUnit = (approximate ? "~" : "") + exact + suffix;
+		if (compact.equals((approximate ? "~" : "") + formatExactRate(display))) {
+			return compactWithUnit;
+		}
+		return compactWithUnit + " (" + exactWithUnit + ")";
+	}
+
+	private List<FlowSummaryRow> collectFlowSummary(Line line, PlanTotals totals) {
+		List<FlowSummaryRow> rows = new ArrayList<>();
+		for (Target target : line.getTargets()) {
+			rows.add(new FlowSummaryRow(target.getMode() == TargetMode.INPUT ? "IN TARGET" : "OUT TARGET", target.getStack(),
+				target.getRate(), false, target.getMode() == TargetMode.INPUT ? 0xFF66D9FF : 0xFFFFFF66));
+		}
+		for (Flow flow : totals.externalInputs()) {
+			rows.add(new FlowSummaryRow("EXTERNAL INPUT", flow.stack, flow.displayValue, flow.approximate, 0xFF66D9FF));
+		}
+		for (Flow flow : totals.internalFlow()) {
+			rows.add(new FlowSummaryRow("INTERNAL FLOW", flow.stack, flow.displayValue, flow.approximate, 0xFFB8B8C0));
+		}
+		for (Flow flow : totals.netOutputs()) {
+			rows.add(new FlowSummaryRow("NET OUTPUT", flow.stack, flow.displayValue, flow.approximate, 0xFFB7E8C9));
+		}
+		return rows;
+	}
+
+
+	private List<BuildSummaryRow> collectBuildSummary(Line line) {
+		Map<String, MutableBuildSummary> grouped = new LinkedHashMap<>();
+		for (Entry entry : line.getEntries()) {
+			EmiRecipe recipe = entry.getRecipe();
+			double rate = line.getEffectiveRate(entry);
+			if (recipe == null || rate <= EPSILON) {
+				continue;
+			}
+			MachineProfile profile = entry.getMachineProfile();
+			String machineName = profile.displayName();
+			String keyPrefix = profile.id();
+			if ("generic".equals(profile.id())) {
+				String category = recipe.getCategory().getName().getString();
+				machineName = "Generic GT - " + category;
+				keyPrefix += ":" + category;
+			}
+			String config = buildSummaryConfig(entry);
+			String key = keyPrefix + "|" + entry.getVoltageTier() + "|" + entry.getParallel() + "|" + config;
+			MutableBuildSummary row = grouped.get(key);
+			if (row == null) {
+				row = new MutableBuildSummary(machineName, profile.icon(), entry.getVoltageTier(), entry.getVoltageName(), entry.getParallel(), config);
+				grouped.put(key, row);
+			}
+			row.machines += Math.max(1, entry.getMachines());
+			row.recipeRows++;
+			if (entry.getRecipeEUt() > 0L && entry.getProcessedDurationTicks() > 0.0D) {
+				row.averageEUt += entry.getAveragePowerEUt(rate);
+			} else {
+				row.unknownPower = true;
+			}
+			if (line.isBalanceEnabled()) {
+				MachineSizing sizing = entry.getMachineSizing(rate);
+				if (!sizing.available() || !sizing.exact()) {
+					row.provisional = true;
+				}
+			}
+		}
+		List<BuildSummaryRow> rows = new ArrayList<>();
+		for (MutableBuildSummary row : grouped.values()) {
+			rows.add(new BuildSummaryRow(row.machineName, row.icon, row.voltageTier, row.voltageName, row.parallel,
+				row.config, row.machines, row.recipeRows, row.averageEUt, row.unknownPower, row.provisional));
+		}
+		return rows;
+	}
+
+	private String buildSummaryConfig(Entry entry) {
+		List<String> parts = new ArrayList<>();
+		parts.add("OC " + entry.getOcDisplayLabel());
+		if (entry.getMachineProfile().coilEfficiencyPerTier() > 0.0D) {
+			parts.add("Coil " + entry.getCoilName());
+		}
+		for (MachineSettingSpec spec : ProductionPlanner.getMachineSettingSpecs(entry)) {
+			int value = entry.getMachineSettingValue(spec);
+			if (value != spec.defaultValue()) {
+				parts.add(spec.englishLabel() + " " + entry.getMachineSettingDisplayValue(spec));
+			}
+		}
+		return String.join("  |  ", parts);
 	}
 
 	private void renderGroupsModal(EmiDrawContext context, Line line, int mouseX, int mouseY, float delta) {
@@ -1336,10 +1707,11 @@ public class ProductionPlannerScreen extends Screen {
 			if (hitbox.icon.contains(mouseX, mouseY)) {
 				List<String> lines = new ArrayList<>();
 				lines.add(stack.getName().getString());
-				lines.add("Target: " + formatExactRate(target.getRate()) + unitSuffix(stack));
+				lines.add((target.getMode() == TargetMode.INPUT ? "Input goal: " : "Output target: ") + formatExactDisplayRate(target.getRate()) + unitSuffix(stack));
 				if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
-					lines.add("Achievable: " + formatExactRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
+					lines.add("Achievable: " + formatExactDisplayRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
 				}
+				lines.add("Ctrl + left-click: toggle IN / OUT goal");
 				lines.add("Left-click: view recipes");
 				lines.add("Right-click: view uses");
 				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
@@ -1347,12 +1719,12 @@ public class ProductionPlannerScreen extends Screen {
 			}
 			if (hitbox.rate.contains(mouseX, mouseY)) {
 				List<String> lines = new ArrayList<>();
-				lines.add("Requested target output rate");
+				lines.add(target.getMode() == TargetMode.INPUT ? "Requested external input rate" : "Requested target output rate");
 				lines.add(stack.getName().getString());
-				lines.add("Click to type an exact amount per second");
-				lines.add("Items use /s; fluids use mB/s");
+				lines.add("Click to type an exact amount per " + displayTimeUnit.longLabel);
+				lines.add("Items use /" + displayTimeUnit.suffix + "; fluids use mB/" + displayTimeUnit.suffix);
 				if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
-					lines.add("Achievable: " + formatExactRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
+					lines.add("Achievable: " + formatExactDisplayRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
 					if (!activeLine.getBottleneckName().isBlank()) {
 						lines.add("Bottleneck: " + activeLine.getBottleneckName());
 					}
@@ -1366,7 +1738,7 @@ public class ProductionPlannerScreen extends Screen {
 			}
 		}
 		if (activeLine.getTargets().isEmpty() && targetIconBounds.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "No balance targets", "Click recipe outputs to add one or more targets");
+			drawTooltip(context, mouseX, mouseY, "No balance goals", "Click recipe outputs to add OUT targets", "Ctrl + click inputs to add IN goals");
 			return;
 		}
 		if (balanceButton.contains(mouseX, mouseY)) {
@@ -1378,8 +1750,8 @@ public class ProductionPlannerScreen extends Screen {
 			lines.add("A bottleneck is propagated through every recipe in the line");
 			if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
 				if (activeLine.getTargets().size() == 1) {
-					lines.add("Requested: " + formatExactRate(activeLine.getTargetRate()) + unitSuffix(activeLine.getTarget()));
-					lines.add("Achievable: " + formatExactRate(activeLine.getAchievableTargetRate()) + unitSuffix(activeLine.getTarget()));
+					lines.add("Requested: " + formatExactDisplayRate(activeLine.getTargetRate()) + unitSuffix(activeLine.getTarget()));
+					lines.add("Achievable: " + formatExactDisplayRate(activeLine.getAchievableTargetRate()) + unitSuffix(activeLine.getTarget()));
 				} else {
 					lines.add("Targets: " + activeLine.getTargets().size());
 					double percent = activeLine.getAchievableTargetRate() / Math.max(EPSILON, activeLine.getTargetRate()) * 100.0D;
@@ -1414,6 +1786,33 @@ public class ProductionPlannerScreen extends Screen {
 				PlannerText.tr("groups.tooltip2", "MATCH keeps a resource inside the group; IGNORE passes it to the parent"));
 			return;
 		}
+		if (exportLineButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, "Export current Production Line",
+				"Copies the complete Line JSON to the clipboard",
+				"and writes a .json file to config/emi-production-planner-exports",
+				"Includes recipes, groups, targets, MACH/PAR/VOLT and Machine CFG");
+			return;
+		}
+		if (importLineButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, "Import Production Line from clipboard",
+				"Copy exported JSON, then click IMPORT",
+				"The imported plan is created as a new Line",
+				"Existing Lines are not overwritten");
+			return;
+		}
+		if (timeUnitButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, "Display time unit: /" + displayTimeUnit.suffix,
+				"Cycles /s -> /min -> /h",
+				"Only the UI unit changes; Planner math remains per second");
+			return;
+		}
+		if (buildSummaryButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, "Build Summary",
+				"Shows how many machines to build for the current Line",
+				"Groups identical VOLT / PAR / OC / Machine CFG setups",
+				"Uses the current MACH values; BALANCE sizes them automatically");
+			return;
+		}
 		if (SHOW_GTO_AUDIT && gtoAuditButton.contains(mouseX, mouseY)) {
 			drawTooltip(context, mouseX, mouseY, "Scan every GTO machine exposed as an EMI workstation",
 				"Classifies AUTO / AUTO + OVERRIDE / OVERRIDE ONLY / SUSPICIOUS NONE / NONE",
@@ -1425,7 +1824,7 @@ public class ProductionPlannerScreen extends Screen {
 			List<String> lines = new ArrayList<>();
 			if (power.knownEntries > 0) {
 				lines.add("Average power: " + formatExactRate(power.averageEUt) + " EU/t");
-				lines.add("Calculated from current crafts/sec and selected machine profiles");
+				lines.add("Calculated from current recipe rates and selected machine profiles");
 			} else {
 				lines.add("Power unavailable for this line");
 			}
@@ -1449,10 +1848,10 @@ public class ProductionPlannerScreen extends Screen {
 					drawTooltip(context, mouseX, mouseY, "BAL rate", "Rate is controlled by Line Auto-Balance",
 						"Click to leave balance mode and restore AUTO/MAN rates");
 				} else if (entry.isAutomatic()) {
-					drawTooltip(context, mouseX, mouseY, "AUTO rate", "crafts/sec = Machines x Parallel / Recipe Duration",
-						"Click to switch to manual crafts/sec");
+					drawTooltip(context, mouseX, mouseY, "AUTO rate", "Displayed as crafts/" + displayTimeUnit.suffix + "; internally calculated per second",
+						"Click to switch to manual rate");
 				} else if (entry.getDurationTicks() > 0.0D) {
-					drawTooltip(context, mouseX, mouseY, "MAN rate", "Direct crafts/sec control",
+					drawTooltip(context, mouseX, mouseY, "MAN rate", "Direct crafts/" + displayTimeUnit.suffix + " control",
 						"Click to switch to automatic machine calculation");
 				} else {
 					drawTooltip(context, mouseX, mouseY, "MAN rate", "Recipe duration was not detected",
@@ -1613,7 +2012,7 @@ public class ProductionPlannerScreen extends Screen {
 				if (activeLine.isBalanceEnabled()) {
 					double balancedRate = activeLine.getEffectiveRate(entry);
 					List<String> lines = new ArrayList<>();
-					lines.add("Balanced crafts per second: " + formatExactRate(balancedRate));
+					lines.add("Balanced crafts/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(balancedRate));
 					addMachineSizingTooltip(lines, entry, balancedRate);
 					if (entry.getRecipeEUt() > 0L) {
 						lines.add("Average power: " + formatExactRate(entry.getAveragePowerEUt(balancedRate)) + " EU/t");
@@ -1623,14 +2022,21 @@ public class ProductionPlannerScreen extends Screen {
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				} else if (entry.isAutomatic()) {
 					double seconds = entry.getProcessedDurationSeconds();
-					drawTooltip(context, mouseX, mouseY, "Crafts per second: " + formatExactRate(entry.getEffectiveRate()),
+					drawTooltip(context, mouseX, mouseY, "Crafts/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(entry.getEffectiveRate()),
 						entry.getMachines() + " machines x " + entry.getParallel() + " parallel / " + formatExactRate(seconds) + " s",
 						entry.getOverclockCount() + " overclock(s), " + entry.getProcessedEUt() + " EU/t",
-						"Switch to MAN to edit crafts/sec directly");
+						"Switch to MAN to edit the displayed rate directly");
 				} else {
-					drawTooltip(context, mouseX, mouseY, "Manual crafts per second: " + formatExactRate(entry.getRate()),
+					drawTooltip(context, mouseX, mouseY, "Manual crafts/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(entry.getRate()),
 						"Mouse wheel: 1", "Shift: 10   Ctrl: 0.1   Alt: 0.01", "Right-click to type an exact value");
 				}
+				return;
+			}
+			if (row.replace.contains(mouseX, mouseY)) {
+				drawTooltip(context, mouseX, mouseY, "Replace recipe",
+					"Opens alternative recipes for this row's primary output",
+					"Choose a recipe and press the Planner button to replace this row",
+					"Group, MACH/PAR/VOLT and compatible machine CFG are preserved");
 				return;
 			}
 			if (row.remove.contains(mouseX, mouseY)) {
@@ -1644,22 +2050,27 @@ public class ProductionPlannerScreen extends Screen {
 				List<TooltipComponent> tooltip = new ArrayList<>();
 				tooltip.add(TooltipComponent.of(EmiPort.ordered(flow.stack.getName())));
 				if (flow.input > EPSILON || flow.output > EPSILON || flow.internal > EPSILON || flow.external > EPSILON) {
-					tooltip.add(line("Total consumed: " + formatExactRate(flow.input) + unitSuffix(flow.stack)));
-					tooltip.add(line("Total produced: " + formatExactRate(flow.output) + unitSuffix(flow.stack)));
-					tooltip.add(line("Internal flow: " + formatExactRate(flow.internal) + unitSuffix(flow.stack)));
-					tooltip.add(line("External input: " + formatExactRate(flow.external) + unitSuffix(flow.stack)));
-					tooltip.add(line("Net output: " + formatExactRate(Math.max(0, flow.output - flow.input)) + unitSuffix(flow.stack)));
+					tooltip.add(line("Total consumed: " + formatExactDisplayRate(flow.input) + unitSuffix(flow.stack)));
+					tooltip.add(line("Total produced: " + formatExactDisplayRate(flow.output) + unitSuffix(flow.stack)));
+					tooltip.add(line("Internal flow: " + formatExactDisplayRate(flow.internal) + unitSuffix(flow.stack)));
+					tooltip.add(line("External input: " + formatExactDisplayRate(flow.external) + unitSuffix(flow.stack)));
+					tooltip.add(line("Net output: " + formatExactDisplayRate(Math.max(0, flow.output - flow.input)) + unitSuffix(flow.stack)));
 				} else {
-					tooltip.add(line("Rate: " + formatExactRate(flow.displayValue) + unitSuffix(flow.stack)));
+					tooltip.add(line("Rate: " + formatExactDisplayRate(flow.displayValue) + unitSuffix(flow.stack)));
 				}
 				if (flow.approximate) {
 					tooltip.add(line("Expected value: chance or alternative ingredient involved"));
 				}
-				if (hitbox.targetCandidate) {
+				if (hitbox.goalMode == TargetMode.OUTPUT) {
 					tooltip.add(line(isTarget(ProductionPlanner.getOrCreateActiveLine(), flow.stack)
-						? "Already selected as a Line target"
-						: "Left-click: add as a Line Auto-Balance target"));
+						? "Already selected as a Line goal"
+						: "Left-click: add as OUT Auto-Balance target"));
 					tooltip.add(line("Shift + left-click: view recipes"));
+				} else if (hitbox.goalMode == TargetMode.INPUT) {
+					tooltip.add(line(isTarget(ProductionPlanner.getOrCreateActiveLine(), flow.stack)
+						? "Already selected as a Line goal"
+						: "Ctrl + left-click: add as IN input goal"));
+					tooltip.add(line("Left-click: view recipes"));
 				} else {
 					tooltip.add(line("Left-click: view recipes"));
 				}
@@ -1679,7 +2090,7 @@ public class ProductionPlannerScreen extends Screen {
 		lines.add("Required effective parallel: " + formatExactRate(sizing.requiredEffectiveParallel()));
 		String setupLabel = entry.isMachinesFixed() || entry.isParallelFixed() ? "Constrained setup: " : "Recommended setup: ";
 		lines.add(setupLabel + sizing.machines() + " machine(s) x " + sizing.parallel() + " parallel");
-		lines.add("Installed capacity: " + formatExactRate(sizing.capacityRate()) + " crafts/s");
+		lines.add("Installed capacity: " + formatExactDisplayRate(sizing.capacityRate()) + " crafts/" + displayTimeUnit.suffix);
 		if (sizing.sufficient()) {
 			lines.add("Headroom: " + formatExactRate(sizing.headroomPercent()) + "%");
 		} else {
@@ -1793,9 +2204,62 @@ public class ProductionPlannerScreen extends Screen {
 
 	@Override
 	public boolean mouseClicked(double mouseX, double mouseY, int button) {
+		ProductionPlanner.beginHistoryAction();
+		try {
 		int mx = (int) mouseX;
 		int my = (int) mouseY;
 		Line currentLine = ProductionPlanner.getOrCreateActiveLine();
+		if (buildSummaryOpen) {
+			if (button == 0 && buildSummaryMachinesButton.contains(mx, my)) {
+				buildSummaryFlowsView = false;
+				buildSummaryScroll = 0;
+				return true;
+			}
+			if (button == 0 && buildSummaryFlowsButton.contains(mx, my)) {
+				buildSummaryFlowsView = true;
+				buildSummaryScroll = 0;
+				return true;
+			}
+			if (button == 0 && buildSummaryCopyButton.contains(mx, my)) {
+				String text = buildSummaryText(currentLine);
+				MinecraftClient.getInstance().keyboard.setClipboard(text);
+				buildSummaryTransferStatus = "Line Report copied to clipboard";
+				return true;
+			}
+			if (button == 0 && buildSummarySaveButton.contains(mx, my)) {
+				String text = buildSummaryText(currentLine);
+				String path = ProductionPlanner.writeBuildSummaryExportFile(text);
+				if (path.isBlank()) {
+					buildSummaryTransferStatus = "Could not save Line Report; use COPY instead";
+				} else {
+					int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+					String fileName = slash >= 0 ? path.substring(slash + 1) : path;
+					buildSummaryTransferStatus = "Saved " + fileName;
+				}
+				return true;
+			}
+			if (button == 0 && buildSummaryCloseButton.contains(mx, my)) {
+				buildSummaryOpen = false;
+				return true;
+			}
+			return true;
+		}
+		if (searchOpen && searchField != null) {
+			if (button == 0 && searchCloseButton.contains(mx, my)) {
+				closeSearch();
+				return true;
+			}
+			if (searchField.mouseClicked(mouseX, mouseY, button)) {
+				EmiPort.focus(searchField, true);
+				return true;
+			}
+			if (searchPanelBounds.contains(mx, my)) {
+				return true;
+			}
+			if (searchField.isFocused()) {
+				EmiPort.focus(searchField, false);
+			}
+		}
 		if (groupsOpen) {
 			if (groupRenameField != null) {
 				if (groupRenameField.mouseClicked(mouseX, mouseY, button)) {
@@ -1944,6 +2408,9 @@ public class ProductionPlannerScreen extends Screen {
 					closeDropdowns();
 					ProductionPlanner.setActiveIndex(tab.index);
 					rowScroll = 0;
+					if (searchOpen) {
+						refreshSearchMatches(ProductionPlanner.getOrCreateActiveLine(), true);
+					}
 				}
 				return true;
 			}
@@ -1970,6 +2437,49 @@ public class ProductionPlannerScreen extends Screen {
 			groupLinkScroll = 0;
 			return true;
 		}
+		if (button == 0 && exportLineButton.contains(mx, my)) {
+			closeDropdowns();
+			String json = ProductionPlanner.exportActiveLineJson();
+			if (json.isBlank()) {
+				lineTransferStatus = "Export failed";
+			} else {
+				MinecraftClient.getInstance().keyboard.setClipboard(json);
+				String path = ProductionPlanner.writeActiveLineExportFile(json);
+				if (path.isBlank()) {
+					lineTransferStatus = "Line JSON copied to clipboard";
+				} else {
+					int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+					String fileName = slash >= 0 ? path.substring(slash + 1) : path;
+					lineTransferStatus = "Exported " + fileName + " + copied JSON to clipboard";
+				}
+			}
+			return true;
+		}
+		if (button == 0 && importLineButton.contains(mx, my)) {
+			closeDropdowns();
+			String clipboard = MinecraftClient.getInstance().keyboard.getClipboard();
+			LineTransferResult result = ProductionPlanner.importLineJson(clipboard);
+			lineTransferStatus = result.message();
+			if (result.success()) {
+				rowScroll = 0;
+				clampScroll();
+			}
+			return true;
+		}
+		if (button == 0 && timeUnitButton.contains(mx, my)) {
+			displayTimeUnit = displayTimeUnit.next();
+			return true;
+		}
+		if (button == 0 && buildSummaryButton.contains(mx, my)) {
+			closeDropdowns();
+			closeSearch();
+			groupsOpen = false;
+			buildSummaryOpen = true;
+			buildSummaryFlowsView = false;
+			buildSummaryScroll = 0;
+			buildSummaryTransferStatus = "";
+			return true;
+		}
 		if (SHOW_GTO_AUDIT && button == 0 && gtoAuditButton.contains(mx, my)) {
 			closeDropdowns();
 			GtoCapabilityAudit.AuditResult result = GtoCapabilityAudit.run();
@@ -1978,6 +2488,10 @@ public class ProductionPlannerScreen extends Screen {
 			return true;
 		}
 		for (TargetHitbox hitbox : targetHitboxes) {
+			if (hitbox.icon.contains(mx, my) && button == 0 && EmiInput.isControlDown()) {
+				ProductionPlanner.toggleTargetMode(line, hitbox.target);
+				return true;
+			}
 			if (hitbox.icon.contains(mx, my) && (button == 0 || button == 1)) {
 				queueStackClick(hitbox.target.getStack(), button);
 				return true;
@@ -2004,9 +2518,13 @@ public class ProductionPlannerScreen extends Screen {
 				continue;
 			}
 			if (button == 0) {
-				if (hitbox.targetCandidate && !EmiInput.isShiftDown()) {
-					double defaultRate = hitbox.flow.stack.getKey() instanceof Fluid ? 1000.0D : 1.0D;
-					ProductionPlanner.setBalanceTarget(line, hitbox.flow.stack, defaultRate);
+				double defaultRate = (hitbox.flow.stack.getKey() instanceof Fluid ? 1000.0D : 1.0D) / displayTimeUnit.multiplier;
+				if (hitbox.goalMode == TargetMode.OUTPUT && !EmiInput.isShiftDown() && !EmiInput.isControlDown()) {
+					ProductionPlanner.setBalanceTarget(line, hitbox.flow.stack, defaultRate, TargetMode.OUTPUT);
+					return true;
+				}
+				if (hitbox.goalMode == TargetMode.INPUT && EmiInput.isControlDown()) {
+					ProductionPlanner.setBalanceTarget(line, hitbox.flow.stack, defaultRate, TargetMode.INPUT);
 					return true;
 				}
 				queueStackClick(hitbox.flow.stack, button);
@@ -2120,6 +2638,9 @@ public class ProductionPlannerScreen extends Screen {
 				startEntryEdit(row, EditKind.RATE);
 				return true;
 			}
+			if (button == 0 && row.replace.contains(mx, my)) {
+				return openRecipeReplacement(line, entry);
+			}
 			if (button == 0 && row.remove.contains(mx, my)) {
 				ProductionPlanner.removeEntry(line, entry);
 				clampScroll();
@@ -2135,6 +2656,30 @@ public class ProductionPlannerScreen extends Screen {
 			}
 		}
 		return super.mouseClicked(mouseX, mouseY, button);
+		} finally {
+			ProductionPlanner.endHistoryAction();
+		}
+	}
+
+
+	private boolean openRecipeReplacement(Line line, Entry entry) {
+		if (line == null || entry == null || entry.getRecipe() == null) {
+			return false;
+		}
+		EmiRecipe current = entry.getRecipe();
+		EmiStack output = firstOutput(current);
+		if (output.isEmpty()) {
+			return false;
+		}
+		List<EmiRecipe> alternatives = findOutputRecipes(output);
+		if (alternatives.isEmpty() || !ProductionPlanner.beginRecipeReplacement(line, entry, output)) {
+			return false;
+		}
+		if (!openRecipeScreen(output, alternatives, current)) {
+			ProductionPlanner.cancelPendingRecipeReplacement();
+			return false;
+		}
+		return true;
 	}
 
 	private void queueStackClick(EmiStack stack, int button) {
@@ -2332,8 +2877,20 @@ public class ProductionPlannerScreen extends Screen {
 
 	@Override
 	public boolean mouseScrolled(double mouseX, double mouseY, double amount) {
+		ProductionPlanner.beginHistoryAction();
+		try {
 		int mx = (int) mouseX;
 		int my = (int) mouseY;
+		if (buildSummaryOpen) {
+			if (buildSummaryListArea.contains(mx, my)) {
+				Line line = ProductionPlanner.getOrCreateActiveLine();
+				int rowHeight = buildSummaryFlowsView ? 26 : 38;
+				int rows = buildSummaryFlowsView ? collectFlowSummary(line, calculate(line)).size() : collectBuildSummary(line).size();
+				int visible = Math.max(1, buildSummaryListArea.height() / rowHeight);
+				buildSummaryScroll = Math.max(0, Math.min(buildSummaryScroll - (int) Math.signum(amount), Math.max(0, rows - visible)));
+			}
+			return true;
+		}
 		if (groupsOpen) {
 			Line line = ProductionPlanner.getOrCreateActiveLine();
 			int direction = (int) -Math.signum(amount);
@@ -2407,7 +2964,7 @@ public class ProductionPlannerScreen extends Screen {
 			}
 			Line line = ProductionPlanner.getOrCreateActiveLine();
 			if (row.rate.contains(mx, my) && !line.isBalanceEnabled() && !entry.isAutomatic()) {
-				ProductionPlanner.setRate(entry, entry.getRate() + Math.signum(amount) * adjustmentStep());
+				ProductionPlanner.setRate(entry, entry.getRate() + Math.signum(amount) * adjustmentStep() / displayTimeUnit.multiplier);
 				return true;
 			}
 		}
@@ -2417,10 +2974,18 @@ public class ProductionPlannerScreen extends Screen {
 			return true;
 		}
 		return super.mouseScrolled(mouseX, mouseY, amount);
+		} finally {
+			ProductionPlanner.endHistoryAction();
+		}
 	}
 
 	@Override
 	public boolean charTyped(char chr, int modifiers) {
+		if (searchOpen && searchField != null && searchField.isFocused()) {
+			searchField.charTyped(chr, modifiers);
+			refreshSearchMatches(ProductionPlanner.getOrCreateActiveLine(), true);
+			return true;
+		}
 		if (groupRenameField != null && groupRenameField.isFocused()) {
 			groupRenameField.charTyped(chr, modifiers);
 			return true;
@@ -2442,6 +3007,32 @@ public class ProductionPlannerScreen extends Screen {
 
 	@Override
 	public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+		if (buildSummaryOpen) {
+			if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+				buildSummaryOpen = false;
+			}
+			return true;
+		}
+		if (keyCode == GLFW.GLFW_KEY_F && EmiInput.isControlDown()) {
+			openSearch();
+			return true;
+		}
+		if (searchOpen) {
+			if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+				closeSearch();
+				return true;
+			}
+			if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+				cycleSearchMatch(EmiInput.isShiftDown() ? -1 : 1);
+				return true;
+			}
+			if (searchField != null && searchField.isFocused()
+					&& !(keyCode == GLFW.GLFW_KEY_Z && EmiInput.isControlDown() && !EmiInput.isShiftDown())) {
+				searchField.keyPressed(keyCode, scanCode, modifiers);
+				refreshSearchMatches(ProductionPlanner.getOrCreateActiveLine(), true);
+				return true;
+			}
+		}
 		if (groupRenameField != null && groupRenameField.isFocused()) {
 			if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
 				cancelGroupRename();
@@ -2499,11 +3090,38 @@ public class ProductionPlannerScreen extends Screen {
 			renameField.keyPressed(keyCode, scanCode, modifiers);
 			return true;
 		}
+		if (keyCode == GLFW.GLFW_KEY_Z && EmiInput.isControlDown() && !EmiInput.isShiftDown()) {
+			if (ProductionPlanner.undo()) {
+				resetAfterUndo();
+			}
+			return true;
+		}
 		if (keyCode == GLFW.GLFW_KEY_ESCAPE || client.options.inventoryKey.matchesKey(keyCode, scanCode)) {
 			close();
 			return true;
 		}
 		return super.keyPressed(keyCode, scanCode, modifiers);
+	}
+
+	private void resetAfterUndo() {
+		cancelEntryEdit();
+		cancelTargetRateEdit();
+		cancelRename();
+		cancelGroupRename();
+		closeDropdowns();
+		clearPendingStackClick();
+		clearGroupDragState();
+		groupsOpen = false;
+		buildSummaryOpen = false;
+		selectedGroup = null;
+		groupListScroll = 0;
+		groupRecipeScroll = 0;
+		groupLinkScroll = 0;
+		rowScroll = 0;
+		clampScroll();
+		if (searchOpen) {
+			refreshSearchMatches(ProductionPlanner.getOrCreateActiveLine(), true);
+		}
 	}
 
 	private void startEntryEdit(RowHitbox row, EditKind kind) {
@@ -2516,7 +3134,7 @@ public class ProductionPlannerScreen extends Screen {
 			case DURATION -> row.duration;
 		};
 		String label = switch (kind) {
-			case RATE -> "Crafts per second";
+			case RATE -> "Crafts per " + displayTimeUnit.longLabel;
 			case MACHINES -> "Machines";
 			case PARALLEL -> "Parallel";
 			case DURATION -> "Duration seconds";
@@ -2525,7 +3143,7 @@ public class ProductionPlannerScreen extends Screen {
 			Math.max(20, bounds.width() - 4), bounds.height() - 4, EmiPort.literal(label));
 		editField.setMaxLength(24);
 		String value = switch (kind) {
-			case RATE -> formatExactRate(row.entry.getRate());
+			case RATE -> formatExactDisplayRate(row.entry.getRate());
 			case MACHINES -> Integer.toString(row.entry.getMachines());
 			case PARALLEL -> Integer.toString(row.entry.getParallel());
 			case DURATION -> row.entry.getDurationSeconds() > 0.0D ? formatExactRate(row.entry.getDurationSeconds()) : "";
@@ -2535,25 +3153,30 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private void commitEntryEdit() {
-		if (editField != null && editEntry != null && editKind != null) {
-			try {
-				String text = editField.getText().trim().replace(',', '.');
-				switch (editKind) {
-					case RATE -> ProductionPlanner.setRate(editEntry, Double.parseDouble(text));
-					case MACHINES -> ProductionPlanner.setMachines(editEntry, Integer.parseInt(text));
-					case PARALLEL -> ProductionPlanner.setParallel(editEntry, Integer.parseInt(text));
-					case DURATION -> {
-						double seconds = text.isEmpty() ? 0.0D : Double.parseDouble(text);
-						ProductionPlanner.setDurationOverrideSeconds(editEntry, seconds);
-						if (editEntry.getDurationTicks() > 0.0D) {
-							ProductionPlanner.setAutomatic(editEntry, true);
+		ProductionPlanner.beginHistoryAction();
+		try {
+			if (editField != null && editEntry != null && editKind != null) {
+				try {
+					String text = editField.getText().trim().replace(',', '.');
+					switch (editKind) {
+						case RATE -> ProductionPlanner.setRate(editEntry, Double.parseDouble(text) / displayTimeUnit.multiplier);
+						case MACHINES -> ProductionPlanner.setMachines(editEntry, Integer.parseInt(text));
+						case PARALLEL -> ProductionPlanner.setParallel(editEntry, Integer.parseInt(text));
+						case DURATION -> {
+							double seconds = text.isEmpty() ? 0.0D : Double.parseDouble(text);
+							ProductionPlanner.setDurationOverrideSeconds(editEntry, seconds);
+							if (editEntry.getDurationTicks() > 0.0D) {
+								ProductionPlanner.setAutomatic(editEntry, true);
+							}
 						}
 					}
+				} catch (Throwable ignored) {
 				}
-			} catch (Throwable ignored) {
 			}
+		} finally {
+			ProductionPlanner.endHistoryAction();
+			cancelEntryEdit();
 		}
-		cancelEntryEdit();
 	}
 
 	private void cancelEntryEdit() {
@@ -2575,7 +3198,7 @@ public class ProductionPlannerScreen extends Screen {
 		targetRateField = new TextFieldWidget(client.textRenderer, targetEditBounds.x() + 2, targetEditBounds.y() + 2,
 			Math.max(20, targetEditBounds.width() - 4), targetEditBounds.height() - 4, EmiPort.literal("Target rate"));
 		targetRateField.setMaxLength(24);
-		targetRateField.setText(formatExactRate(target.getRate()));
+		targetRateField.setText(formatExactDisplayRate(target.getRate()));
 		EmiPort.focus(targetRateField, true);
 	}
 
@@ -2583,7 +3206,7 @@ public class ProductionPlannerScreen extends Screen {
 		if (targetRateField != null && targetEditLine != null && targetEditTarget != null) {
 			try {
 				double rate = Double.parseDouble(targetRateField.getText().trim().replace(',', '.'));
-				ProductionPlanner.setTargetRate(targetEditLine, targetEditTarget, rate);
+				ProductionPlanner.setTargetRate(targetEditLine, targetEditTarget, rate / displayTimeUnit.multiplier);
 			} catch (Throwable ignored) {
 			}
 		}
@@ -2691,6 +3314,225 @@ public class ProductionPlannerScreen extends Screen {
 	@Override
 	public boolean shouldPause() {
 		return false;
+	}
+
+
+	private void openSearch() {
+		if (groupsOpen) {
+			clearGroupDragState();
+			groupsOpen = false;
+		}
+		closeDropdowns();
+		if (editField != null) {
+			commitEntryEdit();
+		}
+		if (targetRateField != null) {
+			commitTargetRateEdit();
+		}
+		if (renameField != null) {
+			commitRename();
+		}
+		if (groupRenameField != null) {
+			commitGroupRename();
+		}
+		String query = searchField == null ? "" : searchField.getText();
+		searchOpen = true;
+		createSearchField(query);
+		refreshSearchMatches(ProductionPlanner.getOrCreateActiveLine(), true);
+	}
+
+	private void createSearchField(String query) {
+		int panelWidth = Math.min(370, Math.max(250, width - 110));
+		int x = Math.max(52, width - panelWidth - 8);
+		int y = 3;
+		searchPanelBounds = new Bounds(x, y, panelWidth, 22);
+		searchCloseButton = new Bounds(searchPanelBounds.right() - 20, y + 2, 18, 18);
+		int fieldX = x + 38;
+		int fieldWidth = Math.max(90, panelWidth - 132);
+		searchField = new TextFieldWidget(client.textRenderer, fieldX, y + 3, fieldWidth, 16, EmiPort.literal("Search current line"));
+		searchField.setMaxLength(128);
+		searchField.setText(query == null ? "" : query);
+		EmiPort.focus(searchField, true);
+	}
+
+	private void closeSearch() {
+		if (searchField != null) {
+			EmiPort.focus(searchField, false);
+		}
+		searchOpen = false;
+		searchField = null;
+		searchPanelBounds = EMPTY;
+		searchCloseButton = EMPTY;
+		searchMatchRows = List.of();
+		searchMatchIndex = -1;
+	}
+
+	private void refreshSearchMatches(Line line, boolean resetSelection) {
+		if (!searchOpen || searchField == null || line == null) {
+			searchMatchRows = List.of();
+			searchMatchIndex = -1;
+			return;
+		}
+		String query = normalizeSearch(searchField.getText());
+		if (query.isBlank()) {
+			searchMatchRows = List.of();
+			searchMatchIndex = -1;
+			return;
+		}
+		List<PlannerDisplayRow> rows = buildPlannerDisplayRows(line);
+		List<Integer> matches = new ArrayList<>();
+		for (int i = 0; i < rows.size(); i++) {
+			if (matchesSearch(line, rows.get(i), query)) {
+				matches.add(i);
+			}
+		}
+		int previousRow = currentSearchRow();
+		searchMatchRows = matches;
+		if (matches.isEmpty()) {
+			searchMatchIndex = -1;
+			return;
+		}
+		boolean selectionChanged = false;
+		if (resetSelection) {
+			searchMatchIndex = 0;
+			selectionChanged = true;
+		} else if (previousRow >= 0 && matches.contains(previousRow)) {
+			searchMatchIndex = matches.indexOf(previousRow);
+		} else if (searchMatchIndex < 0 || searchMatchIndex >= matches.size()) {
+			searchMatchIndex = 0;
+			selectionChanged = true;
+		}
+		if (selectionChanged) {
+			ensureSearchMatchVisible();
+		}
+	}
+
+	private boolean matchesSearch(Line line, PlannerDisplayRow row, String query) {
+		StringBuilder haystack = new StringBuilder();
+		if (row.group != null) {
+			haystack.append(row.group.getDisplayName(line));
+			return normalizeSearch(haystack.toString()).contains(query);
+		}
+		Entry entry = row.entry;
+		if (entry == null) {
+			return false;
+		}
+		EmiRecipe recipe = entry.getRecipe();
+		appendSearchText(haystack, entry.getRecipeId());
+		MachineProfile profile = entry.getMachineProfile();
+		if (profile != null) {
+			appendSearchText(haystack, profile.displayName());
+			appendSearchText(haystack, profile.id());
+		}
+		if (entry.getGroupId() > 0) {
+			appendSearchText(haystack, line.getEntryGroupName(entry));
+		}
+		if (recipe != null) {
+			appendSearchText(haystack, recipeName(recipe));
+			appendSearchText(haystack, recipe.getCategory().getName().getString());
+			appendSearchText(haystack, recipe.getId() == null ? null : recipe.getId().toString());
+			for (EmiIngredient ingredient : recipe.getInputs()) {
+				appendSearchIngredient(haystack, ingredient);
+			}
+			for (EmiIngredient ingredient : recipe.getCatalysts()) {
+				appendSearchIngredient(haystack, ingredient);
+			}
+			for (EmiStack stack : recipe.getOutputs()) {
+				appendSearchStack(haystack, stack);
+			}
+		}
+		return normalizeSearch(haystack.toString()).contains(query);
+	}
+
+	private void appendSearchIngredient(StringBuilder haystack, EmiIngredient ingredient) {
+		if (ingredient == null) {
+			return;
+		}
+		for (EmiStack stack : ingredient.getEmiStacks()) {
+			appendSearchStack(haystack, stack);
+		}
+	}
+
+	private void appendSearchStack(StringBuilder haystack, EmiStack stack) {
+		if (stack == null || stack.isEmpty()) {
+			return;
+		}
+		appendSearchText(haystack, stack.getName().getString());
+		appendSearchText(haystack, stack.getId() == null ? null : stack.getId().toString());
+	}
+
+	private void appendSearchText(StringBuilder haystack, Object value) {
+		if (value == null) {
+			return;
+		}
+		haystack.append(' ').append(value);
+	}
+
+	private String normalizeSearch(String text) {
+		return text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
+	}
+
+	private void cycleSearchMatch(int direction) {
+		refreshSearchMatches(ProductionPlanner.getOrCreateActiveLine(), false);
+		if (searchMatchRows.isEmpty()) {
+			return;
+		}
+		int size = searchMatchRows.size();
+		searchMatchIndex = Math.floorMod(searchMatchIndex + direction, size);
+		ensureSearchMatchVisible();
+	}
+
+	private void ensureSearchMatchVisible() {
+		int row = currentSearchRow();
+		if (row < 0) {
+			return;
+		}
+		int visible = visibleRows();
+		if (row < rowScroll) {
+			rowScroll = row;
+		} else if (row >= rowScroll + visible) {
+			rowScroll = row - visible + 1;
+		}
+		clampScroll();
+	}
+
+	private int currentSearchRow() {
+		if (searchMatchIndex < 0 || searchMatchIndex >= searchMatchRows.size()) {
+			return -1;
+		}
+		return searchMatchRows.get(searchMatchIndex);
+	}
+
+	private boolean isSearchFiltering() {
+		return searchOpen && searchField != null && !normalizeSearch(searchField.getText()).isBlank();
+	}
+
+	private void renderSearchRowOverlay(EmiDrawContext context, int displayRowIndex, int y) {
+		if (!isSearchFiltering()) {
+			return;
+		}
+		boolean match = searchMatchRows.contains(displayRowIndex);
+		Bounds bounds = new Bounds(2, y + 1, Math.max(1, width - 4), ROW_HEIGHT - 3);
+		if (!match) {
+			context.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(), 0x99000000);
+			return;
+		}
+		drawBorder(context, bounds, displayRowIndex == currentSearchRow() ? 0xFFFFFF66 : 0xFF66D9FF);
+	}
+
+	private void renderSearchOverlay(EmiDrawContext context, DrawContext raw, Line line, int mouseX, int mouseY, float delta) {
+		if (searchField == null) {
+			createSearchField("");
+			refreshSearchMatches(line, true);
+		}
+		context.fill(searchPanelBounds.x(), searchPanelBounds.y(), searchPanelBounds.width(), searchPanelBounds.height(), 0xFF1A1A22);
+		drawBorder(context, searchPanelBounds, 0xFF8A8A96);
+		context.drawTextWithShadow(EmiPort.literal("Find:"), searchPanelBounds.x() + 6, searchPanelBounds.y() + 7, 0xFFD0D0D8);
+		String count = searchMatchRows.isEmpty() ? "0/0" : (searchMatchIndex + 1) + "/" + searchMatchRows.size();
+		int countX = searchCloseButton.x() - 8 - textRenderer.getWidth(count);
+		context.drawTextWithShadow(EmiPort.literal(count), countX, searchPanelBounds.y() + 7, searchMatchRows.isEmpty() ? 0xFFFF7777 : 0xFFB8E6CF);
+		drawButton(context, searchCloseButton, mouseX, mouseY, "x", false);
+		searchField.render(raw, mouseX, mouseY, delta);
 	}
 
 	private double adjustmentStep() {
@@ -2843,6 +3685,22 @@ public class ProductionPlannerScreen extends Screen {
 		return stack.copy().setAmount(1).setChance(1);
 	}
 
+	private double toDisplayRate(double perSecond) {
+		return perSecond * displayTimeUnit.multiplier;
+	}
+
+	private String formatDisplayRate(double perSecond) {
+		return formatRate(toDisplayRate(perSecond));
+	}
+
+	private String formatExactDisplayRate(double perSecond) {
+		return formatExactRate(toDisplayRate(perSecond));
+	}
+
+	private String formatCompactDisplayRate(double perSecond, boolean approximate) {
+		return formatCompactRate(toDisplayRate(perSecond), approximate);
+	}
+
 	private String formatRate(double value) {
 		if (value >= 1000.0D) {
 			return formatCompactRate(value, false);
@@ -2887,20 +3745,55 @@ public class ProductionPlannerScreen extends Screen {
 		return trimNumber(value, 4);
 	}
 
+	private String formatSummaryPower(double value) {
+		return formatCompactRate(value, false) + " EU/t (" + formatGroupedExact(value) + " EU/t)";
+	}
+
+	private String formatGroupedExact(double value) {
+		String exact = formatExactRate(value);
+		int dot = exact.indexOf('.');
+		String integer = dot >= 0 ? exact.substring(0, dot) : exact;
+		String fraction = dot >= 0 ? exact.substring(dot) : "";
+		String sign = integer.startsWith("-") ? "-" : "";
+		if (!sign.isEmpty()) {
+			integer = integer.substring(1);
+		}
+		StringBuilder grouped = new StringBuilder(integer.length() + integer.length() / 3 + fraction.length() + 1);
+		for (int i = 0; i < integer.length(); i++) {
+			if (i > 0 && (integer.length() - i) % 3 == 0) {
+				grouped.append(',');
+			}
+			grouped.append(integer.charAt(i));
+		}
+		return sign + grouped + fraction;
+	}
+
 	private String trimNumber(double value, int scale) {
 		return BigDecimal.valueOf(value).setScale(scale, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
 	}
 
 	private String unitSuffix(EmiStack stack) {
-		return stack.getKey() instanceof Fluid ? " mB/s" : " /s";
+		return stack.getKey() instanceof Fluid ? " mB/" + displayTimeUnit.suffix : " /" + displayTimeUnit.suffix;
 	}
 
 	private boolean isTarget(Line line, EmiStack stack) {
-		return line != null && stack != null && !stack.isEmpty() && line.hasTarget(stack);
+		return targetMode(line, stack) != null;
+	}
+
+	private TargetMode targetMode(Line line, EmiStack stack) {
+		if (line == null || stack == null || stack.isEmpty()) {
+			return null;
+		}
+		for (Target target : line.getTargets()) {
+			if (target.getStack().isEqual(stack, EmiPort.compareStrict())) {
+				return target.getMode();
+			}
+		}
+		return null;
 	}
 
 	private String unitSuffixShort(EmiStack stack) {
-		return stack.getKey() instanceof Fluid ? "mB/s" : "/s";
+		return stack.getKey() instanceof Fluid ? "mB/" + displayTimeUnit.suffix : "/" + displayTimeUnit.suffix;
 	}
 
 	private void drawValueBox(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY, String label, boolean active) {
@@ -2956,6 +3849,63 @@ public class ProductionPlannerScreen extends Screen {
 		}
 	}
 
+	private enum DisplayTimeUnit {
+		SECOND(1.0D, "s", "second"),
+		MINUTE(60.0D, "min", "minute"),
+		HOUR(3600.0D, "h", "hour");
+
+		private final double multiplier;
+		private final String suffix;
+		private final String longLabel;
+
+		DisplayTimeUnit(double multiplier, String suffix, String longLabel) {
+			this.multiplier = multiplier;
+			this.suffix = suffix;
+			this.longLabel = longLabel;
+		}
+
+		private DisplayTimeUnit next() {
+			return switch (this) {
+				case SECOND -> MINUTE;
+				case MINUTE -> HOUR;
+				case HOUR -> SECOND;
+			};
+		}
+	}
+
+	private static final class MutableBuildSummary {
+		private final String machineName;
+		private final EmiStack icon;
+		private final int voltageTier;
+		private final String voltageName;
+		private final int parallel;
+		private final String config;
+		private int machines;
+		private int recipeRows;
+		private double averageEUt;
+		private boolean unknownPower;
+		private boolean provisional;
+
+		private MutableBuildSummary(String machineName, EmiStack icon, int voltageTier, String voltageName, int parallel, String config) {
+			this.machineName = machineName;
+			this.icon = icon;
+			this.voltageTier = voltageTier;
+			this.voltageName = voltageName;
+			this.parallel = parallel;
+			this.config = config;
+		}
+	}
+
+	private record BuildSummaryRow(String machineName, EmiStack icon, int voltageTier, String voltageName, int parallel,
+			String config, int machines, int recipeRows, double averageEUt, boolean unknownPower, boolean provisional) {
+	}
+
+	private record FlowSummaryRow(String section, EmiStack stack, double rate, boolean approximate, int color) {
+	}
+
+	private record BuildSummaryHitbox(Bounds bounds, BuildSummaryRow row) {
+	}
+
 	private enum EditKind {
 		RATE, MACHINES, PARALLEL, DURATION
 	}
@@ -3007,12 +3957,13 @@ public class ProductionPlannerScreen extends Screen {
 		private final Bounds oc;
 		private final Bounds duration;
 		private final Bounds rate;
+		private final Bounds replace;
 		private final Bounds remove;
 		private final Bounds recipeBounds;
 
 		private RowHitbox(Entry entry, Bounds mode, Bounds machineProfile, Bounds machineConfig, Bounds machinesLock, Bounds machinesMinus, Bounds machinesValue, Bounds machinesPlus,
 				Bounds parallelLock, Bounds parallelMinus, Bounds parallelValue, Bounds parallelPlus, Bounds voltage, Bounds oc, Bounds duration, Bounds rate,
-				Bounds remove, Bounds recipeBounds) {
+				Bounds replace, Bounds remove, Bounds recipeBounds) {
 			this.entry = entry;
 			this.mode = mode;
 			this.machineProfile = machineProfile;
@@ -3029,6 +3980,7 @@ public class ProductionPlannerScreen extends Screen {
 			this.oc = oc;
 			this.duration = duration;
 			this.rate = rate;
+			this.replace = replace;
 			this.remove = remove;
 			this.recipeBounds = recipeBounds;
 		}
@@ -3045,12 +3997,12 @@ public class ProductionPlannerScreen extends Screen {
 	private static final class FlowHitbox {
 		private final Bounds bounds;
 		private final Flow flow;
-		private final boolean targetCandidate;
+		private final TargetMode goalMode;
 
-		private FlowHitbox(Bounds bounds, Flow flow, boolean targetCandidate) {
+		private FlowHitbox(Bounds bounds, Flow flow, TargetMode goalMode) {
 			this.bounds = bounds;
 			this.flow = flow;
-			this.targetCandidate = targetCandidate;
+			this.goalMode = goalMode;
 		}
 	}
 

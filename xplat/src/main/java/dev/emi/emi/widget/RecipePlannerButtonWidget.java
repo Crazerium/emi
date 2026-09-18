@@ -21,27 +21,43 @@ public class RecipePlannerButtonWidget extends RecipeButtonWidget {
 	public void render(DrawContext raw, int mouseX, int mouseY, float delta) {
 		EmiDrawContext context = EmiDrawContext.wrap(raw);
 		boolean hovered = getBounds().contains(mouseX, mouseY);
+		boolean replacing = ProductionPlanner.canReplacePendingWith(recipe);
 		int bg = hovered ? 0xFF4A4A54 : 0xFF303038;
-		int border = hovered ? 0xFFE0E0E0 : 0xFF808088;
+		int border = replacing ? (hovered ? 0xFFFFFFAA : 0xFFD8B84C) : (hovered ? 0xFFE0E0E0 : 0xFF808088);
 		context.fill(x, y, 12, 12, bg);
 		context.fill(x, y, 12, 1, border);
 		context.fill(x, y + 11, 12, 1, border);
 		context.fill(x, y, 1, 12, border);
 		context.fill(x + 11, y, 1, 12, border);
-		context.fill(x + 5, y + 2, 2, 8, 0xFF66FF99);
-		context.fill(x + 2, y + 5, 8, 2, 0xFF66FF99);
+		if (replacing) {
+			context.drawCenteredText(EmiPort.literal("R"), x + 6, y + 2, 0xFFFFDD66);
+		} else {
+			context.fill(x + 5, y + 2, 2, 8, 0xFF66FF99);
+			context.fill(x + 2, y + 5, 8, 2, 0xFF66FF99);
+		}
 	}
 
 	@Override
 	public List<TooltipComponent> getTooltip(int mouseX, int mouseY) {
 		List<TooltipComponent> tooltip = new ArrayList<>();
+		boolean pendingReplace = ProductionPlanner.hasPendingRecipeReplacement();
+		boolean replacing = ProductionPlanner.canReplacePendingWith(recipe);
 		if (recipe.getId() == null) {
 			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Production Planner"))));
 			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("This recipe has no stable ID and cannot be saved"))));
+		} else if (replacing) {
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Replace recipe in Production Planner"))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("LMB - Replace the selected Planner row with this recipe"))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Preserves group and compatible MACH / PAR / VOLT / CFG settings"))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("RMB - Cancel replacement and return to Planner"))));
 		} else {
 			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Production Planner"))));
 			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("LMB - Add to active line (AUTO when recipe duration is detected)"))));
 			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("RMB - Open planner without adding"))));
+			if (pendingReplace) {
+				String output = ProductionPlanner.pendingRecipeReplacementOutputName();
+				tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Replace mode: this recipe does not produce " + output))));
+			}
 		}
 		return tooltip;
 	}
@@ -52,14 +68,26 @@ public class RecipePlannerButtonWidget extends RecipeButtonWidget {
 			return false;
 		}
 		if (button == 1) {
+			ProductionPlanner.cancelPendingRecipeReplacement();
 			playButtonSound();
 			EmiApi.viewProductionPlanner();
 			return true;
 		}
-		if (button == 0 && ProductionPlanner.addRecipe(recipe)) {
-			playButtonSound();
-			EmiApi.viewProductionPlanner();
-			return true;
+		if (button == 0 && ProductionPlanner.canReplacePendingWith(recipe)) {
+			if (ProductionPlanner.replacePendingRecipe(recipe)) {
+				playButtonSound();
+				EmiApi.viewProductionPlanner();
+				return true;
+			}
+			return false;
+		}
+		if (button == 0) {
+			ProductionPlanner.cancelPendingRecipeReplacement();
+			if (ProductionPlanner.addRecipe(recipe)) {
+				playButtonSound();
+				EmiApi.viewProductionPlanner();
+				return true;
+			}
 		}
 		return false;
 	}

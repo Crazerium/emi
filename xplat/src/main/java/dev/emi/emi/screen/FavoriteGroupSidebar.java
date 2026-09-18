@@ -1188,29 +1188,14 @@ public final class FavoriteGroupSidebar {
 		if (inventory == null) {
 			return false;
 		}
-		for (EmiIngredient ingredient : recipe.getInputs()) {
-			if (ingredient == null || ingredient.isEmpty() || !hasReusableOption(ingredient)) {
-				continue;
-			}
-			boolean found = false;
-			for (EmiStack expected : ingredient.getEmiStacks()) {
-				if (!isReusable(expected)) {
-					continue;
-				}
-				for (EmiStack candidate : inventory.inventory.values()) {
-					if (candidate == null || candidate.isEmpty() || !EmiCraftingToolCompat.matches(expected, candidate)) {
-						continue;
-					}
-					if (!EmiCraftingToolCompat.isGtTool(candidate) || EmiCraftingToolCompat.getSafeCraftingUses(candidate) > 0L) {
-						found = true;
-						break;
-					}
-				}
-				if (found) {
-					break;
-				}
-			}
-			if (!found) {
+		List<Boolean> availability = inventory.getCraftAvailability(recipe);
+		List<EmiIngredient> inputs = recipe.getInputs();
+		if (availability.size() != inputs.size()) {
+			return false;
+		}
+		for (int i = 0; i < inputs.size(); i++) {
+			EmiIngredient ingredient = inputs.get(i);
+			if (ingredient != null && !ingredient.isEmpty() && hasReusableOption(ingredient) && !availability.get(i)) {
 				return false;
 			}
 		}
@@ -2340,6 +2325,18 @@ public final class FavoriteGroupSidebar {
 		return ingredient.getEmiStacks().get(0).getName().getString();
 	}
 
+	private static boolean hasReusableGtToolOption(EmiIngredient ingredient) {
+		if (ingredient == null) {
+			return false;
+		}
+		for (EmiStack stack : ingredient.getEmiStacks()) {
+			if (isReusable(stack) && EmiCraftingToolCompat.isGtTool(stack)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private static boolean hasReusableOption(EmiIngredient ingredient) {
 		if (ingredient == null) {
 			return false;
@@ -2744,8 +2741,12 @@ public final class FavoriteGroupSidebar {
 				return !strict;
 			}
 			try {
+				Set<ToolInstance> reservedTools = new HashSet<>();
 				for (EmiIngredient input : recipe.getInputs()) {
 					if (input == null || input.isEmpty()) {
+						continue;
+					}
+					if (hasReusableGtToolOption(input) && inventory.consumeGtToolSlot(input, amount, reservedTools)) {
 						continue;
 					}
 					long needed = safeMultiply(Math.max(1L, input.getAmount()), amount);
@@ -2809,6 +2810,7 @@ public final class FavoriteGroupSidebar {
 
 	private static final class InventoryLedger {
 		private final List<LedgerEntry> entries = new ArrayList<>();
+		private final List<ToolInstance> tools = new ArrayList<>();
 
 		private InventoryLedger(EmiPlayerInventory inventory) {
 			if (inventory == null) {
@@ -2836,13 +2838,7 @@ public final class FavoriteGroupSidebar {
 					continue;
 				}
 				if (isReusable(option)) {
-					if (EmiCraftingToolCompat.isGtTool(entry.stack)) {
-						long used = Math.min(remaining, Math.max(0L, entry.craftingUses));
-						entry.craftingUses -= used;
-						remaining -= used;
-						if (remaining <= 0L) {
-							return 0L;
-						}
+					if (EmiCraftingToolCompat.isGtTool(option) || EmiCraftingToolCompat.isGtTool(entry.stack)) {
 						continue;
 					}
 					return 0L;
@@ -2859,6 +2855,33 @@ public final class FavoriteGroupSidebar {
 				addStack(entry.stack, entry.amount);
 			}
 			return remaining;
+		}
+
+
+		private boolean consumeGtToolSlot(EmiIngredient ingredient, long crafts, Set<ToolInstance> reserved) {
+			ToolInstance best = null;
+			for (ToolInstance tool : tools) {
+				if (tool == null || reserved.contains(tool) || tool.uses < crafts) {
+					continue;
+				}
+				boolean matches = false;
+				for (EmiStack option : ingredient.getEmiStacks()) {
+					if (option != null && !option.isEmpty() && isReusable(option)
+							&& EmiCraftingToolCompat.isGtTool(option) && EmiCraftingToolCompat.matches(option, tool.stack)) {
+						matches = true;
+						break;
+					}
+				}
+				if (matches && (best == null || tool.uses > best.uses)) {
+					best = tool;
+				}
+			}
+			if (best == null) {
+				return false;
+			}
+			best.uses -= Math.max(1L, crafts);
+			reserved.add(best);
+			return true;
 		}
 
 		private void addRemainder(List<LedgerEntry> returned, EmiStack option, long used) {
@@ -2906,7 +2929,11 @@ public final class FavoriteGroupSidebar {
 			}
 			EmiStack normalized = stack.copy().setAmount(1);
 			if (EmiCraftingToolCompat.isGtTool(normalized)) {
-				entries.add(new LedgerEntry(normalized, amount));
+				long uses = EmiCraftingToolCompat.getSafeCraftingUses(normalized);
+				long count = Math.min(amount, 4096L);
+				for (long i = 0; i < count; i++) {
+					tools.add(new ToolInstance(normalized.copy(), uses));
+				}
 				return;
 			}
 			for (LedgerEntry entry : entries) {
@@ -2931,19 +2958,20 @@ public final class FavoriteGroupSidebar {
 	private static final class LedgerEntry {
 		private final EmiStack stack;
 		private long amount;
-		private long craftingUses;
 
 		private LedgerEntry(EmiStack stack, long amount) {
 			this.stack = stack;
 			this.amount = amount;
-			long uses = EmiCraftingToolCompat.getSafeCraftingUses(stack);
-			if (uses < 0L) {
-				this.craftingUses = -1L;
-			} else if (uses == Long.MAX_VALUE || amount > Long.MAX_VALUE / Math.max(1L, uses)) {
-				this.craftingUses = Long.MAX_VALUE;
-			} else {
-				this.craftingUses = uses * amount;
-			}
+		}
+	}
+
+	private static final class ToolInstance {
+		private final EmiStack stack;
+		private long uses;
+
+		private ToolInstance(EmiStack stack, long uses) {
+			this.stack = stack;
+			this.uses = uses < 0L ? 0L : uses;
 		}
 	}
 

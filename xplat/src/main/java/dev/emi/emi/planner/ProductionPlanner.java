@@ -2,6 +2,9 @@ package dev.emi.emi.planner;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -26,6 +29,7 @@ import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.api.stack.serializer.EmiIngredientSerializer;
 import dev.emi.emi.bom.BoM;
 import dev.emi.emi.planner.compat.PlannerMachineCompatRegistry;
+import dev.emi.emi.platform.EmiAgnos;
 import dev.emi.emi.planner.compat.PlannerMachineRule;
 import dev.emi.emi.planner.compat.PlannerMachineRuntimeOverride;
 import dev.emi.emi.registry.EmiRecipes;
@@ -33,6 +37,7 @@ import dev.emi.emi.runtime.EmiCraftingToolCompat;
 import dev.emi.emi.runtime.EmiFavorite;
 import dev.emi.emi.runtime.EmiFavorites;
 import dev.emi.emi.runtime.EmiProductionPlannerPersistence;
+import dev.emi.emi.runtime.EmiPersistentData;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 
@@ -42,8 +47,14 @@ public final class ProductionPlanner {
 	private static final Map<String, MachineRuntimeInfo> MACHINE_RUNTIME_CACHE = new LinkedHashMap<>();
 	private static final Map<String, String> PREFERRED_MACHINE_PROFILES = new LinkedHashMap<>();
 	private static final int MAX_FAVORITE_CHAIN_RECIPES = 128;
+	private static final int UNDO_HISTORY_LIMIT = 50;
+	private static final List<JsonObject> UNDO_HISTORY = new ArrayList<>();
 	private static int activeIndex = -1;
 	private static boolean loaded;
+	private static boolean undoHistoryInitialized;
+	private static boolean restoringUndo;
+	private static int historyActionDepth;
+	private static PendingReplacement pendingReplacement;
 
 	private static final List<MachineProfile> BUILTIN_MACHINE_PROFILES = List.of(
 		new MachineProfile("generic", "Generic GT", "Any recipe; manual fallback profile", "", 0, true, EmiStack.EMPTY),
@@ -67,6 +78,7 @@ public final class ProductionPlanner {
 		}
 		loaded = true;
 		LINES.clear();
+		activeIndex = -1;
 		PREFERRED_MACHINE_PROFILES.clear();
 		JsonObject root = EmiProductionPlannerPersistence.load();
 		if (root.has("preferred_machines") && root.get("preferred_machines").isJsonObject()) {
@@ -165,7 +177,10 @@ public final class ProductionPlanner {
 								double rate = targetObject.has("rate")
 									? sanitizeTargetRate(targetObject.get("rate").getAsDouble())
 									: defaultTargetRate(stack);
-								line.targets.add(new Target(normalizeStack(stack), rate));
+								TargetMode mode = targetObject.has("mode")
+									? TargetMode.fromSerialized(targetObject.get("mode").getAsString())
+									: TargetMode.OUTPUT;
+								line.targets.add(new Target(normalizeStack(stack), rate, mode));
 							}
 						} catch (Throwable ignored) {
 						}
@@ -178,7 +193,7 @@ public final class ProductionPlanner {
 							double rate = object.has("target_rate")
 								? sanitizeTargetRate(object.get("target_rate").getAsDouble())
 								: defaultTargetRate(stack);
-							line.targets.add(new Target(normalizeStack(stack), rate));
+							line.targets.add(new Target(normalizeStack(stack), rate, TargetMode.OUTPUT));
 						}
 					} catch (Throwable ignored) {
 					}
@@ -266,6 +281,9 @@ public final class ProductionPlanner {
 			int requested = root.has("active") ? root.get("active").getAsInt() : 0;
 			activeIndex = Math.max(0, Math.min(requested, LINES.size() - 1));
 		}
+		if (!undoHistoryInitialized && !restoringUndo) {
+			initializeUndoHistory(serializeState());
+		}
 	}
 
 	public static synchronized boolean addRecipe(EmiRecipe recipe) {
@@ -284,6 +302,130 @@ public final class ProductionPlanner {
 		invalidateBalance(line);
 		save();
 		return true;
+	}
+
+
+	public static synchronized boolean beginRecipeReplacement(Line line, Entry entry, EmiStack output) {
+		ensureLoaded();
+		if (line == null || entry == null || output == null || output.isEmpty()) {
+			return false;
+		}
+		int lineIndex = LINES.indexOf(line);
+		if (lineIndex < 0 || !line.entries.contains(entry)) {
+			return false;
+		}
+		pendingReplacement = new PendingReplacement(lineIndex, entry.recipeId, normalizeStack(output));
+		return true;
+	}
+
+	public static synchronized boolean hasPendingRecipeReplacement() {
+		return pendingReplacement != null;
+	}
+
+	public static synchronized boolean canReplacePendingWith(EmiRecipe recipe) {
+		ensureLoaded();
+		return pendingReplacement != null && recipe != null && recipe.getId() != null
+			&& recipeProducesIngredient(recipe, pendingReplacement.output());
+	}
+
+	public static synchronized String pendingRecipeReplacementOutputName() {
+		if (pendingReplacement == null || pendingReplacement.output() == null || pendingReplacement.output().isEmpty()) {
+			return "";
+		}
+		return pendingReplacement.output().getName().getString();
+	}
+
+	public static synchronized void cancelPendingRecipeReplacement() {
+		pendingReplacement = null;
+	}
+
+	public static synchronized boolean replacePendingRecipe(EmiRecipe recipe) {
+		ensureLoaded();
+		PendingReplacement request = pendingReplacement;
+		if (request == null || recipe == null || recipe.getId() == null || !recipeProducesIngredient(recipe, request.output())) {
+			return false;
+		}
+		if (request.lineIndex() < 0 || request.lineIndex() >= LINES.size()) {
+			pendingReplacement = null;
+			return false;
+		}
+		Line line = LINES.get(request.lineIndex());
+		Entry source = null;
+		for (Entry entry : line.entries) {
+			if (entry.recipeId.equals(request.recipeId())) {
+				source = entry;
+				break;
+			}
+		}
+		if (source == null) {
+			pendingReplacement = null;
+			return false;
+		}
+		if (source.recipeId.equals(recipe.getId())) {
+			pendingReplacement = null;
+			return true;
+		}
+
+		int sourceIndex = line.entries.indexOf(source);
+		for (int i = line.entries.size() - 1; i >= 0; i--) {
+			Entry other = line.entries.get(i);
+			if (other != source && other.recipeId.equals(recipe.getId())) {
+				line.entries.remove(i);
+				if (i < sourceIndex) {
+					sourceIndex--;
+				}
+			}
+		}
+		Entry replacement = copyEntryForRecipe(source, recipe.getId());
+		line.entries.set(sourceIndex, replacement);
+		invalidateBalance(line);
+		pendingReplacement = null;
+		save();
+		return true;
+	}
+
+	private static Entry copyEntryForRecipe(Entry source, Identifier recipeId) {
+		Entry replacement = new Entry(recipeId, source.rate, source.automatic, source.machines, source.parallel,
+			0.0D, 0.0D, source.machineProfileId, source.voltageTier,
+			source.voltageOverride, source.ocMode, source.coilTier, source.machinesFixed, source.parallelFixed);
+		replacement.groupId = source.groupId;
+
+		boolean profileCompatible = false;
+		for (MachineProfile profile : getCompatibleMachineProfiles(replacement)) {
+			if (profile.id().equals(source.machineProfileId)) {
+				profileCompatible = true;
+				break;
+			}
+		}
+		if (profileCompatible) {
+			for (MachineSettingSpec spec : getMachineSettingSpecs(replacement)) {
+				Integer value = source.machineSettings.get(spec.key());
+				if (value != null) {
+					int sanitized = spec.sanitize(value);
+					if (sanitized != spec.defaultValue()) {
+						replacement.machineSettings.put(spec.key(), sanitized);
+					}
+				}
+			}
+			replacement.parallel = clampParallelForProfile(replacement, replacement.parallel);
+			MachineProfile profile = getMachineProfile(replacement);
+			if (profile.coilEfficiencyPerTier() <= 0.0D) {
+				replacement.coilTier = 0;
+			}
+			if (replacement.ocMode == OcMode.PERFECT && !profile.allowsPerfectOc()) {
+				replacement.ocMode = OcMode.STANDARD;
+			}
+		} else {
+			replacement.machineProfileId = "generic";
+			replacement.machineSettings.clear();
+			replacement.coilTier = 0;
+			if (replacement.ocMode == OcMode.PERFECT) {
+				replacement.ocMode = OcMode.STANDARD;
+			}
+			applyPreferredMachine(replacement);
+		}
+		replacement.automatic = source.automatic && replacement.getDurationTicks() > 0.0D;
+		return replacement;
 	}
 
 	private static Entry addRecipeToLine(Line line, EmiRecipe recipe, boolean incrementExisting) {
@@ -732,22 +874,47 @@ public final class ProductionPlanner {
 	}
 
 	public static synchronized void setBalanceTarget(Line line, EmiStack stack, double defaultRate) {
+		setBalanceTarget(line, stack, defaultRate, TargetMode.OUTPUT);
+	}
+
+	public static synchronized void setBalanceTarget(Line line, EmiStack stack, double defaultRate, TargetMode mode) {
 		if (line == null || stack == null || stack.isEmpty()) {
 			return;
 		}
+		TargetMode sanitizedMode = mode == null ? TargetMode.OUTPUT : mode;
 		EmiStack normalized = normalizeStack(stack);
 		for (Target target : line.targets) {
 			if (sameStack(target.stack, normalized)) {
+				if (target.mode != sanitizedMode) {
+					target.mode = sanitizedMode;
+					line.balanceEnabled = false;
+					line.achievedTargetRate = 0.0D;
+					line.bottleneckName = "";
+					line.balanceMessage = PlannerText.tr("status.target_changed", "Target changed. Press BALANCE.");
+					save();
+				}
 				return;
 			}
 		}
-		line.targets.add(new Target(normalized, sanitizeTargetRate(defaultRate)));
+		line.targets.add(new Target(normalized, sanitizeTargetRate(defaultRate), sanitizedMode));
 		line.balanceEnabled = false;
 		line.achievedTargetRate = 0.0D;
 		line.bottleneckName = "";
 		line.balanceMessage = line.targets.size() == 1
 			? PlannerText.tr("status.target_selected", "Target selected. Press BALANCE.")
 			: PlannerText.tr("status.target_added", "Target added. Press BALANCE.");
+		save();
+	}
+
+	public static synchronized void toggleTargetMode(Line line, Target target) {
+		if (line == null || target == null || !line.targets.contains(target)) {
+			return;
+		}
+		target.mode = target.mode == TargetMode.INPUT ? TargetMode.OUTPUT : TargetMode.INPUT;
+		line.balanceEnabled = false;
+		line.achievedTargetRate = 0.0D;
+		line.bottleneckName = "";
+		line.balanceMessage = PlannerText.tr("status.target_changed", "Target changed. Press BALANCE.");
 		save();
 	}
 
@@ -831,8 +998,14 @@ public final class ProductionPlanner {
 		List<TargetVector> targetVectors = new ArrayList<>();
 		for (Target target : line.targets) {
 			ResourceVector vector = rootResources.get(normalizeStack(target.stack));
-			if (vector == null || maxPositive(vector.net) <= 0.0D) {
-				return failBalance(line, PlannerText.tr("status.target_blocked", "No recipe in this line produces target outside matched groups") + ": " + target.stack.getName().getString());
+			boolean available = target.mode == TargetMode.INPUT
+				? vector != null && maxNegative(vector.net) > 0.0D
+				: vector != null && maxPositive(vector.net) > 0.0D;
+			if (!available) {
+				String direction = target.mode == TargetMode.INPUT
+					? "No recipe in this line consumes input goal outside matched groups"
+					: PlannerText.tr("status.target_blocked", "No recipe in this line produces target outside matched groups");
+				return failBalance(line, direction + ": " + target.stack.getName().getString());
 			}
 			targetVectors.add(new TargetVector(target, vector));
 		}
@@ -844,7 +1017,7 @@ public final class ProductionPlanner {
 				targetRow[i] = target.vector.net[i] / targetScale * 12.0D;
 			}
 			rows.add(targetRow);
-			rhs.add(target.target.rate / targetScale * 12.0D);
+			rhs.add(target.target.signedRate() / targetScale * 12.0D);
 		}
 
 		for (ResourceVector vector : rootResources.values()) {
@@ -881,7 +1054,7 @@ public final class ProductionPlanner {
 			}
 		}
 		TargetVector primaryTarget = targetVectors.get(0);
-		double targetNet = dot(primaryTarget.vector.net, x);
+		double targetNet = primaryTarget.target.flowMagnitude(dot(primaryTarget.vector.net, x));
 		if (!Double.isFinite(targetNet) || targetNet <= 0.0D) {
 			return failBalance(line, PlannerText.tr("status.positive_flow", "Could not build a positive target flow"));
 		}
@@ -892,8 +1065,9 @@ public final class ProductionPlanner {
 		}
 		for (TargetVector target : targetVectors) {
 			double actual = dot(target.vector.net, x);
+			double requested = target.target.signedRate();
 			double denom = Math.max(1.0D, target.target.rate);
-			maxResidual = Math.max(maxResidual, Math.abs(actual - target.target.rate) / denom);
+			maxResidual = Math.max(maxResidual, Math.abs(actual - requested) / denom);
 		}
 		for (int i = 0; i < n; i++) {
 			line.entries.get(i).balanceRate = sanitizeBalanceRate(x[i]);
@@ -910,7 +1084,7 @@ public final class ProductionPlanner {
 			}
 			line.achievedTargetRate = sanitizeAchievedTargetRate(line.getTargetRate() * propagationScale);
 			line.bottleneckName = bottleneck.label();
-			targetNet = dotBalance(primaryTarget.vector, line);
+			targetNet = primaryTarget.target.flowMagnitude(dotBalance(primaryTarget.vector, line));
 			maxResidual = computeMaxResidual(internalVectors, line);
 			sizingStatus = autoSizeBalancedLine(line);
 		} else {
@@ -1614,8 +1788,291 @@ public final class ProductionPlanner {
 		}
 	}
 
+	public static synchronized void beginHistoryAction() {
+		ensureLoaded();
+		historyActionDepth++;
+	}
+
+	public static synchronized void endHistoryAction() {
+		if (historyActionDepth <= 0) {
+			historyActionDepth = 0;
+			return;
+		}
+		historyActionDepth--;
+		if (historyActionDepth == 0) {
+			checkpoint();
+		}
+	}
+
+	public static synchronized void checkpoint() {
+		ensureLoaded();
+		JsonObject root = serializeState();
+		if (!undoHistoryInitialized) {
+			initializeUndoHistory(root);
+			EmiProductionPlannerPersistence.save(root);
+			return;
+		}
+		JsonObject latest = UNDO_HISTORY.isEmpty() ? null : UNDO_HISTORY.get(UNDO_HISTORY.size() - 1);
+		if (latest == null || !latest.equals(root)) {
+			EmiProductionPlannerPersistence.save(root);
+			if (historyActionDepth == 0) {
+				recordUndoSnapshot(root);
+			}
+		}
+	}
+
+	public static synchronized boolean canUndo() {
+		ensureLoaded();
+		return undoHistoryInitialized && UNDO_HISTORY.size() > 1;
+	}
+
+	public static synchronized boolean undo() {
+		ensureLoaded();
+		checkpoint();
+		if (UNDO_HISTORY.size() <= 1) {
+			return false;
+		}
+		UNDO_HISTORY.remove(UNDO_HISTORY.size() - 1);
+		JsonObject previous = UNDO_HISTORY.get(UNDO_HISTORY.size() - 1).deepCopy();
+		restoringUndo = true;
+		try {
+			EmiProductionPlannerPersistence.save(previous);
+			loaded = false;
+			ensureLoaded();
+		} finally {
+			restoringUndo = false;
+		}
+		return true;
+	}
+
+	public static synchronized String exportActiveLineJson() {
+		ensureLoaded();
+		getOrCreateActiveLine();
+		JsonObject state = serializeState();
+		JsonArray lines = state.getAsJsonArray("lines");
+		if (activeIndex < 0 || activeIndex >= lines.size() || !lines.get(activeIndex).isJsonObject()) {
+			return "";
+		}
+		JsonObject wrapper = new JsonObject();
+		wrapper.addProperty("format", "emi-production-planner-line");
+		wrapper.addProperty("version", 1);
+		wrapper.addProperty("display_name", displayName(activeIndex));
+		wrapper.add("line", lines.get(activeIndex).getAsJsonObject().deepCopy());
+		return EmiPersistentData.GSON.toJson(wrapper);
+	}
+
+	public static synchronized String writeActiveLineExportFile(String json) {
+		ensureLoaded();
+		if (json == null || json.isBlank()) {
+			return "";
+		}
+		try {
+			Path directory = EmiAgnos.getConfigDirectory().resolve("emi-production-planner-exports");
+			Files.createDirectories(directory);
+			String baseName = sanitizeExportFileName(displayName(Math.max(0, activeIndex)));
+			Path target = directory.resolve(baseName + ".json");
+			int duplicate = 2;
+			while (Files.exists(target)) {
+				target = directory.resolve(baseName + "-" + duplicate++ + ".json");
+			}
+			Files.writeString(target, json, StandardCharsets.UTF_8);
+			return target.toAbsolutePath().toString();
+		} catch (Throwable ignored) {
+			return "";
+		}
+	}
+
+
+	public static synchronized String writeBuildSummaryExportFile(String text) {
+		ensureLoaded();
+		if (text == null || text.isBlank()) {
+			return "";
+		}
+		try {
+			Path directory = EmiAgnos.getConfigDirectory().resolve("emi-production-planner-exports");
+			Files.createDirectories(directory);
+			String baseName = sanitizeExportFileName(displayName(Math.max(0, activeIndex))) + "-build-summary";
+			Path target = directory.resolve(baseName + ".txt");
+			int duplicate = 2;
+			while (Files.exists(target)) {
+				target = directory.resolve(baseName + "-" + duplicate++ + ".txt");
+			}
+			Files.writeString(target, text, StandardCharsets.UTF_8);
+			return target.toAbsolutePath().toString();
+		} catch (Throwable ignored) {
+			return "";
+		}
+	}
+
+	public static synchronized LineTransferResult importLineJson(String json) {
+		ensureLoaded();
+		if (json == null || json.isBlank()) {
+			return new LineTransferResult(false, "Clipboard is empty", -1);
+		}
+		JsonObject before = serializeState();
+		try {
+			JsonObject parsed = EmiPersistentData.GSON.fromJson(json, JsonObject.class);
+			if (parsed == null) {
+				return new LineTransferResult(false, "Clipboard does not contain planner JSON", -1);
+			}
+			JsonObject imported = extractImportedLine(parsed);
+			if (imported == null) {
+				return new LineTransferResult(false, "No Production Line found in clipboard JSON", -1);
+			}
+			JsonObject merged = before.deepCopy();
+			JsonArray lines = merged.getAsJsonArray("lines");
+			JsonObject lineObject = imported.deepCopy();
+			String suggestedName = parsed.has("display_name") && parsed.get("display_name").isJsonPrimitive()
+				? parsed.get("display_name").getAsString().trim()
+				: "";
+			applyUniqueImportedName(lineObject, lines, suggestedName);
+			lines.add(lineObject);
+			int importedIndex = lines.size() - 1;
+			merged.addProperty("active", importedIndex);
+
+			int oldCount = LINES.size();
+			EmiProductionPlannerPersistence.save(merged);
+			loaded = false;
+			pendingReplacement = null;
+			ensureLoaded();
+			if (LINES.size() != oldCount + 1 || activeIndex != importedIndex) {
+				EmiProductionPlannerPersistence.save(before);
+				loaded = false;
+				ensureLoaded();
+				return new LineTransferResult(false, "Imported line could not be loaded", -1);
+			}
+			if (historyActionDepth == 0) {
+				recordUndoSnapshot(serializeState());
+			}
+			return new LineTransferResult(true, "Imported " + displayName(importedIndex), importedIndex);
+		} catch (Throwable ignored) {
+			try {
+				EmiProductionPlannerPersistence.save(before);
+				loaded = false;
+				ensureLoaded();
+			} catch (Throwable restoreIgnored) {
+			}
+			return new LineTransferResult(false, "Invalid Production Line JSON", -1);
+		}
+	}
+
+	private static JsonObject extractImportedLine(JsonObject parsed) {
+		if (parsed.has("line") && parsed.get("line").isJsonObject()) {
+			return parsed.getAsJsonObject("line");
+		}
+		if (parsed.has("lines") && parsed.get("lines").isJsonArray()) {
+			JsonArray lines = parsed.getAsJsonArray("lines");
+			if (lines.size() == 0) {
+				return null;
+			}
+			int index = parsed.has("active") ? parsed.get("active").getAsInt() : 0;
+			index = Math.max(0, Math.min(index, lines.size() - 1));
+			JsonElement selected = lines.get(index);
+			return selected.isJsonObject() ? selected.getAsJsonObject() : null;
+		}
+		if (parsed.has("entries") && parsed.get("entries").isJsonArray()) {
+			return parsed;
+		}
+		return null;
+	}
+
+	private static void applyUniqueImportedName(JsonObject lineObject, JsonArray existingLines, String suggestedName) {
+		String requested = lineObject.has("name") ? lineObject.get("name").getAsString().trim() : "";
+		if (requested.isEmpty() && suggestedName != null) {
+			requested = suggestedName.trim();
+		}
+		if (requested.isEmpty()) {
+			requested = "Imported Line";
+		}
+		Set<String> used = new HashSet<>();
+		for (int i = 0; i < existingLines.size(); i++) {
+			JsonElement element = existingLines.get(i);
+			if (!element.isJsonObject()) {
+				continue;
+			}
+			JsonObject object = element.getAsJsonObject();
+			String existingName = object.has("name") ? object.get("name").getAsString().trim() : "";
+			if (existingName.isEmpty()) {
+				existingName = "Line " + (i + 1);
+			}
+			used.add(existingName.toLowerCase(Locale.ROOT));
+		}
+		String candidate = requested;
+		int suffix = 2;
+		while (used.contains(candidate.toLowerCase(Locale.ROOT))) {
+			candidate = requested + " (" + suffix++ + ")";
+		}
+		lineObject.addProperty("name", candidate);
+	}
+
+	private static String sanitizeExportFileName(String value) {
+		String sanitized = value == null ? "Production-Line" : value.trim();
+		sanitized = sanitized.replaceAll("[\\/:*?\"<>|]", "_");
+		sanitized = sanitized.replaceAll("\\s+", " ").trim();
+		if (sanitized.isEmpty()) {
+			sanitized = "Production-Line";
+		}
+		return sanitized.length() > 80 ? sanitized.substring(0, 80).trim() : sanitized;
+	}
+
+	public record LineTransferResult(boolean success, String message, int lineIndex) {
+	}
+
 	public static synchronized void save() {
 		ensureLoaded();
+		JsonObject root = serializeState();
+		EmiProductionPlannerPersistence.save(root);
+		if (historyActionDepth == 0) {
+			recordUndoSnapshot(root);
+		}
+	}
+
+	private static void initializeUndoHistory(JsonObject root) {
+		if (restoringUndo) {
+			return;
+		}
+		UNDO_HISTORY.clear();
+		UNDO_HISTORY.add(root.deepCopy());
+		undoHistoryInitialized = true;
+	}
+
+	private static void recordUndoSnapshot(JsonObject root) {
+		if (restoringUndo) {
+			return;
+		}
+		if (!undoHistoryInitialized) {
+			initializeUndoHistory(root);
+			return;
+		}
+		JsonObject snapshot = root.deepCopy();
+		if (UNDO_HISTORY.isEmpty()) {
+			UNDO_HISTORY.add(snapshot);
+			return;
+		}
+		int lastIndex = UNDO_HISTORY.size() - 1;
+		JsonObject latest = UNDO_HISTORY.get(lastIndex);
+		if (latest.equals(snapshot)) {
+			return;
+		}
+		if (sameUndoContent(latest, snapshot)) {
+			UNDO_HISTORY.set(lastIndex, snapshot);
+			return;
+		}
+		UNDO_HISTORY.add(snapshot);
+		while (UNDO_HISTORY.size() > UNDO_HISTORY_LIMIT) {
+			UNDO_HISTORY.remove(0);
+		}
+	}
+
+	private static boolean sameUndoContent(JsonObject a, JsonObject b) {
+		JsonObject left = a.deepCopy();
+		JsonObject right = b.deepCopy();
+		left.remove("active");
+		right.remove("active");
+		return left.equals(right);
+	}
+
+	private static JsonObject serializeState() {
 		JsonObject root = new JsonObject();
 		JsonArray lines = new JsonArray();
 		for (Line line : LINES) {
@@ -1629,6 +2086,9 @@ public final class ProductionPlanner {
 					JsonObject targetObject = new JsonObject();
 					targetObject.add("stack", EmiIngredientSerializer.getSerialized(normalizeStack(target.stack)));
 					targetObject.addProperty("rate", target.rate);
+					if (target.mode != TargetMode.OUTPUT) {
+						targetObject.addProperty("mode", target.mode.serialized());
+					}
 					targets.add(targetObject);
 				}
 				lineObject.add("targets", targets);
@@ -1725,7 +2185,7 @@ public final class ProductionPlanner {
 			}
 			root.add("preferred_machines", preferredMachines);
 		}
-		EmiProductionPlannerPersistence.save(root);
+		return root;
 	}
 
 	private static JsonArray serializeLinks(Map<EmiStack, LinkMode> links) {
@@ -1867,6 +2327,14 @@ public final class ProductionPlanner {
 		double max = 0.0D;
 		for (double value : values) {
 			max = Math.max(max, value);
+		}
+		return max;
+	}
+
+	private static double maxNegative(double[] values) {
+		double max = 0.0D;
+		for (double value : values) {
+			max = Math.max(max, -value);
 		}
 		return max;
 	}
@@ -2292,13 +2760,40 @@ public final class ProductionPlanner {
 		}
 	}
 
+	public enum TargetMode {
+		OUTPUT("output", "OUT"),
+		INPUT("input", "IN");
+
+		private final String serialized;
+		private final String label;
+
+		TargetMode(String serialized, String label) {
+			this.serialized = serialized;
+			this.label = label;
+		}
+
+		public String serialized() {
+			return serialized;
+		}
+
+		public String label() {
+			return label;
+		}
+
+		private static TargetMode fromSerialized(String value) {
+			return value != null && "input".equalsIgnoreCase(value) ? INPUT : OUTPUT;
+		}
+	}
+
 	public static final class Target {
 		private final EmiStack stack;
 		private double rate;
+		private TargetMode mode;
 
-		private Target(EmiStack stack, double rate) {
+		private Target(EmiStack stack, double rate, TargetMode mode) {
 			this.stack = normalizeStack(stack);
 			this.rate = sanitizeTargetRate(rate);
+			this.mode = mode == null ? TargetMode.OUTPUT : mode;
 		}
 
 		public EmiStack getStack() {
@@ -2308,9 +2803,24 @@ public final class ProductionPlanner {
 		public double getRate() {
 			return rate;
 		}
+
+		public TargetMode getMode() {
+			return mode;
+		}
+
+		private double signedRate() {
+			return mode == TargetMode.INPUT ? -rate : rate;
+		}
+
+		private double flowMagnitude(double signedFlow) {
+			return mode == TargetMode.INPUT ? -signedFlow : signedFlow;
+		}
 	}
 
 	public record BalanceResult(boolean success, String message, double targetNet, double maxInternalResidual) {
+	}
+
+	private record PendingReplacement(int lineIndex, Identifier recipeId, EmiStack output) {
 	}
 
 	private record MachineSizingStatus(int active, int unavailable, int insufficient) {
