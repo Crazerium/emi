@@ -10,6 +10,7 @@ import dev.emi.emi.api.recipe.EmiRecipe;
 import dev.emi.emi.api.widget.Bounds;
 import dev.emi.emi.api.widget.Widget;
 import dev.emi.emi.input.EmiInput;
+import dev.emi.emi.planner.PlannerText;
 import dev.emi.emi.runtime.RecipeFavoriteActions;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -49,12 +50,12 @@ public class RecipeOverlayButtonWidget extends Widget {
 	@Override
 	public List<TooltipComponent> getTooltip(int mouseX, int mouseY) {
 		List<TooltipComponent> list = new ArrayList<>();
-		list.add(TooltipComponent.of(EmiPort.literal("Recipe Overlay").formatted(Formatting.WHITE).asOrderedText()));
+		list.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("recipe_overlay.title", "Recipe Overlay")).formatted(Formatting.WHITE).asOrderedText()));
 		list.add(TooltipComponent.of(EmiPort.literal("[alt]").formatted(Formatting.YELLOW).asOrderedText()));
 		if (EmiInput.isAltDown()) {
-			list.add(TooltipComponent.of(EmiPort.literal("SHIFT + A - Save with Recipe").formatted(Formatting.YELLOW).asOrderedText()));
-			list.add(TooltipComponent.of(EmiPort.literal("CTRL + SHIFT + A - Save with Recipe & Count").formatted(Formatting.YELLOW).asOrderedText()));
-			list.add(TooltipComponent.of(EmiPort.literal("CTRL + SHIFT + L - Share Recipe Link to Chat").formatted(Formatting.YELLOW).asOrderedText()));
+			list.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("recipe_overlay.save_recipe", "SHIFT + A - Save with Recipe")).formatted(Formatting.YELLOW).asOrderedText()));
+			list.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("recipe_overlay.save_recipe_count", "CTRL + SHIFT + A - Save with Recipe & Count")).formatted(Formatting.YELLOW).asOrderedText()));
+			list.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("recipe_overlay.share_recipe", "CTRL + SHIFT + L - Share Recipe Link to Chat")).formatted(Formatting.YELLOW).asOrderedText()));
 		}
 		return list;
 	}

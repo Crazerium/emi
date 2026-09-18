@@ -230,7 +230,13 @@ public class ProductionPlannerScreen extends Screen {
 		} else {
 			renderDropdowns(context, line, mouseX, mouseY);
 			if (isDropdownOpen()) {
-				renderDropdownTooltip(context, mouseX, mouseY);
+				context.push();
+				context.matrices().translate(0, 0, 1400);
+				try {
+					renderDropdownTooltip(context, mouseX, mouseY);
+				} finally {
+					context.pop();
+				}
 			} else if (!toolsOpen) {
 				renderTooltip(context, mouseX, mouseY);
 			}

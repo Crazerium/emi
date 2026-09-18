@@ -11,6 +11,7 @@ import dev.emi.emi.bom.BoM;
 import dev.emi.emi.bom.BoM.DefaultStatus;
 import dev.emi.emi.config.EmiConfig;
 import dev.emi.emi.config.HelpLevel;
+import dev.emi.emi.planner.PlannerText;
 import dev.emi.emi.runtime.EmiHistory;
 import dev.emi.emi.screen.RecipeDefaultOutputScreen;
 import dev.emi.emi.screen.RecipeScreen;
@@ -41,7 +42,7 @@ public class RecipeDefaultButtonWidget extends RecipeButtonWidget {
 		List<TooltipComponent> list = Lists.newArrayList();
 		long outputCount = recipe.getOutputs().stream().filter(stack -> !stack.isEmpty()).count();
 		if (outputCount > 1) {
-			list.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Choose default recipe outputs"))));
+			list.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_default.choose_outputs", "Choose default recipe outputs")))));
 			List<EmiStack> stacks = Lists.newArrayList();
 			for (EmiStack stack : recipe.getOutputs()) {
 				if (!stack.isEmpty() && BoM.getRecipe(stack) == recipe) {

@@ -6,6 +6,7 @@ import java.util.List;
 import dev.emi.emi.EmiPort;
 import dev.emi.emi.api.EmiApi;
 import dev.emi.emi.api.recipe.EmiRecipe;
+import dev.emi.emi.planner.PlannerText;
 import dev.emi.emi.planner.ProductionPlanner;
 import dev.emi.emi.runtime.EmiDrawContext;
 import net.minecraft.client.gui.DrawContext;
@@ -43,20 +44,20 @@ public class RecipePlannerButtonWidget extends RecipeButtonWidget {
 		boolean pendingReplace = ProductionPlanner.hasPendingRecipeReplacement();
 		boolean replacing = ProductionPlanner.canReplacePendingWith(recipe);
 		if (recipe.getId() == null) {
-			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Production Planner"))));
-			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("This recipe has no stable ID and cannot be saved"))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.title", "Production Planner")))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.no_stable_id", "This recipe has no stable ID and cannot be saved")))));
 		} else if (replacing) {
-			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Replace recipe in Production Planner"))));
-			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("LMB - Replace the selected Planner row with this recipe"))));
-			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Preserves group and compatible MACH / PAR / VOLT / CFG settings"))));
-			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("RMB - Cancel replacement and return to Planner"))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.replace_title", "Replace recipe in Production Planner")))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.replace_lmb", "LMB - Replace the selected Planner row with this recipe")))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.replace_preserve", "Preserves group and compatible MACH / PAR / VOLT / CFG settings")))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.replace_cancel", "RMB - Cancel replacement and return to Planner")))));
 		} else {
-			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Production Planner"))));
-			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("LMB - Add to active line (AUTO when recipe duration is detected)"))));
-			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("RMB - Open planner without adding"))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.title", "Production Planner")))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.add_lmb", "LMB - Add to active line (AUTO when recipe duration is detected)")))));
+			tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.open_rmb", "RMB - Open planner without adding")))));
 			if (pendingReplace) {
 				String output = ProductionPlanner.pendingRecipeReplacementOutputName();
-				tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal("Replace mode: this recipe does not produce " + output))));
+				tooltip.add(TooltipComponent.of(EmiPort.ordered(EmiPort.literal(PlannerText.tr("recipe_planner.replace_mismatch", "Replace mode: this recipe does not produce %s", output)))));
 			}
 		}
 		return tooltip;

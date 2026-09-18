@@ -34,6 +34,7 @@ import dev.emi.emi.bom.FoldState;
 import dev.emi.emi.bom.MaterialNode;
 import dev.emi.emi.bom.MaterialTree;
 import dev.emi.emi.bom.ProgressState;
+import dev.emi.emi.planner.PlannerText;
 import dev.emi.emi.runtime.EmiBookmarkTreePersistence;
 import dev.emi.emi.runtime.EmiCraftingToolCompat;
 import dev.emi.emi.runtime.EmiDrawContext;
@@ -142,7 +143,7 @@ public class BookmarkTreeScreen extends Screen {
 	private int contentMaxY;
 
 	public BookmarkTreeScreen(Screen old, EmiFavoriteGroups.Group group) {
-		super(EmiPort.literal("Crafting Tree"));
+		super(EmiPort.literal(PlannerText.tr("bookmark_tree.title", "Crafting Tree")));
 		this.old = old;
 		restorePersistentWorkspaces();
 		workspace = getOrCreateWorkspace(group);
@@ -388,9 +389,9 @@ public class BookmarkTreeScreen extends Screen {
 		int searchWidth = Math.max(100, Math.min(220, width / 4));
 		searchFieldX = width - searchWidth - 4;
 		searchField = new TextFieldWidget(client.textRenderer, searchFieldX, 5,
-			searchWidth, 14, EmiPort.literal("Search"));
+			searchWidth, 14, EmiPort.literal(PlannerText.tr("bookmark_tree.search", "Search")));
 		searchField.setMaxLength(128);
-		searchField.setSuggestion(searchQuery.isEmpty() ? "Search..." : "");
+		searchField.setSuggestion(searchQuery.isEmpty() ? PlannerText.tr("bookmark_tree.search_hint", "Search...") : "");
 		searchField.setText(searchQuery);
 		searchField.setChangedListener(this::updateSearchQuery);
 		int sourceSignature = workspaceSourceSignature(group);
@@ -417,7 +418,7 @@ public class BookmarkTreeScreen extends Screen {
 	private void updateSearchQuery(String query) {
 		searchQuery = query == null ? "" : query;
 		if (searchField != null) {
-			searchField.setSuggestion(searchQuery.isEmpty() ? "Search..." : "");
+			searchField.setSuggestion(searchQuery.isEmpty() ? PlannerText.tr("bookmark_tree.search_hint", "Search...") : "");
 		}
 		searchIndex = -1;
 		refreshSearchMatches();
@@ -1005,7 +1006,7 @@ public class BookmarkTreeScreen extends Screen {
 		context.fill(0, 0, width, height, BACKGROUND_COLOR);
 
 		if (nodes.isEmpty()) {
-			context.drawCenteredText(EmiPort.literal("No active recipe roots in this bookmark group"), width / 2, height / 2);
+			context.drawCenteredText(EmiPort.literal(PlannerText.tr("bookmark_tree.no_roots", "No active recipe roots in this bookmark group")), width / 2, height / 2);
 		} else {
 			int mx = toTreeX(mouseX);
 			int my = toTreeY(mouseY);
@@ -1078,47 +1079,49 @@ public class BookmarkTreeScreen extends Screen {
 				statHover.drawTooltip(context, mouseX, mouseY);
 			} else if (statsToggleButton.contains(mouseX, mouseY)) {
 				List<TooltipComponent> tooltip = Lists.newArrayList();
-				tooltip.add(TooltipComponent.of(EmiPort.literal(statsPanelVisible ? "Hide stats panel" : "Show stats panel").asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(statsPanelVisible
+					? PlannerText.tr("bookmark_tree.hide_stats", "Hide stats panel")
+					: PlannerText.tr("bookmark_tree.show_stats", "Show stats panel")).asOrderedText()));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 			} else if (statsConfigButton.contains(mouseX, mouseY)) {
 				List<TooltipComponent> tooltip = Lists.newArrayList();
-				tooltip.add(TooltipComponent.of(EmiPort.literal("Choose visible stats sections").asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.choose_sections", "Choose visible stats sections")).asOrderedText()));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 			} else if (saveImageButton.contains(mouseX, mouseY)) {
 				List<TooltipComponent> tooltip = Lists.newArrayList();
-				tooltip.add(TooltipComponent.of(EmiPort.literal("Save tree as image").asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.save_image", "Save tree as image")).asOrderedText()));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 			} else if (newTreeButton.contains(mouseX, mouseY)) {
 				List<TooltipComponent> tooltip = Lists.newArrayList();
-				tooltip.add(TooltipComponent.of(EmiPort.literal("Open another bookmark group as a crafting tree").asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.open_group", "Open another bookmark group as a crafting tree")).asOrderedText()));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 			} else if (closeTreeButton.contains(mouseX, mouseY)) {
 				List<TooltipComponent> tooltip = Lists.newArrayList();
-				tooltip.add(TooltipComponent.of(EmiPort.literal("Close current crafting tree").asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.close_tree", "Close current crafting tree")).asOrderedText()));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 			} else if (getHoveredTreeTab(mouseX, mouseY) != null) {
 				TreeTabHitbox tab = getHoveredTreeTab(mouseX, mouseY);
 				List<TooltipComponent> tooltip = Lists.newArrayList();
 				tooltip.add(TooltipComponent.of(EmiPort.literal(workspaceDisplayName(tab.index)).asOrderedText()));
-				tooltip.add(TooltipComponent.of(EmiPort.literal("Right-click to rename").asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.rename_hint", "Right-click to rename")).asOrderedText()));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 			} else if (snapshotButton.contains(mouseX, mouseY)) {
 				List<TooltipComponent> tooltip = Lists.newArrayList();
 				String text = inventorySnapshot == null
-					? "Recompute tree using player inventory (snapshot)"
-					: "Using inventory snapshot - click to clear";
+					? PlannerText.tr("bookmark_tree.snapshot_recompute", "Recompute tree using player inventory (snapshot)")
+					: PlannerText.tr("bookmark_tree.snapshot_clear", "Using inventory snapshot - click to clear");
 				tooltip.add(TooltipComponent.of(EmiPort.literal(text).asOrderedText()));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 			} else if (fitButton.contains(mouseX, mouseY)) {
 				List<TooltipComponent> tooltip = Lists.newArrayList();
-				tooltip.add(TooltipComponent.of(EmiPort.literal("Fit tree to view").asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.fit_view", "Fit tree to view")).asOrderedText()));
 				tooltip.add(TooltipComponent.of(EmiPort.literal("[F]").asOrderedText()));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 			} else if (collapseButton.contains(mouseX, mouseY)) {
 				List<TooltipComponent> tooltip = Lists.newArrayList();
-				tooltip.add(TooltipComponent.of(EmiPort.literal("Collapse items with nothing left to craft").asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.collapse_done", "Collapse items with nothing left to craft")).asOrderedText()));
 				if (inventorySnapshot == null) {
-					tooltip.add(TooltipComponent.of(EmiPort.literal("Requires an inventory snapshot").asOrderedText()));
+					tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.requires_snapshot", "Requires an inventory snapshot")).asOrderedText()));
 				}
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 			}
@@ -1161,7 +1164,7 @@ public class BookmarkTreeScreen extends Screen {
 			}
 		}
 		if (visible.isEmpty()) {
-			context.drawCenteredText(EmiPort.literal("No stats sections selected"), width / 2, top + 25, 0xFF9A9AA2);
+			context.drawCenteredText(EmiPort.literal(PlannerText.tr("bookmark_tree.no_sections", "No stats sections selected")), width / 2, top + 25, 0xFF9A9AA2);
 			return;
 		}
 		for (int i = 0; i < visible.size(); i++) {
@@ -1169,19 +1172,19 @@ public class BookmarkTreeScreen extends Screen {
 			int startX = i * width / visible.size();
 			int endX = (i + 1) * width / visible.size();
 			switch (section) {
-				case INGREDIENTS_NEEDED -> renderStatSection(context, section.label + ":", ingredientNeededStats,
+				case INGREDIENTS_NEEDED -> renderStatSection(context, section.label() + ":", ingredientNeededStats,
 					startX, endX, top, delta, inventorySnapshot != null);
-				case INGREDIENTS_AVAILABLE -> renderStatSection(context, section.label + ":", ingredientAvailableStats,
+				case INGREDIENTS_AVAILABLE -> renderStatSection(context, section.label() + ":", ingredientAvailableStats,
 					startX, endX, top, delta, false);
-				case CRAFTING_NEEDED -> renderStatSection(context, section.label + ":", craftingNeededStats,
+				case CRAFTING_NEEDED -> renderStatSection(context, section.label() + ":", craftingNeededStats,
 					startX, endX, top, delta, false);
-				case CRAFTING_AVAILABLE -> renderStatSection(context, section.label + ":", craftingAvailableStats,
+				case CRAFTING_AVAILABLE -> renderStatSection(context, section.label() + ":", craftingAvailableStats,
 					startX, endX, top, delta, false);
-				case RESULTS -> renderStatSection(context, section.label + ":", resultStats,
+				case RESULTS -> renderStatSection(context, section.label() + ":", resultStats,
 					startX, endX, top, delta, false);
-				case REMAINDERS -> renderStatSection(context, section.label + ":", remainderStats,
+				case REMAINDERS -> renderStatSection(context, section.label() + ":", remainderStats,
 					startX, endX, top, delta, false);
-				case HANDLERS -> renderHandlerSection(context, section.label + ":", handlerStats,
+				case HANDLERS -> renderHandlerSection(context, section.label() + ":", handlerStats,
 					startX, endX, top, delta);
 			}
 		}
@@ -1356,7 +1359,7 @@ public class BookmarkTreeScreen extends Screen {
 			if (enabled) {
 				context.fill(x + 9, rowY + 7, 4, 4, boxColor);
 			}
-			context.drawTextWithShadow(EmiPort.literal(section.label), x + 20, rowY + 5, 0xFFFFFFFF);
+			context.drawTextWithShadow(EmiPort.literal(section.label()), x + 20, rowY + 5, 0xFFFFFFFF);
 			statsMenuHitboxes.add(new StatsMenuHitbox(bounds, section));
 			rowY += rowHeight;
 		}
@@ -1540,10 +1543,12 @@ public class BookmarkTreeScreen extends Screen {
 
 	private String workspaceDisplayName(int index) {
 		if (index < 0 || index >= WORKSPACES.size()) {
-			return "Tree";
+			return PlannerText.tr("bookmark_tree.tree", "Tree");
 		}
 		String custom = WORKSPACES.get(index).name;
-		return custom == null || custom.isBlank() ? "Tree " + (index + 1) : custom;
+		return custom == null || custom.isBlank()
+			? PlannerText.tr("bookmark_tree.tree_number", "Tree %s", index + 1)
+			: custom;
 	}
 
 	private void startWorkspaceRename(TreeTabHitbox tab) {
@@ -1552,7 +1557,7 @@ public class BookmarkTreeScreen extends Screen {
 		}
 		renameWorkspaceIndex = tab.index;
 		renameField = new TextFieldWidget(client.textRenderer, tab.bounds.x() + 2, tab.bounds.y() + 2,
-			Math.max(20, tab.bounds.width() - 4), tab.bounds.height() - 4, EmiPort.literal("Tree name"));
+			Math.max(20, tab.bounds.width() - 4), tab.bounds.height() - 4, EmiPort.literal(PlannerText.tr("bookmark_tree.tree_name", "Tree name")));
 		renameField.setMaxLength(48);
 		renameField.setText(workspaceDisplayName(tab.index));
 		EmiPort.focus(renameField, true);
@@ -1665,7 +1670,7 @@ public class BookmarkTreeScreen extends Screen {
 				return favorite.getStack().getEmiStacks().get(0).getName().getString();
 			}
 		}
-		return "Bookmark Group";
+		return PlannerText.tr("bookmark_tree.bookmark_group", "Bookmark Group");
 	}
 
 	private static int workspaceIndex(EmiFavoriteGroups.Group target) {
@@ -1699,7 +1704,7 @@ public class BookmarkTreeScreen extends Screen {
 		recalculateForest();
 		if (searchField != null) {
 			searchField.setText(searchQuery);
-			searchField.setSuggestion(searchQuery.isEmpty() ? "Search..." : "");
+			searchField.setSuggestion(searchQuery.isEmpty() ? PlannerText.tr("bookmark_tree.search_hint", "Search...") : "");
 		}
 		if (!workspace.viewInitialized) {
 			fitToView();
@@ -1728,7 +1733,7 @@ public class BookmarkTreeScreen extends Screen {
 		fitToView();
 		if (searchField != null) {
 			searchField.setText("");
-			searchField.setSuggestion("Search...");
+			searchField.setSuggestion(PlannerText.tr("bookmark_tree.search_hint", "Search..."));
 		}
 		persistWorkspaces();
 	}
@@ -1761,7 +1766,7 @@ public class BookmarkTreeScreen extends Screen {
 		recalculateForest();
 		if (searchField != null) {
 			searchField.setText(searchQuery);
-			searchField.setSuggestion(searchQuery.isEmpty() ? "Search..." : "");
+			searchField.setSuggestion(searchQuery.isEmpty() ? PlannerText.tr("bookmark_tree.search_hint", "Search...") : "");
 		}
 		if (!workspace.viewInitialized) {
 			fitToView();
@@ -2097,18 +2102,24 @@ public class BookmarkTreeScreen extends Screen {
 	}
 
 	private enum StatsSection {
-		INGREDIENTS_NEEDED("Ingredients Needed"),
-		INGREDIENTS_AVAILABLE("Ingredients Available"),
-		CRAFTING_NEEDED("Crafting Needed"),
-		CRAFTING_AVAILABLE("Crafting Available"),
-		RESULTS("Results"),
-		REMAINDERS("Remainders"),
-		HANDLERS("Handlers");
+		INGREDIENTS_NEEDED("bookmark_tree.section.ingredients_needed", "Ingredients Needed"),
+		INGREDIENTS_AVAILABLE("bookmark_tree.section.ingredients_available", "Ingredients Available"),
+		CRAFTING_NEEDED("bookmark_tree.section.crafting_needed", "Crafting Needed"),
+		CRAFTING_AVAILABLE("bookmark_tree.section.crafting_available", "Crafting Available"),
+		RESULTS("bookmark_tree.section.results", "Results"),
+		REMAINDERS("bookmark_tree.section.remainders", "Remainders"),
+		HANDLERS("bookmark_tree.section.handlers", "Handlers");
 
-		private final String label;
+		private final String key;
+		private final String english;
 
-		StatsSection(String label) {
-			this.label = label;
+		StatsSection(String key, String english) {
+			this.key = key;
+			this.english = english;
+		}
+
+		private String label() {
+			return PlannerText.tr(key, english);
 		}
 	}
 
@@ -2172,15 +2183,15 @@ public class BookmarkTreeScreen extends Screen {
 			if (entry != null) {
 				List<TooltipComponent> tooltip = Lists.newArrayList();
 				tooltip.addAll(entry.ingredient.getTooltip());
-				tooltip.add(TooltipComponent.of(EmiPort.literal("Total: " + entry.getExactAmountText().getString()).asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.total", "Total: %s", entry.getExactAmountText().getString())).asOrderedText()));
 				long missing = getMissingAmount(entry.ingredient);
 				if (inventorySnapshot != null) {
-					tooltip.add(TooltipComponent.of(EmiPort.literal("Missing: " + missing).asOrderedText()));
+					tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.missing", "Missing: %s", missing)).asOrderedText()));
 				}
 				EmiRenderHelper.drawTooltip(BookmarkTreeScreen.this, context, tooltip, mouseX, mouseY);
 			} else if (handler != null) {
 				List<TooltipComponent> tooltip = Lists.newArrayList(handler.category.getTooltip());
-				tooltip.add(TooltipComponent.of(EmiPort.literal("Crafts: " + handler.crafts).asOrderedText()));
+				tooltip.add(TooltipComponent.of(EmiPort.literal(PlannerText.tr("bookmark_tree.crafts", "Crafts: %s", handler.crafts)).asOrderedText()));
 				EmiRenderHelper.drawTooltip(BookmarkTreeScreen.this, context, tooltip, mouseX, mouseY);
 			}
 		}

@@ -2,12 +2,14 @@ package dev.emi.emi.planner;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,8 +40,13 @@ import dev.emi.emi.runtime.EmiFavorite;
 import dev.emi.emi.runtime.EmiFavorites;
 import dev.emi.emi.runtime.EmiProductionPlannerPersistence;
 import dev.emi.emi.runtime.EmiPersistentData;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.resource.Resource;
+import net.minecraft.resource.ResourceManager;
 import net.minecraft.text.Text;
+import net.minecraft.text.TranslatableTextContent;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.Language;
 
 public final class ProductionPlanner {
 	private static final double TICKS_PER_SECOND = 20.0D;
@@ -3566,9 +3573,10 @@ public final class ProductionPlanner {
 		}
 
 		private static List<String> tooltipLines(EmiStack stack) {
-			List<String> lines = new ArrayList<>();
+			LinkedHashSet<String> lines = new LinkedHashSet<>();
 			try {
-				for (Text text : stack.getTooltipText()) {
+				List<Text> tooltip = stack.getTooltipText();
+				for (Text text : tooltip) {
 					if (text == null) {
 						continue;
 					}
@@ -3577,9 +3585,22 @@ public final class ProductionPlanner {
 						lines.add(value);
 					}
 				}
+
+				// Machine capability detection must not depend on the player's selected language.
+				// GTO exposes many formulas only through translatable tooltip components, while the
+				// capability scanner intentionally parses the canonical English wording. Re-render
+				// the same tooltip components against the loaded en_us resources and feed both
+				// representations to the scanner. This keeps Russian/Chinese/etc. UI fully localized
+				// without losing Glass/Coil/Casing/Hatch/parallel mechanics in the planner.
+				for (Text text : tooltip) {
+					String english = EnglishTooltipResolver.getString(text).trim();
+					if (!english.isEmpty()) {
+						lines.add(english);
+					}
+				}
 			} catch (Throwable ignored) {
 			}
-			return lines;
+			return List.copyOf(lines);
 		}
 
 		private static boolean isVoltageLine(String lower) {
@@ -3650,6 +3671,129 @@ public final class ProductionPlanner {
 		private static double invokeNumber(Object target, String name) {
 			Object value = invokeObject(target, name);
 			return value instanceof Number number ? number.doubleValue() : -1.0D;
+		}
+	}
+
+	private static final class EnglishTooltipResolver {
+		private static final Pattern FORMAT_TOKEN = Pattern.compile("%(?:(\\d+)\\$)?([%sdif])");
+		private static volatile ResourceManager loadedFrom;
+		private static volatile Map<String, String> translations = Map.of();
+
+		private EnglishTooltipResolver() {
+		}
+
+		private static String getString(Text text) {
+			if (text == null) {
+				return "";
+			}
+			Map<String, String> english = translations();
+			StringBuilder out = new StringBuilder();
+			append(text, english, out);
+			return out.toString();
+		}
+
+		private static void append(Text text, Map<String, String> english, StringBuilder out) {
+			if (text == null) {
+				return;
+			}
+			if (text.getContent() instanceof TranslatableTextContent translatable) {
+				String template = english.get(translatable.getKey());
+				if (template == null || template.isEmpty()) {
+					template = translatable.getFallback();
+				}
+				if (template == null || template.isEmpty()) {
+					template = translatable.getKey();
+				}
+				out.append(format(template, translatable.getArgs(), english));
+			} else {
+				// Literal tooltip fragments (numbers, formula symbols, punctuation, etc.) are
+				// already language-independent. For uncommon non-translatable content this is
+				// also the safest fallback and never changes the text shown to the player.
+				out.append(text.copyContentOnly().getString());
+			}
+			for (Text sibling : text.getSiblings()) {
+				append(sibling, english, out);
+			}
+		}
+
+		private static String format(String template, Object[] args, Map<String, String> english) {
+			if (template == null || template.isEmpty()) {
+				return "";
+			}
+			Object[] safeArgs = args == null ? new Object[0] : args;
+			Matcher matcher = FORMAT_TOKEN.matcher(template);
+			StringBuilder out = new StringBuilder();
+			int last = 0;
+			int implicitIndex = 0;
+			while (matcher.find()) {
+				out.append(template, last, matcher.start());
+				String type = matcher.group(2);
+				if ("%".equals(type)) {
+					out.append('%');
+				} else {
+					int index;
+					if (matcher.group(1) != null) {
+						try {
+							index = Integer.parseInt(matcher.group(1)) - 1;
+						} catch (NumberFormatException ignored) {
+							index = implicitIndex++;
+						}
+					} else {
+						index = implicitIndex++;
+					}
+					if (index >= 0 && index < safeArgs.length) {
+						out.append(argument(safeArgs[index], english));
+					} else {
+						out.append(matcher.group());
+					}
+				}
+				last = matcher.end();
+			}
+			out.append(template, last, template.length());
+			return out.toString();
+		}
+
+		private static String argument(Object value, Map<String, String> english) {
+			if (value instanceof Text text) {
+				StringBuilder out = new StringBuilder();
+				append(text, english, out);
+				return out.toString();
+			}
+			return String.valueOf(value);
+		}
+
+		private static Map<String, String> translations() {
+			try {
+				MinecraftClient client = MinecraftClient.getInstance();
+				ResourceManager manager = client == null ? null : client.getResourceManager();
+				if (manager == null) {
+					return Map.of();
+				}
+				if (manager == loadedFrom && !translations.isEmpty()) {
+					return translations;
+				}
+				synchronized (EnglishTooltipResolver.class) {
+					if (manager == loadedFrom && !translations.isEmpty()) {
+						return translations;
+					}
+					Map<String, String> loaded = new LinkedHashMap<>();
+					Map<Identifier, List<Resource>> resources = manager.findAllResources("lang",
+						id -> "lang/en_us.json".equals(id.getPath()));
+					for (List<Resource> stack : resources.values()) {
+						for (Resource resource : stack) {
+							try (InputStream input = resource.getInputStream()) {
+								Language.load(input, loaded::put);
+							} catch (Throwable ignored) {
+							}
+						}
+					}
+					translations = Map.copyOf(loaded);
+					loadedFrom = manager;
+					return translations;
+				}
+			} catch (Throwable ignored) {
+				return Map.of();
+			}
 		}
 	}
 
