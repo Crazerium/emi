@@ -50,6 +50,14 @@ public interface PlannerMachineRule {
 		return 1.0D;
 	}
 
+	/**
+	 * Multiplier applied only to recipe outputs when the machine changes recipe yield.
+	 * Unlike throughputMultiplier, this does not scale recipe inputs or recipe executions.
+	 */
+	default double outputMultiplier(Entry entry) {
+		return 1.0D;
+	}
+
 	default List<String> settingDetails(Entry entry, MachineSettingSpec spec) {
 		return List.of();
 	}

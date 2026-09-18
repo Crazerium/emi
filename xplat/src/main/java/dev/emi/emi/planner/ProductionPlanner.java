@@ -705,7 +705,7 @@ public final class ProductionPlanner {
 			if (entry.groupId != groupId) {
 				continue;
 			}
-			addRecipeResources(collection, entry.getRecipe(), i, n);
+			addRecipeResources(collection, entry, i, n);
 		}
 		for (Group child : line.groups) {
 			if (child.parentId != groupId) {
@@ -733,10 +733,12 @@ public final class ProductionPlanner {
 		return collection;
 	}
 
-	private static void addRecipeResources(Map<EmiStack, ResourceVector> collection, EmiRecipe recipe, int index, int n) {
+	private static void addRecipeResources(Map<EmiStack, ResourceVector> collection, Entry entry, int index, int n) {
+		EmiRecipe recipe = entry == null ? null : entry.getRecipe();
 		if (recipe == null) {
 			return;
 		}
+		double outputMultiplier = machineSettingOutputMultiplier(entry);
 		for (EmiIngredient ingredient : recipe.getInputs()) {
 			if (ingredient == null || ingredient.isEmpty()) {
 				continue;
@@ -754,7 +756,7 @@ public final class ProductionPlanner {
 			if (stack == null || stack.isEmpty()) {
 				continue;
 			}
-			double amount = stack.getAmount() * Math.max(0.0D, stack.getChance());
+			double amount = stack.getAmount() * Math.max(0.0D, stack.getChance()) * outputMultiplier;
 			ResourceVector vector = collection.computeIfAbsent(normalizeStack(stack), k -> new ResourceVector(k, n));
 			vector.net[index] += amount;
 			vector.hasOutput = true;
@@ -1273,6 +1275,17 @@ public final class ProductionPlanner {
 			return 1.0D;
 		}
 		double multiplier = entry.getMachineProfile().machineRule().throughputMultiplier(entry);
+		if (!Double.isFinite(multiplier) || multiplier <= 0.0D) {
+			return 1.0D;
+		}
+		return multiplier;
+	}
+
+	private static double machineSettingOutputMultiplier(Entry entry) {
+		if (entry == null) {
+			return 1.0D;
+		}
+		double multiplier = entry.getMachineProfile().machineRule().outputMultiplier(entry);
 		if (!Double.isFinite(multiplier) || multiplier <= 0.0D) {
 			return 1.0D;
 		}
@@ -2732,6 +2745,14 @@ public final class ProductionPlanner {
 		}
 
 		private static int parseParallel(String line) {
+			String lower = line == null ? "" : line.toLowerCase(Locale.ROOT);
+			if (lower.contains("for each") || lower.contains("for every") || lower.contains("each layer")
+					|| lower.contains("tier") || lower.contains("temperature") || lower.contains("formula")
+					|| lower.contains("multiplier") || lower.contains("robots") || lower.contains("plasma")
+					|| lower.contains("current neutron") || lower.contains("actual parallel")
+					|| lower.contains("^") || lower.contains("log") || lower.contains("×") && lower.contains("(")) {
+				return 0;
+			}
 			Matcher matcher = NUMBER_BEFORE_PARALLEL.matcher(line);
 			if (matcher.find()) {
 				long value = parseLong(matcher.group(1));

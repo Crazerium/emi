@@ -18,6 +18,8 @@ import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.api.widget.Bounds;
 import dev.emi.emi.input.EmiInput;
 import dev.emi.emi.planner.ProductionPlanner;
+import dev.emi.emi.planner.compat.gto.GtoCapabilityAudit;
+import dev.emi.emi.platform.EmiAgnos;
 import dev.emi.emi.planner.PlannerText;
 import dev.emi.emi.planner.ProductionPlanner.Entry;
 import dev.emi.emi.planner.ProductionPlanner.Group;
@@ -58,6 +60,7 @@ public class ProductionPlannerScreen extends Screen {
 	private static final int ACTIVE_COLOR = 0xFF355048;
 	private static final int HOVER_COLOR = 0xFF3A3A44;
 	private static final double EPSILON = 0.0000001D;
+	private static final boolean SHOW_GTO_AUDIT = EmiAgnos.isDevelopmentEnvironment();
 
 	public final HandledScreen<?> old;
 	private Bounds newLineButton = EMPTY;
@@ -71,6 +74,8 @@ public class ProductionPlannerScreen extends Screen {
 	private Bounds standardVoltageBounds = EMPTY;
 	private Bounds applyStandardVoltageBounds = EMPTY;
 	private Bounds groupsButton = EMPTY;
+	private Bounds gtoAuditButton = EMPTY;
+	private String gtoAuditStatus = "";
 	private boolean groupsOpen;
 	private Group selectedGroup;
 	private Bounds groupsModalBounds = EMPTY;
@@ -496,13 +501,19 @@ public class ProductionPlannerScreen extends Screen {
 		standardVoltageBounds = new Bounds(158, y + 5, 92, 20);
 		applyStandardVoltageBounds = new Bounds(256, y + 5, 70, 20);
 		groupsButton = new Bounds(332, y + 5, 78, 20);
+		gtoAuditButton = SHOW_GTO_AUDIT ? new Bounds(416, y + 5, 78, 20) : EMPTY;
 		String label = line.getStandardVoltageTier() < 0 ? PlannerText.tr("footer.recipe_min", "Recipe Min") : line.getStandardVoltageName();
 		drawValueBox(context, standardVoltageBounds, mouseX, mouseY, label, line.getStandardVoltageTier() >= 0,
 			ProductionPlanner.voltageTierColor(line.getStandardVoltageTier()));
 		drawButton(context, applyStandardVoltageBounds, mouseX, mouseY, PlannerText.tr("footer.apply_all", "APPLY ALL"), false);
 		drawButton(context, groupsButton, mouseX, mouseY, PlannerText.tr("footer.groups", "GROUPS") + " " + line.getGroups().size(), groupsOpen);
-		String hint = PlannerText.tr("footer.voltage_hint", "New machines inherit this voltage. Individual rows can override it.");
-		int hintX = groupsButton.right() + 10;
+		if (SHOW_GTO_AUDIT) {
+			drawButton(context, gtoAuditButton, mouseX, mouseY, "GTO AUDIT", false);
+		}
+		String hint = SHOW_GTO_AUDIT && !gtoAuditStatus.isBlank()
+			? gtoAuditStatus
+			: PlannerText.tr("footer.voltage_hint", "New machines inherit this voltage. Individual rows can override it.");
+		int hintX = (SHOW_GTO_AUDIT ? gtoAuditButton : groupsButton).right() + 10;
 		if (hintX < width - 20) {
 			context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(hint, width - hintX - 8)), hintX, y + 10, 0xFF858590);
 		}
@@ -1371,6 +1382,12 @@ public class ProductionPlannerScreen extends Screen {
 				PlannerText.tr("groups.tooltip2", "MATCH keeps a resource inside the group; IGNORE passes it to the parent"));
 			return;
 		}
+		if (SHOW_GTO_AUDIT && gtoAuditButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, "Scan every GTO machine exposed as an EMI workstation",
+				"Classifies AUTO / AUTO + OVERRIDE / OVERRIDE ONLY / SUSPICIOUS NONE / NONE",
+				"Writes the full report to latest.log and copies it to the clipboard");
+			return;
+		}
 		if (powerBounds.contains(mouseX, mouseY)) {
 			PowerSummary power = calculatePower(activeLine);
 			List<String> lines = new ArrayList<>();
@@ -1911,6 +1928,13 @@ public class ProductionPlannerScreen extends Screen {
 			groupListScroll = 0;
 			groupRecipeScroll = 0;
 			groupLinkScroll = 0;
+			return true;
+		}
+		if (SHOW_GTO_AUDIT && button == 0 && gtoAuditButton.contains(mx, my)) {
+			closeDropdowns();
+			GtoCapabilityAudit.AuditResult result = GtoCapabilityAudit.run();
+			MinecraftClient.getInstance().keyboard.setClipboard(result.report());
+			gtoAuditStatus = result.shortStatus();
 			return true;
 		}
 		for (TargetHitbox hitbox : targetHitboxes) {

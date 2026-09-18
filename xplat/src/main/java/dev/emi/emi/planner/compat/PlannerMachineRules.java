@@ -148,6 +148,15 @@ public final class PlannerMachineRules {
 		}
 
 		@Override
+		public double outputMultiplier(Entry entry) {
+			double value = 1.0D;
+			for (PlannerMachineRule rule : rules) {
+				value *= sanitizeMultiplier(rule.outputMultiplier(entry));
+			}
+			return value;
+		}
+
+		@Override
 		public List<String> settingDetails(Entry entry, MachineSettingSpec spec) {
 			List<String> lines = new ArrayList<>();
 			for (PlannerMachineRule rule : rules) {

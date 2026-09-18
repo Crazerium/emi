@@ -23,8 +23,24 @@ public final class GtoPlannerMachineCompat implements PlannerMachineCompatProvid
 		Map.entry("gto.auto.coil_parallel_help", "Выбранная катушка управляет автоматически обнаруженной формулой встроенного parallel"),
 		Map.entry("gto.auto.coil_parallel_auto", "AUTO сохраняет обнаруженный/профильный лимит parallel"),
 		Map.entry("gto.auto.coil_temperature", "Температура катушки"),
+		Map.entry("gto.auto.selected_coil", "Выбранная нагревательная катушка"),
+		Map.entry("gto.auto.coil_tiers_above_reference", "Тиров катушки выше Cupronickel"),
+		Map.entry("gto.auto.energy_multiplier", "Множитель энергии"),
 		Map.entry("gto.auto.parallel_steps", "Шаги формулы parallel"),
 		Map.entry("gto.auto.detected_formula", "Обнаруженная формула"),
+		Map.entry("gto.dynamic.power_module_tier", "Тир силового модуля"),
+		Map.entry("gto.dynamic.power_module_tier_help", "Тир установленного силового модуля задает встроенный parallel"),
+		Map.entry("gto.dynamic.hermetic_casing_tier", "Тир герметичного корпуса"),
+		Map.entry("gto.dynamic.hermetic_casing_tier_help", "Тир установленного герметичного корпуса задает встроенный parallel"),
+		Map.entry("gto.dynamic.selected_glass_tier", "Выбранный тир стекла"),
+		Map.entry("gto.dynamic.selected_structure_tier", "Выбранный тир структуры"),
+		Map.entry("gto.dynamic.duration_multiplier", "Множитель времени"),
+		Map.entry("gto.dynamic.production_boost", "Режим увеличения производства"),
+		Map.entry("gto.dynamic.production_boost_help", "Увеличивает выход рецепта ценой обнаруженного штрафа времени и энергии/пара"),
+		Map.entry("gto.dynamic.production_boost_state", "Режим увеличения производства"),
+		Map.entry("gto.dynamic.output_multiplier", "Множитель выхода"),
+		Map.entry("gto.dynamic.energy_steam_multiplier", "Множитель энергии/пара"),
+		Map.entry("gto.dynamic.glass_tier_low", "Тир стекла слишком низкий"),
 		Map.entry("gto.hatch.auxiliary", "Вспомогательные модули"),
 		Map.entry("gto.hatch.auxiliary_help", "Включите, если расширение/вспомогательный модуль мультиблока установлен"),
 		Map.entry("gto.hatch.auxiliary_state", "Вспомогательные модули включены"),
@@ -93,8 +109,9 @@ public final class GtoPlannerMachineCompat implements PlannerMachineCompatProvid
 			notes.add("GTO standard OC multiplier detected: x" + capabilities.standardOcDurationMultiplier());
 		}
 
-		Boolean perfectKnown = capabilities.disablesPerfectOc() ? Boolean.TRUE : null;
-		Boolean allowsPerfect = capabilities.disablesPerfectOc() ? Boolean.FALSE : null;
+		Boolean perfectKnown = capabilities.enablesPerfectOc() || capabilities.disablesPerfectOc() ? Boolean.TRUE : null;
+		Boolean allowsPerfect = capabilities.disablesPerfectOc() ? Boolean.FALSE
+			: capabilities.enablesPerfectOc() ? Boolean.TRUE : null;
 		return new PlannerMachineRuntimeOverride(
 			null,
 			capabilities.fixedParallel() > 0 ? capabilities.fixedParallel() : null,
