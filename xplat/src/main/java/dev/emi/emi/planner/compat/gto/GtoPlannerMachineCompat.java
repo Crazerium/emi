@@ -76,6 +76,38 @@ public final class GtoPlannerMachineCompat implements PlannerMachineCompatProvid
 		Map.entry("gto.hatch.requires_auxiliary", "Требует вспомогательные модули"),
 		Map.entry("gto.hatch.auxiliary_required_error", "Выбранный GTO-хэтч требует вспомогательные модули"),
 		Map.entry("gto.common.yes", "ДА"),
+		Map.entry("gto.dynamic.energy_parallel_units", "Единицы потребления энергии"),
+		Map.entry("gto.dynamic.energy_parallel_units_help", "Укажите число полных энергетических пакетов на операцию; каждый пакет добавляет один parallel"),
+		Map.entry("gto.dynamic.same_recipe_robots", "Роботы одного рецепта"),
+		Map.entry("gto.dynamic.same_recipe_robots_help", "Количество роботов одного рецепта; каждый добавляет обнаруженный встроенный parallel"),
+		Map.entry("gto.dynamic.additional_speeding_pipes", "Дополнительные ускоряющие трубы"),
+		Map.entry("gto.dynamic.additional_speeding_pipes_help", "Дополнительные ускоряющие трубы уменьшают длительность рецепта по обнаруженной формуле эффективности"),
+		Map.entry("gto.dynamic.steel_frame_layers", "Слои стальных рам"),
+		Map.entry("gto.dynamic.steel_frame_layers_help", "Высота структуры: каждый слой стальных рам добавляет обнаруженный базовый parallel"),
+		Map.entry("gto.dynamic.current_temperature", "Текущая температура (K)"),
+		Map.entry("gto.dynamic.current_temperature_help", "Текущая внутренняя температура машины для обнаруженных формул parallel и длительности"),
+		Map.entry("gto.dynamic.progression_tier", "Тир прогрессии"),
+		Map.entry("gto.dynamic.progression_tier_help", "Накопленный тир прогрессии машины для обнаруженных бонусов длительности и parallel"),
+		Map.entry("gto.dynamic.current_neutron_flux", "Текущий нейтронный поток (keV)"),
+		Map.entry("gto.dynamic.current_neutron_flux_help", "Текущий нейтронный поток; 0 оставляет расчет нейтральным до настройки потока"),
+		Map.entry("gto.dynamic.required_neutron_flux", "Требуемый нейтронный поток (keV)"),
+		Map.entry("gto.dynamic.required_neutron_flux_help", "Требуемый рецептом нейтронный поток; 0 оставляет расчет нейтральным до настройки"),
+		Map.entry("gto.dynamic.fission_recipe_heat", "Тепловыделение рецепта"),
+		Map.entry("gto.dynamic.fission_recipe_heat_help", "Тепловыделение рецепта для обнаруженной формулы потребности охлаждения; 0 оставляет формулу ненастроенной"),
+		Map.entry("gto.dynamic.fission_temperature", "Текущая температура реактора"),
+		Map.entry("gto.dynamic.fission_temperature_help", "Текущая температура реактора для обнаруженной формулы потребности охлаждения; 0 оставляет формулу ненастроенной"),
+		Map.entry("gto.dynamic.fission_cooling_components", "Количество компонентов охлаждения"),
+		Map.entry("gto.dynamic.fission_cooling_components_help", "Общее количество компонентов охлаждения для обнаруженной формулы охлаждения"),
+		Map.entry("gto.dynamic.fission_adjacent_components", "Соседние компоненты охлаждения"),
+		Map.entry("gto.dynamic.fission_adjacent_components_help", "Количество соседних компонентов охлаждения, вычитаемое обнаруженной формулой"),
+		Map.entry("gto.dynamic.neutron_flux_low", "Текущий нейтронный поток ниже требуемого"),
+		Map.entry("gto.dynamic.fission_cooling_low", "Недостаточно охлаждения для выбранного parallel"),
+		Map.entry("gto.note.scanner", "GTO: общий сканер возможностей распознал эту машину"),
+		Map.entry("gto.note.capabilities", "GTO авто-возможности"),
+		Map.entry("gto.note.configurable", "GTO: настраиваемые механики созданы из обнаруженных возможностей"),
+		Map.entry("gto.note.fixed_parallel", "GTO: обнаружен фиксированный встроенный parallel"),
+		Map.entry("gto.note.time_multiplier", "GTO: обнаружен множитель времени обработки"),
+		Map.entry("gto.note.oc_multiplier", "GTO: обнаружен стандартный множитель OC"),
 		Map.entry("gto.common.no", "НЕТ")
 	);
 
@@ -126,6 +158,7 @@ public final class GtoPlannerMachineCompat implements PlannerMachineCompatProvid
 			List.copyOf(notes)
 		);
 	}
+
 
 	@Override
 	public String russianText(String key) {

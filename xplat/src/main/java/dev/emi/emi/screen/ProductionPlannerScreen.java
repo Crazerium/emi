@@ -81,11 +81,14 @@ public class ProductionPlannerScreen extends Screen {
 	private Bounds standardVoltageBounds = EMPTY;
 	private Bounds applyStandardVoltageBounds = EMPTY;
 	private Bounds groupsButton = EMPTY;
+	private Bounds toolsButton = EMPTY;
+	private Bounds toolsMenuBounds = EMPTY;
 	private Bounds exportLineButton = EMPTY;
 	private Bounds importLineButton = EMPTY;
 	private Bounds timeUnitButton = EMPTY;
 	private Bounds buildSummaryButton = EMPTY;
 	private Bounds gtoAuditButton = EMPTY;
+	private boolean toolsOpen;
 	private String gtoAuditStatus = "";
 	private String lineTransferStatus = "";
 	private boolean groupsOpen;
@@ -211,6 +214,9 @@ public class ProductionPlannerScreen extends Screen {
 		renderTableHeader(context);
 		renderRows(context, line, mouseX, mouseY, delta);
 		renderFooter(context, line, mouseX, mouseY);
+		if (toolsOpen && !buildSummaryOpen && !groupsOpen) {
+			renderToolsMenu(context, mouseX, mouseY);
+		}
 		if (editField != null) {
 			editField.render(raw, mouseX, mouseY, delta);
 		}
@@ -225,7 +231,7 @@ public class ProductionPlannerScreen extends Screen {
 			renderDropdowns(context, line, mouseX, mouseY);
 			if (isDropdownOpen()) {
 				renderDropdownTooltip(context, mouseX, mouseY);
-			} else {
+			} else if (!toolsOpen) {
 				renderTooltip(context, mouseX, mouseY);
 			}
 		}
@@ -269,9 +275,9 @@ public class ProductionPlannerScreen extends Screen {
 		drawBorder(context, new Bounds(4, SUMMARY_TOP, width - 8, SUMMARY_HEIGHT), BORDER_COLOR);
 		int sectionWidth = Math.max(1, (width - 12) / 3);
 		flowHitboxes = new ArrayList<>();
-		renderFlowSection(context, line, "External Inputs/" + displayTimeUnit.suffix, totals.externalInputs(), 6, SUMMARY_TOP + 4, sectionWidth - 2, TargetMode.INPUT);
-		renderFlowSection(context, line, "Internal Flow/" + displayTimeUnit.suffix, totals.internalFlow(), 6 + sectionWidth, SUMMARY_TOP + 4, sectionWidth - 2, null);
-		renderFlowSection(context, line, "Net Outputs/" + displayTimeUnit.suffix, totals.netOutputs(), 6 + sectionWidth * 2, SUMMARY_TOP + 4, sectionWidth - 2, TargetMode.OUTPUT);
+		renderFlowSection(context, line, PlannerText.tr("summary.external_prefix", "External Inputs/") + displayTimeUnit.suffix, totals.externalInputs(), 6, SUMMARY_TOP + 4, sectionWidth - 2, TargetMode.INPUT);
+		renderFlowSection(context, line, PlannerText.tr("summary.internal_prefix", "Internal Flow/") + displayTimeUnit.suffix, totals.internalFlow(), 6 + sectionWidth, SUMMARY_TOP + 4, sectionWidth - 2, null);
+		renderFlowSection(context, line, PlannerText.tr("summary.outputs_prefix", "Net Outputs/") + displayTimeUnit.suffix, totals.netOutputs(), 6 + sectionWidth * 2, SUMMARY_TOP + 4, sectionWidth - 2, TargetMode.OUTPUT);
 
 		int controlsY = SUMMARY_TOP + SUMMARY_HEIGHT - 21;
 		PowerSummary power = calculatePower(line);
@@ -326,7 +332,7 @@ public class ProductionPlannerScreen extends Screen {
 		drawButton(context, clearTargetButton, mouseX, mouseY, PlannerText.tr("clear", "CLEAR"), false);
 		String message = line.getBalanceMessage();
 		if (message == null || message.isBlank()) {
-			message = "Click outputs for OUT targets; Ctrl + click inputs for IN goals";
+			message = PlannerText.tr("summary.goal_hint", "Click outputs for OUT targets; Ctrl + click inputs for IN goals");
 		}
 		String powerText = power.knownEntries > 0
 			? PlannerText.tr("power", "Power") + ": " + formatCompactRate(power.averageEUt, false) + " EU/t" + (power.unknownEntries > 0 ? " +?" : "")
@@ -368,26 +374,28 @@ public class ProductionPlannerScreen extends Screen {
 
 	private void renderTableHeader(EmiDrawContext context) {
 		context.fill(0, TABLE_HEADER_Y, width, 16, 0xFF1B1B22);
-		int inputsX = inputsColumnX();
-		int outputsX = outputsColumnX();
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.mode", "MODE")), 10, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.machine", "MACHINE")), 58, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.cfg", "CFG")), 170, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.mach", "MACH")), 218, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.par", "PAR")), 300, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.volt", "VOLT")), 364, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.oc", "OC")), 422, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.duration", "DURATION")), 472, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.rate", "RATE")), 538, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.recipe", "RECIPE")), 610, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("INPUTS/" + displayTimeUnit.suffix), inputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
-		context.drawTextWithShadow(EmiPort.literal("OUTPUTS/" + displayTimeUnit.suffix), outputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		TableLayout layout = tableLayout();
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.mode", "MODE")), layout.modeX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.machine", "MACHINE")), layout.machineX + 4, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.cfg", "CFG")), layout.cfgX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.mach", "MACH")), layout.machinesLockX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.par", "PAR")), layout.parallelLockX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.volt", "VOLT")), layout.voltageX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.oc", "OC")), layout.ocX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		if (layout.showDuration) {
+			context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.duration", "DURATION")), layout.durationX + 4, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		}
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.rate", "RATE")), layout.rateX + 4, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.recipe", "RECIPE")), layout.recipeX + 2, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.inputs_prefix", "INPUTS/") + displayTimeUnit.suffix), layout.inputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("header.outputs_prefix", "OUTPUTS/") + displayTimeUnit.suffix), layout.outputsX, TABLE_HEADER_Y + 4, 0xFFC8C8D0);
 	}
 
 	private void renderRows(EmiDrawContext context, Line line, int mouseX, int mouseY, float delta) {
 		rowHitboxes = new ArrayList<>();
 		groupMainHitboxes = new ArrayList<>();
 		List<PlannerDisplayRow> displayRows = buildPlannerDisplayRows(line);
+		TableLayout layout = tableLayout();
 		int visibleRows = visibleRows();
 		clampScroll();
 		int end = Math.min(displayRows.size(), rowScroll + visibleRows);
@@ -424,25 +432,25 @@ public class ProductionPlannerScreen extends Screen {
 			}
 			EmiRecipe recipe = entry.getRecipe();
 
-			Bounds mode = new Bounds(8, y + 7, 42, 20);
-			Bounds machineProfile = new Bounds(54, y + 7, 112, 20);
-			Bounds machineConfig = new Bounds(170, y + 9, 26, 16);
-			Bounds machinesLock = new Bounds(198, y + 9, 16, 16);
-			Bounds machinesMinus = new Bounds(216, y + 9, 14, 16);
-			Bounds machinesValue = new Bounds(230, y + 7, 32, 20);
-			Bounds machinesPlus = new Bounds(262, y + 9, 14, 16);
-			Bounds parallelLock = new Bounds(280, y + 9, 16, 16);
-			Bounds parallelMinus = new Bounds(298, y + 9, 14, 16);
-			Bounds parallelValue = new Bounds(312, y + 7, 32, 20);
-			Bounds parallelPlus = new Bounds(344, y + 9, 14, 16);
-			Bounds voltage = new Bounds(362, y + 7, 54, 20);
-			Bounds oc = new Bounds(420, y + 7, 44, 20);
-			Bounds duration = new Bounds(468, y + 7, 62, 20);
-			Bounds rate = new Bounds(534, y + 7, 68, 20);
-			Bounds replace = new Bounds(inputsColumnX() - 22, y + 9, 16, 16);
+			Bounds mode = new Bounds(layout.modeX, y + 7, layout.modeW, 20);
+			Bounds machineProfile = new Bounds(layout.machineX, y + 7, layout.machineW, 20);
+			Bounds machineConfig = new Bounds(layout.cfgX, y + 9, layout.cfgW, 16);
+			Bounds machinesLock = new Bounds(layout.machinesLockX, y + 9, layout.lockW, 16);
+			Bounds machinesMinus = new Bounds(layout.machinesMinusX, y + 9, layout.stepW, 16);
+			Bounds machinesValue = new Bounds(layout.machinesValueX, y + 7, layout.valueW, 20);
+			Bounds machinesPlus = new Bounds(layout.machinesPlusX, y + 9, layout.stepW, 16);
+			Bounds parallelLock = new Bounds(layout.parallelLockX, y + 9, layout.lockW, 16);
+			Bounds parallelMinus = new Bounds(layout.parallelMinusX, y + 9, layout.stepW, 16);
+			Bounds parallelValue = new Bounds(layout.parallelValueX, y + 7, layout.valueW, 20);
+			Bounds parallelPlus = new Bounds(layout.parallelPlusX, y + 9, layout.stepW, 16);
+			Bounds voltage = new Bounds(layout.voltageX, y + 7, layout.voltageW, 20);
+			Bounds oc = new Bounds(layout.ocX, y + 7, layout.ocW, 20);
+			Bounds duration = layout.showDuration ? new Bounds(layout.durationX, y + 7, layout.durationW, 20) : EMPTY;
+			Bounds rate = new Bounds(layout.rateX, y + 7, layout.rateW, 20);
+			Bounds replace = new Bounds(layout.inputsX - 22, y + 9, 16, 16);
 			Bounds remove = new Bounds(width - 22, y + 9, 16, 16);
 
-			String modeLabel = line.isBalanceEnabled() ? "BAL" : entry.isAutomatic() ? "AUTO" : "MAN";
+			String modeLabel = line.isBalanceEnabled() ? PlannerText.tr("mode.balance", "BAL") : entry.isAutomatic() ? PlannerText.tr("mode.auto", "AUTO") : PlannerText.tr("mode.manual", "MAN");
 			drawButton(context, mode, mouseX, mouseY, modeLabel, line.isBalanceEnabled() || entry.isAutomatic());
 			drawMachineValueBox(context, machineProfile, mouseX, mouseY, entry.getMachineProfile(), !"generic".equals(entry.getMachineProfile().id()));
 			if (entry.getMachineProfile().hasConfigurableSettings()) {
@@ -462,49 +470,56 @@ public class ProductionPlannerScreen extends Screen {
 
 			double durationSeconds = entry.getProcessedDurationSeconds();
 			String durationText = durationSeconds > 0.0D ? formatDuration(durationSeconds) + (entry.isDurationOverridden() ? "*" : "") : "--";
-			drawValueBox(context, duration, mouseX, mouseY, durationText, entry.isAutomatic());
+			if (layout.showDuration) {
+				drawValueBox(context, duration, mouseX, mouseY, durationText, entry.isAutomatic());
+			}
 			double rowRate = line.getEffectiveRate(entry);
 			drawValueBox(context, rate, mouseX, mouseY, formatDisplayRate(rowRate) + "/" + displayTimeUnit.suffix, line.isBalanceEnabled() || !entry.isAutomatic());
 			drawButton(context, replace, mouseX, mouseY, "R", false);
 			drawButton(context, remove, mouseX, mouseY, "x", false);
 
-			int recipeIndent = Math.min(48, displayRow.depth * 9);
-			Bounds recipeBounds = new Bounds(608, y + 3, Math.max(30, replace.x() - 612), ROW_HEIGHT - 7);
+			int recipeIndent = Math.min(layout.compact ? 18 : 48, displayRow.depth * (layout.compact ? 5 : 9));
+			Bounds recipeBounds = new Bounds(layout.recipeX, y + 3, Math.max(18, replace.x() - layout.recipeX - 4), ROW_HEIGHT - 7);
 			if (recipe == null) {
-				context.drawTextWithShadow(EmiPort.literal("Missing recipe: " + entry.getRecipeId()), 610 + recipeIndent, y + 9, 0xFFFF7777);
+				String missing = textRenderer.trimToWidth(PlannerText.tr("recipe.missing", "Missing") + ": " + entry.getRecipeId(), Math.max(12, recipeBounds.width() - 4));
+				context.drawTextWithShadow(EmiPort.literal(missing), layout.recipeX + 2, y + 9, 0xFFFF7777);
 			} else {
 				EmiStack recipeIcon = firstOutput(recipe);
+				int recipeIconX = layout.recipeX + 2 + recipeIndent;
 				if (!recipeIcon.isEmpty()) {
-					int recipeIconX = 610 + recipeIndent;
 					context.drawStack(recipeIcon, recipeIconX, y + 9, EmiIngredient.RENDER_ICON);
 					flowHitboxes.add(new FlowHitbox(new Bounds(recipeIconX, y + 9, 18, 18),
 						new Flow(recipeIcon, 0, 0, 0, 0, false, "", 0), null));
 				} else {
-					recipe.getCategory().renderSimplified(context.raw(), 610 + recipeIndent, y + 9, delta);
+					recipe.getCategory().renderSimplified(context.raw(), recipeIconX, y + 9, delta);
 				}
-				String name = recipeName(recipe);
-				String trimmed = textRenderer.trimToWidth(name, Math.max(20, recipeBounds.width() - 24 - recipeIndent));
-				context.drawTextWithShadow(EmiPort.literal(trimmed), 632 + recipeIndent, y + 7, 0xFFFFFFFF);
-				String category = recipe.getCategory().getName().getString();
-				if (entry.getGroupId() > 0) {
-					category += " • " + line.getEntryGroupName(entry);
+				int recipeTextX = recipeIconX + 22;
+				int recipeTextWidth = Math.max(0, recipeBounds.right() - recipeTextX - 2);
+				if (recipeTextWidth >= 12) {
+					String name = recipeName(recipe);
+					String trimmed = textRenderer.trimToWidth(name, recipeTextWidth);
+					context.drawTextWithShadow(EmiPort.literal(trimmed), recipeTextX, y + 7, 0xFFFFFFFF);
+					String category = recipe.getCategory().getName().getString();
+					if (entry.getGroupId() > 0) {
+						category += " • " + line.getEntryGroupName(entry);
+					}
+					String categoryTrimmed = textRenderer.trimToWidth(category, recipeTextWidth);
+					context.drawTextWithShadow(EmiPort.literal(categoryTrimmed), recipeTextX, y + 20, 0xFF90909B);
 				}
-				String categoryTrimmed = textRenderer.trimToWidth(category, Math.max(20, recipeBounds.width() - 24 - recipeIndent));
-				context.drawTextWithShadow(EmiPort.literal(categoryTrimmed), 632 + recipeIndent, y + 20, 0xFF90909B);
 				double effectiveRate = line.getEffectiveRate(entry);
-				renderRateStacks(context, line, recipeInputs(recipe, effectiveRate), inputsColumnX(), y + 9,
-					outputsColumnX() - inputsColumnX() - 8, TargetMode.INPUT);
-				renderRateStacks(context, line, recipeOutputs(recipe, effectiveRate), outputsColumnX(), y + 9,
-					width - outputsColumnX() - 32, TargetMode.OUTPUT);
+				renderRateStacks(context, line, recipeInputs(recipe, effectiveRate), layout.inputsX, y + 9,
+					layout.outputsX - layout.inputsX - 8, TargetMode.INPUT);
+				renderRateStacks(context, line, recipeOutputs(recipe, effectiveRate), layout.outputsX, y + 9,
+					width - layout.outputsX - 32, TargetMode.OUTPUT);
 			}
 			rowHitboxes.add(new RowHitbox(entry, mode, machineProfile, machineConfig, machinesLock, machinesMinus, machinesValue, machinesPlus, parallelLock, parallelMinus,
 				parallelValue, parallelPlus, voltage, oc, duration, rate, replace, remove, recipeBounds));
 			renderSearchRowOverlay(context, index, y);
 		}
 		if (line.getEntries().isEmpty()) {
-			context.drawCenteredText(EmiPort.literal("Open any EMI recipe and press the + planner button to add it to this line."),
+			context.drawCenteredText(EmiPort.literal(PlannerText.tr("empty.add_recipe", "Open any EMI recipe and press the + planner button to add it to this line.")),
 				width / 2, ROW_TOP + 32, 0xFFA0A0AA);
-			context.drawCenteredText(EmiPort.literal("New recipes use AUTO when a recipe duration can be detected; MAN keeps direct rate control."),
+			context.drawCenteredText(EmiPort.literal(PlannerText.tr("empty.mode_help", "New recipes use AUTO when a recipe duration can be detected; MAN keeps direct rate control.")),
 				width / 2, ROW_TOP + 48, 0xFF777783);
 		}
 	}
@@ -558,24 +573,32 @@ public class ProductionPlannerScreen extends Screen {
 		int y = Math.max(ROW_TOP, height - FOOTER_HEIGHT);
 		context.fill(0, y, width, FOOTER_HEIGHT, HEADER_COLOR);
 		context.fill(0, y, width, 1, BORDER_COLOR);
-		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("footer.standard_voltage", "Standard Voltage for machines:")), 10, y + 10, 0xFFC8C8D0);
-		standardVoltageBounds = new Bounds(158, y + 5, 92, 20);
-		applyStandardVoltageBounds = new Bounds(256, y + 5, 70, 20);
-		groupsButton = new Bounds(332, y + 5, 78, 20);
-		exportLineButton = new Bounds(416, y + 5, 68, 20);
-		importLineButton = new Bounds(490, y + 5, 68, 20);
-		timeUnitButton = new Bounds(564, y + 5, 66, 20);
-		buildSummaryButton = new Bounds(636, y + 5, 88, 20);
-		gtoAuditButton = SHOW_GTO_AUDIT ? new Bounds(730, y + 5, 78, 20) : EMPTY;
+		boolean compact = isCompactLayout();
+		if (compact) {
+			context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("footer.volt_short", "VOLT:")), 10, y + 10, 0xFFC8C8D0);
+			standardVoltageBounds = new Bounds(44, y + 5, 78, 20);
+			applyStandardVoltageBounds = new Bounds(128, y + 5, 62, 20);
+			groupsButton = new Bounds(196, y + 5, 70, 20);
+			toolsButton = new Bounds(272, y + 5, 60, 20);
+			gtoAuditButton = SHOW_GTO_AUDIT ? new Bounds(338, y + 5, 78, 20) : EMPTY;
+		} else {
+			context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("footer.standard_voltage", "Standard Voltage for machines:")), 10, y + 10, 0xFFC8C8D0);
+			standardVoltageBounds = new Bounds(158, y + 5, 92, 20);
+			applyStandardVoltageBounds = new Bounds(256, y + 5, 70, 20);
+			groupsButton = new Bounds(332, y + 5, 78, 20);
+			toolsButton = new Bounds(416, y + 5, 68, 20);
+			gtoAuditButton = SHOW_GTO_AUDIT ? new Bounds(490, y + 5, 78, 20) : EMPTY;
+		}
+		exportLineButton = EMPTY;
+		importLineButton = EMPTY;
+		timeUnitButton = EMPTY;
+		buildSummaryButton = EMPTY;
 		String label = line.getStandardVoltageTier() < 0 ? PlannerText.tr("footer.recipe_min", "Recipe Min") : line.getStandardVoltageName();
 		drawValueBox(context, standardVoltageBounds, mouseX, mouseY, label, line.getStandardVoltageTier() >= 0,
 			ProductionPlanner.voltageTierColor(line.getStandardVoltageTier()));
-		drawButton(context, applyStandardVoltageBounds, mouseX, mouseY, PlannerText.tr("footer.apply_all", "APPLY ALL"), false);
-		drawButton(context, groupsButton, mouseX, mouseY, PlannerText.tr("footer.groups", "GROUPS") + " " + line.getGroups().size(), groupsOpen);
-		drawButton(context, exportLineButton, mouseX, mouseY, "EXPORT", false);
-		drawButton(context, importLineButton, mouseX, mouseY, "IMPORT", false);
-		drawButton(context, timeUnitButton, mouseX, mouseY, "TIME /" + displayTimeUnit.suffix, false);
-		drawButton(context, buildSummaryButton, mouseX, mouseY, "SUMMARY", buildSummaryOpen);
+		drawButton(context, applyStandardVoltageBounds, mouseX, mouseY, compact ? PlannerText.tr("footer.apply_short", "APPLY") : PlannerText.tr("footer.apply_all", "APPLY ALL"), false);
+		drawButton(context, groupsButton, mouseX, mouseY, (compact ? PlannerText.tr("footer.groups_short", "GROUPS") : PlannerText.tr("footer.groups", "GROUPS")) + " " + line.getGroups().size(), groupsOpen);
+		drawButton(context, toolsButton, mouseX, mouseY, PlannerText.tr("footer.tools", "TOOLS"), toolsOpen);
 		if (SHOW_GTO_AUDIT) {
 			drawButton(context, gtoAuditButton, mouseX, mouseY, "GTO AUDIT", false);
 		}
@@ -585,13 +608,35 @@ public class ProductionPlannerScreen extends Screen {
 				? gtoAuditStatus
 				: PlannerText.tr("footer.voltage_hint", "New machines inherit this voltage. Individual rows can override it.");
 		if (ProductionPlanner.canUndo()) {
-			hint += "  |  Ctrl+Z: Undo";
+			hint += "  |  " + PlannerText.tr("footer.undo_hint", "Ctrl+Z: Undo");
 		}
-		hint += "  |  Ctrl+F: Search";
-		int hintX = (SHOW_GTO_AUDIT ? gtoAuditButton : buildSummaryButton).right() + 10;
+		hint += "  |  " + PlannerText.tr("footer.search_hint", "Ctrl+F: Search");
+		int hintX = (SHOW_GTO_AUDIT ? gtoAuditButton : toolsButton).right() + 10;
 		if (hintX < width - 20) {
 			context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(hint, width - hintX - 8)), hintX, y + 10, 0xFF858590);
 		}
+	}
+
+	private void renderToolsMenu(EmiDrawContext context, int mouseX, int mouseY) {
+		int menuWidth = 136;
+		int rowHeight = 22;
+		int menuHeight = rowHeight * 4 + 4;
+		int x = Math.max(4, Math.min(toolsButton.x(), width - menuWidth - 4));
+		int y = Math.max(HEADER_HEIGHT + 4, toolsButton.y() - menuHeight - 2);
+		toolsMenuBounds = new Bounds(x, y, menuWidth, menuHeight);
+		context.push();
+		context.matrices().translate(0, 0, 900);
+		context.fill(x, y, menuWidth, menuHeight, 0xFF17171F);
+		drawBorder(context, toolsMenuBounds, 0xFF777782);
+		exportLineButton = new Bounds(x + 2, y + 2, menuWidth - 4, rowHeight);
+		importLineButton = new Bounds(x + 2, y + 2 + rowHeight, menuWidth - 4, rowHeight);
+		timeUnitButton = new Bounds(x + 2, y + 2 + rowHeight * 2, menuWidth - 4, rowHeight);
+		buildSummaryButton = new Bounds(x + 2, y + 2 + rowHeight * 3, menuWidth - 4, rowHeight);
+		drawButton(context, exportLineButton, mouseX, mouseY, PlannerText.tr("tools.export_line", "EXPORT LINE"), false);
+		drawButton(context, importLineButton, mouseX, mouseY, PlannerText.tr("tools.import_line", "IMPORT LINE"), false);
+		drawButton(context, timeUnitButton, mouseX, mouseY, PlannerText.tr("tools.time", "TIME") + " /" + displayTimeUnit.suffix, false);
+		drawButton(context, buildSummaryButton, mouseX, mouseY, PlannerText.tr("tools.line_report", "LINE REPORT"), false);
+		context.pop();
 	}
 
 	private void renderBuildSummaryModal(EmiDrawContext context, Line line, int mouseX, int mouseY) {
@@ -606,13 +651,13 @@ public class ProductionPlannerScreen extends Screen {
 		context.fill(x, y, modalWidth, modalHeight, 0xFF15151D);
 		drawBorder(context, buildSummaryModalBounds, 0xFF8A8A96);
 		context.fill(x, y, modalWidth, 30, 0xFF24242D);
-		context.drawCenteredText(EmiPort.literal("Line Report - " + ProductionPlanner.displayName(ProductionPlanner.getActiveIndex())),
+		context.drawCenteredText(EmiPort.literal(PlannerText.tr("report.title", "Line Report") + " - " + ProductionPlanner.displayName(ProductionPlanner.getActiveIndex())),
 			x + modalWidth / 2, y + 10, 0xFFFFFFFF);
 		buildSummaryCloseButton = new Bounds(x + modalWidth - 25, y + 5, 19, 19);
 		buildSummarySaveButton = new Bounds(x + modalWidth - 119, y + 5, 86, 19);
 		buildSummaryCopyButton = new Bounds(x + modalWidth - 211, y + 5, 86, 19);
-		drawButton(context, buildSummaryCopyButton, mouseX, mouseY, "COPY REPORT", false);
-		drawButton(context, buildSummarySaveButton, mouseX, mouseY, "SAVE REPORT", false);
+		drawButton(context, buildSummaryCopyButton, mouseX, mouseY, PlannerText.tr("report.copy", "COPY REPORT"), false);
+		drawButton(context, buildSummarySaveButton, mouseX, mouseY, PlannerText.tr("report.save", "SAVE REPORT"), false);
 		drawButton(context, buildSummaryCloseButton, mouseX, mouseY, "x", false);
 
 		List<BuildSummaryRow> rows = collectBuildSummary(line);
@@ -627,16 +672,16 @@ public class ProductionPlannerScreen extends Screen {
 		if (power.unknownEntries > 0) {
 			powerText += " +?";
 		}
-		String stats = "Machines: " + totalMachines + "   Setups: " + rows.size() + "   External inputs: " + totals.externalInputs().size()
-			+ "   Net outputs: " + totals.netOutputs().size() + "   Average power: " + powerText;
+		String stats = PlannerText.tr("report.total_machines", "Machines") + ": " + totalMachines + "   " + PlannerText.tr("report.setups", "Setups") + ": " + rows.size() + "   " + PlannerText.tr("report.external_inputs", "External inputs") + ": " + totals.externalInputs().size()
+			+ "   " + PlannerText.tr("report.net_outputs", "Net outputs") + ": " + totals.netOutputs().size() + "   " + PlannerText.tr("report.average_power", "Average power") + ": " + powerText;
 		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(stats, modalWidth - 24)), x + 12, y + 39, 0xFFD5D5DE);
 
 		int tabsY = y + 55;
 		buildSummaryMachinesButton = new Bounds(x + 12, tabsY, 92, 18);
 		buildSummaryFlowsButton = new Bounds(x + 108, tabsY, 76, 18);
-		drawButton(context, buildSummaryMachinesButton, mouseX, mouseY, "MACHINES", !buildSummaryFlowsView);
-		drawButton(context, buildSummaryFlowsButton, mouseX, mouseY, "FLOWS", buildSummaryFlowsView);
-		String unitLabel = "Display unit: /" + displayTimeUnit.suffix;
+		drawButton(context, buildSummaryMachinesButton, mouseX, mouseY, PlannerText.tr("report.machines", "MACHINES"), !buildSummaryFlowsView);
+		drawButton(context, buildSummaryFlowsButton, mouseX, mouseY, PlannerText.tr("report.flows", "FLOWS"), buildSummaryFlowsView);
+		String unitLabel = PlannerText.tr("report.display_unit", "Display unit") + ": /" + displayTimeUnit.suffix;
 		context.drawTextWithShadow(EmiPort.literal(unitLabel), x + 194, tabsY + 5, 0xFF8E8E99);
 
 		int listY = y + 78;
@@ -663,20 +708,20 @@ public class ProductionPlannerScreen extends Screen {
 				}
 				String left = row.machines + "x " + row.machineName;
 				String right = row.voltageName + "  |  PAR " + row.parallel + "  |  "
-					+ (row.unknownPower ? (row.averageEUt > EPSILON ? formatCompactRate(row.averageEUt, false) + " EU/t +?" : "Power ?") : formatCompactRate(row.averageEUt, false) + " EU/t");
+					+ (row.unknownPower ? (row.averageEUt > EPSILON ? formatCompactRate(row.averageEUt, false) + " EU/t +?" : PlannerText.tr("report.power_unknown_inline", "Power ?")) : formatCompactRate(row.averageEUt, false) + " EU/t");
 				int rightWidth = textRenderer.getWidth(right);
 				context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(left, Math.max(40, rb.width() - rightWidth - (tx - rb.x()) - 18))),
 					tx, rb.y() + 6, 0xFFFFFFFF);
 				context.drawTextWithShadow(EmiPort.literal(right), rb.right() - rightWidth - 7, rb.y() + 6,
 					ProductionPlanner.voltageTierColor(row.voltageTier));
-				String details = row.config + (row.recipeRows > 1 ? "  |  " + row.recipeRows + " recipe rows" : "")
-					+ (row.provisional ? "  |  provisional sizing" : "");
+				String details = row.config + (row.recipeRows > 1 ? "  |  " + row.recipeRows + " " + PlannerText.tr("report.recipe_rows", "recipe rows") : "")
+					+ (row.provisional ? "  |  " + PlannerText.tr("report.provisional", "provisional sizing") : "");
 				context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(details, rb.width() - (tx - rb.x()) - 12)),
 					tx, rb.y() + 20, row.provisional ? 0xFFFFC27A : 0xFF9696A2);
 				buildSummaryHitboxes.add(new BuildSummaryHitbox(rb, row));
 			}
 			if (rows.isEmpty()) {
-				context.drawCenteredText(EmiPort.literal("No active machine rows in this Line"), x + modalWidth / 2, listY + 24, 0xFF9A9AA5);
+				context.drawCenteredText(EmiPort.literal(PlannerText.tr("report.no_machine_rows", "No active machine rows in this Line")), x + modalWidth / 2, listY + 24, 0xFF9A9AA5);
 			}
 		} else {
 			int rowHeight = 26;
@@ -701,21 +746,21 @@ public class ProductionPlannerScreen extends Screen {
 				context.drawTextWithShadow(EmiPort.literal(right), rb.right() - rightWidth - 7, rb.y() + 7, row.color);
 			}
 			if (flowRows.isEmpty()) {
-				context.drawCenteredText(EmiPort.literal("No flows in this Line"), x + modalWidth / 2, listY + 24, 0xFF9A9AA5);
+				context.drawCenteredText(EmiPort.literal(PlannerText.tr("report.no_flows", "No flows in this Line")), x + modalWidth / 2, listY + 24, 0xFF9A9AA5);
 			}
 		}
 
 		String footer = buildSummaryTransferStatus.isBlank()
-			? "COPY/SAVE exports machines, targets, external inputs, internal flow, net outputs and power."
+			? PlannerText.tr("report.footer", "COPY/SAVE exports machines, targets, external inputs, internal flow, net outputs and power.")
 			: buildSummaryTransferStatus;
 		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(footer, modalWidth - 24)),
 			x + 12, y + modalHeight - 25, buildSummaryTransferStatus.isBlank() ? 0xFF8E8E99 : 0xFFB7E8C9);
 		if (buildSummaryCopyButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Copy full Line Report to clipboard",
-				"Includes machine build list, targets, all major flows and power");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("report.copy_tooltip", "Copy full Line Report to clipboard"),
+				PlannerText.tr("report.copy_tooltip2", "Includes machine build list, targets, all major flows and power"));
 		} else if (buildSummarySaveButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Save full Line Report as .txt",
-				"Saved to config/emi-production-planner-exports");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("report.save_tooltip", "Save full Line Report as .txt"),
+				PlannerText.tr("report.saved_to", "Saved to config/emi-production-planner-exports"));
 		}
 		if (!buildSummaryFlowsView) {
 			for (BuildSummaryHitbox hitbox : buildSummaryHitboxes) {
@@ -723,11 +768,11 @@ public class ProductionPlannerScreen extends Screen {
 					BuildSummaryRow row = hitbox.row;
 					List<String> tooltip = new ArrayList<>();
 					tooltip.add(row.machines + "x " + row.machineName);
-					tooltip.add("Voltage: " + row.voltageName + "   Parallel: " + row.parallel);
+					tooltip.add(PlannerText.tr("report.voltage", "Voltage") + ": " + row.voltageName + "   " + PlannerText.tr("report.parallel", "Parallel") + ": " + row.parallel);
 					tooltip.add(row.config);
-					tooltip.add(row.unknownPower ? "Average power: partially unknown" : "Average power: " + formatSummaryPower(row.averageEUt));
+					tooltip.add(row.unknownPower ? PlannerText.tr("report.power_unknown", "Average power: partially unknown") : PlannerText.tr("report.average_power", "Average power") + ": " + formatSummaryPower(row.averageEUt));
 					if (row.provisional) {
-						tooltip.add("At least one row uses provisional/unknown machine sizing");
+						tooltip.add(PlannerText.tr("report.provisional_help", "At least one row uses provisional/unknown machine sizing"));
 					}
 					drawTooltip(context, mouseX, mouseY, tooltip.toArray(String[]::new));
 					break;
@@ -747,23 +792,23 @@ public class ProductionPlannerScreen extends Screen {
 			totalMachines += row.machines;
 		}
 		StringBuilder out = new StringBuilder();
-		out.append("Production Planner Line Report - ")
+		out.append(PlannerText.tr("report.title", "Production Planner Line Report")) .append(" - ")
 			.append(ProductionPlanner.displayName(ProductionPlanner.getActiveIndex())).append('\n');
-		out.append("Display unit: /").append(displayTimeUnit.suffix).append('\n');
-		out.append("Total machines: ").append(totalMachines).append('\n');
-		out.append("Distinct setups: ").append(rows.size()).append('\n');
-		out.append("Recipe rows: ").append(line.getEntries().size()).append('\n');
+		out.append(PlannerText.tr("report.display_unit", "Display unit")).append(": /").append(displayTimeUnit.suffix).append('\n');
+		out.append(PlannerText.tr("report.total_machines_text", "Total machines")).append(": ").append(totalMachines).append('\n');
+		out.append(PlannerText.tr("report.distinct_setups", "Distinct setups")).append(": ").append(rows.size()).append('\n');
+		out.append(PlannerText.tr("report.recipe_rows_text", "Recipe rows")).append(": ").append(line.getEntries().size()).append('\n');
 		if (power.knownEntries > 0) {
-			out.append("Average power: ").append(formatSummaryPower(power.averageEUt));
+			out.append(PlannerText.tr("report.average_power", "Average power")).append(": ").append(formatSummaryPower(power.averageEUt));
 			if (power.unknownEntries > 0) {
-				out.append(" + unknown entries");
+				out.append(PlannerText.tr("report.unknown_entries", " + unknown entries"));
 			}
 			out.append('\n');
 		}
 
-		out.append("\nTARGETS\n");
+		out.append("\n").append(PlannerText.tr("report.targets", "TARGETS")).append('\n');
 		if (line.getTargets().isEmpty()) {
-			out.append("- none\n");
+			out.append("- ").append(PlannerText.tr("report.none", "none")).append('\n');
 		} else {
 			for (Target target : line.getTargets()) {
 				out.append("- ").append(target.getMode().label()).append(' ')
@@ -772,13 +817,13 @@ public class ProductionPlannerScreen extends Screen {
 			}
 		}
 
-		appendFlowReportSection(out, "EXTERNAL INPUTS", totals.externalInputs());
-		appendFlowReportSection(out, "INTERNAL FLOW", totals.internalFlow());
-		appendFlowReportSection(out, "NET OUTPUTS", totals.netOutputs());
+		appendFlowReportSection(out, PlannerText.tr("report.external_inputs_title", "EXTERNAL INPUTS"), totals.externalInputs());
+		appendFlowReportSection(out, PlannerText.tr("report.internal_flow_title", "INTERNAL FLOW"), totals.internalFlow());
+		appendFlowReportSection(out, PlannerText.tr("report.net_outputs_title", "NET OUTPUTS"), totals.netOutputs());
 
-		out.append("\nMACHINES\n");
+		out.append("\n").append(PlannerText.tr("report.machines_title", "MACHINES")).append('\n');
 		if (rows.isEmpty()) {
-			out.append("- none\n");
+			out.append("- ").append(PlannerText.tr("report.none", "none")).append('\n');
 		}
 		for (BuildSummaryRow row : rows) {
 			out.append("- ").append(row.machines).append("x ").append(row.machineName)
@@ -786,15 +831,15 @@ public class ProductionPlannerScreen extends Screen {
 				.append(" | PAR ").append(row.parallel)
 				.append(" | ").append(row.config);
 			if (row.unknownPower) {
-				out.append(" | Power ?");
+				out.append(" | ").append(PlannerText.tr("report.power_unknown_short", "Power ?"));
 			} else {
 				out.append(" | ").append(formatSummaryPower(row.averageEUt));
 			}
 			if (row.recipeRows > 1) {
-				out.append(" | ").append(row.recipeRows).append(" recipe rows");
+				out.append(" | ").append(row.recipeRows).append(" " + PlannerText.tr("report.recipe_rows", "recipe rows"));
 			}
 			if (row.provisional) {
-				out.append(" | provisional sizing");
+				out.append(" | ").append(PlannerText.tr("report.provisional", "provisional sizing"));
 			}
 			out.append('\n');
 		}
@@ -804,7 +849,7 @@ public class ProductionPlannerScreen extends Screen {
 	private void appendFlowReportSection(StringBuilder out, String title, List<Flow> flows) {
 		out.append('\n').append(title).append('\n');
 		if (flows.isEmpty()) {
-			out.append("- none\n");
+			out.append("- ").append(PlannerText.tr("report.none", "none")).append('\n');
 			return;
 		}
 		for (Flow flow : flows) {
@@ -829,17 +874,17 @@ public class ProductionPlannerScreen extends Screen {
 	private List<FlowSummaryRow> collectFlowSummary(Line line, PlanTotals totals) {
 		List<FlowSummaryRow> rows = new ArrayList<>();
 		for (Target target : line.getTargets()) {
-			rows.add(new FlowSummaryRow(target.getMode() == TargetMode.INPUT ? "IN TARGET" : "OUT TARGET", target.getStack(),
+			rows.add(new FlowSummaryRow(target.getMode() == TargetMode.INPUT ? PlannerText.tr("flow.in_target", "IN TARGET") : PlannerText.tr("flow.out_target", "OUT TARGET"), target.getStack(),
 				target.getRate(), false, target.getMode() == TargetMode.INPUT ? 0xFF66D9FF : 0xFFFFFF66));
 		}
 		for (Flow flow : totals.externalInputs()) {
-			rows.add(new FlowSummaryRow("EXTERNAL INPUT", flow.stack, flow.displayValue, flow.approximate, 0xFF66D9FF));
+			rows.add(new FlowSummaryRow(PlannerText.tr("flow.external_input", "EXTERNAL INPUT"), flow.stack, flow.displayValue, flow.approximate, 0xFF66D9FF));
 		}
 		for (Flow flow : totals.internalFlow()) {
-			rows.add(new FlowSummaryRow("INTERNAL FLOW", flow.stack, flow.displayValue, flow.approximate, 0xFFB8B8C0));
+			rows.add(new FlowSummaryRow(PlannerText.tr("flow.internal", "INTERNAL FLOW"), flow.stack, flow.displayValue, flow.approximate, 0xFFB8B8C0));
 		}
 		for (Flow flow : totals.netOutputs()) {
-			rows.add(new FlowSummaryRow("NET OUTPUT", flow.stack, flow.displayValue, flow.approximate, 0xFFB7E8C9));
+			rows.add(new FlowSummaryRow(PlannerText.tr("flow.net_output", "NET OUTPUT"), flow.stack, flow.displayValue, flow.approximate, 0xFFB7E8C9));
 		}
 		return rows;
 	}
@@ -858,7 +903,7 @@ public class ProductionPlannerScreen extends Screen {
 			String keyPrefix = profile.id();
 			if ("generic".equals(profile.id())) {
 				String category = recipe.getCategory().getName().getString();
-				machineName = "Generic GT - " + category;
+				machineName = PlannerText.tr("generic.prefix", "Generic GT - ") + category;
 				keyPrefix += ":" + category;
 			}
 			String config = buildSummaryConfig(entry);
@@ -894,7 +939,7 @@ public class ProductionPlannerScreen extends Screen {
 		List<String> parts = new ArrayList<>();
 		parts.add("OC " + entry.getOcDisplayLabel());
 		if (entry.getMachineProfile().coilEfficiencyPerTier() > 0.0D) {
-			parts.add("Coil " + entry.getCoilName());
+			parts.add(PlannerText.tr("config.coil", "Coil") + " " + entry.getCoilName());
 		}
 		for (MachineSettingSpec spec : ProductionPlanner.getMachineSettingSpecs(entry)) {
 			int value = entry.getMachineSettingValue(spec);
@@ -1306,14 +1351,23 @@ public class ProductionPlannerScreen extends Screen {
 		activeDropdownBounds = EMPTY;
 		machineOptionHitboxes = List.of();
 		voltageOptionHitboxes = List.of();
-		if (coilMenuOpen && machineConfigEntry != null) {
-			renderCoilDropdown(context, mouseX, mouseY);
-		} else if (machineConfigEntry != null) {
-			renderMachineConfig(context, mouseX, mouseY);
-		} else if (machineMenuEntry != null) {
-			renderMachineDropdown(context, mouseX, mouseY);
-		} else if (voltageMenuEntry != null || standardVoltageMenuOpen) {
-			renderVoltageDropdown(context, line, mouseX, mouseY);
+		if (!isDropdownOpen()) {
+			return;
+		}
+		context.push();
+		context.matrices().translate(0, 0, 950);
+		try {
+			if (coilMenuOpen && machineConfigEntry != null) {
+				renderCoilDropdown(context, mouseX, mouseY);
+			} else if (machineConfigEntry != null) {
+				renderMachineConfig(context, mouseX, mouseY);
+			} else if (machineMenuEntry != null) {
+				renderMachineDropdown(context, mouseX, mouseY);
+			} else if (voltageMenuEntry != null || standardVoltageMenuOpen) {
+				renderVoltageDropdown(context, line, mouseX, mouseY);
+			}
+		} finally {
+			context.pop();
 		}
 	}
 
@@ -1407,7 +1461,7 @@ public class ProductionPlannerScreen extends Screen {
 		context.fill(x, y, menuWidth, menuHeight, 0xFF111118);
 		drawBorder(context, activeDropdownBounds, 0xFFD0D0D8);
 		context.fill(x + 1, y + 1, menuWidth - 2, MENU_HEADER_HEIGHT - 1, 0xFF262630);
-		context.drawTextWithShadow(EmiPort.literal(standard ? "Standard voltage" : "Select voltage"), x + 7, y + 6, 0xFFFFFFFF);
+		context.drawTextWithShadow(EmiPort.literal(standard ? PlannerText.tr("voltage.standard", "Standard voltage") : PlannerText.tr("voltage.select", "Select voltage")), x + 7, y + 6, 0xFFFFFFFF);
 		List<VoltageOptionHitbox> hitboxes = new ArrayList<>();
 		int selectedTier = standard ? line.getStandardVoltageTier() : voltageMenuEntry.getVoltageTier();
 		for (int i = 0; i < visible; i++) {
@@ -1534,7 +1588,7 @@ public class ProductionPlannerScreen extends Screen {
 			if (selected) {
 				context.fill(row.x(), row.y(), 3, row.height(), 0xFF7FD8A1);
 			}
-			String suffix = tier == 0 ? " (base)" : " (+" + tier + ")";
+			String suffix = tier == 0 ? " (" + PlannerText.tr("coil.base", "base") + ")" : " (+" + tier + ")";
 			context.drawTextWithShadow(EmiPort.literal(ProductionPlanner.coilTierName(tier) + suffix), row.x() + 8, row.y() + 7, 0xFFFFFFFF);
 			hitboxes.add(new CoilOptionHitbox(row, tier));
 		}
@@ -1546,6 +1600,8 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private void closeDropdowns() {
+		toolsOpen = false;
+		toolsMenuBounds = EMPTY;
 		machineMenuEntry = null;
 		machineConfigEntry = null;
 		voltageMenuEntry = null;
@@ -1616,8 +1672,8 @@ public class ProductionPlannerScreen extends Screen {
 				if (option.bounds.contains(mouseX, mouseY)) {
 					double multiplier = Math.pow(Math.max(0.01D, 1.0D - machineConfigEntry.getMachineProfile().coilEfficiencyPerTier()), option.tier);
 					drawTooltip(context, mouseX, mouseY, ProductionPlanner.coilTierName(option.tier),
-						"Tier above Cupronickel: " + option.tier,
-						"Duration/EU multiplier: x" + formatExactRate(multiplier));
+						PlannerText.tr("coil.tier_above_cupronickel", "Tier above Cupronickel") + ": " + option.tier,
+						PlannerText.tr("machine.duration_eu_multiplier", "Duration/EU multiplier") + ": x" + formatExactRate(multiplier));
 					return;
 				}
 			}
@@ -1627,17 +1683,17 @@ public class ProductionPlannerScreen extends Screen {
 			MachineProfile profile = machineConfigEntry.getMachineProfile();
 			if (configCoilValue.contains(mouseX, mouseY)) {
 				double perTier = profile.coilEfficiencyPerTier() * 100.0D;
-				drawTooltip(context, mouseX, mouseY, "Coils: " + machineConfigEntry.getCoilName(),
-					"Tier above Cupronickel: " + machineConfigEntry.getCoilTier(),
-					"Detected bonus: -" + formatExactRate(perTier) + "% duration/EU per tier (multiplicative)",
-					"Current multiplier: x" + formatExactRate(machineConfigEntry.getCoilMultiplier()),
-					"Use +/- or mouse wheel");
+				drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.coils", "Coils") + ": " + machineConfigEntry.getCoilName(),
+					PlannerText.tr("coil.tier_above_cupronickel", "Tier above Cupronickel") + ": " + machineConfigEntry.getCoilTier(),
+					PlannerText.tr("machine.detected_bonus", "Detected bonus") + ": -" + formatExactRate(perTier) + "% " + PlannerText.tr("machine.duration_eu_per_tier", "duration/EU per tier (multiplicative)"),
+					PlannerText.tr("machine.current_multiplier", "Current multiplier") + ": x" + formatExactRate(machineConfigEntry.getCoilMultiplier()),
+					PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"));
 				return;
 			}
 			if (configParallelValue.contains(mouseX, mouseY)) {
 				drawTooltip(context, mouseX, mouseY, PlannerText.tr("machine.parallel_control", "Parallel Control") + ": " + machineConfigEntry.getParallel(),
 					PlannerText.tr("machine.parallel_help", "Parallel Control mirrors the row PAR setting"),
-					"Use +/- here or edit PAR in the recipe row");
+					PlannerText.tr("machine.parallel_edit_help", "Use +/- here or edit PAR in the recipe row"));
 				return;
 			}
 			for (MachineSettingControl control : configSpecialControls) {
@@ -1651,14 +1707,14 @@ public class ProductionPlannerScreen extends Screen {
 					lines.addAll(ProductionPlanner.getMachineSettingDetailLines(machineConfigEntry, spec));
 					double durationMultiplier = machineConfigEntry.getMachineSettingDurationMultiplier();
 					if (Math.abs(durationMultiplier - 1.0D) > EPSILON) {
-						lines.add("Current duration multiplier: x" + formatExactRate(durationMultiplier));
+						lines.add(PlannerText.tr("machine.current_duration_multiplier", "Current duration multiplier") + ": x" + formatExactRate(durationMultiplier));
 					}
 					double throughputMultiplier = machineConfigEntry.getMachineSettingThroughputMultiplier();
 					if (Math.abs(throughputMultiplier - 1.0D) > EPSILON) {
 						lines.add(PlannerText.tr("machine.throughput_multiplier", "Current throughput multiplier") + ": x"
 							+ formatExactRate(throughputMultiplier));
 					}
-					lines.add("Use +/- or mouse wheel");
+					lines.add(PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"));
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 					return;
 				}
@@ -1669,20 +1725,20 @@ public class ProductionPlannerScreen extends Screen {
 				if (option.favoriteBounds.contains(mouseX, mouseY)) {
 					boolean preferred = ProductionPlanner.isPreferredMachine(machineMenuEntry, option.profile.id());
 					drawTooltip(context, mouseX, mouseY,
-						preferred ? "Preferred machine" : "Set as preferred machine",
+						preferred ? PlannerText.tr("tooltip.preferred", "Preferred machine") : PlannerText.tr("tooltip.set_preferred", "Set as preferred machine"),
 						option.profile.displayName(),
-						"Preferred machines are selected automatically for new recipes in this recipe category",
-						preferred ? "Click to clear preference" : "Click to save preference");
+						PlannerText.tr("tooltip.preferred_help", "Preferred machines are selected automatically for new recipes in this recipe category"),
+						preferred ? PlannerText.tr("tooltip.clear_preferred", "Click to clear preference") : PlannerText.tr("tooltip.save_preferred", "Click to save preference"));
 					return;
 				}
 				if (option.bounds.contains(mouseX, mouseY)) {
 					MachineProfile profile = option.profile;
 					List<String> lines = new ArrayList<>();
 					lines.add(profile.displayName());
-					lines.add(profile.description());
+					lines.add(localizedProfileDescription(profile));
 					lines.addAll(profile.modifierDescriptions());
 					if (!profile.hasRuntimeModifiers()) {
-						lines.add("No runtime-specific modifiers detected; Generic GT math is used");
+						lines.add(PlannerText.tr("tooltip.no_runtime", "No runtime-specific modifiers detected; Generic GT math is used"));
 					}
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 					return;
@@ -1693,11 +1749,11 @@ public class ProductionPlannerScreen extends Screen {
 
 	private void renderTooltip(EmiDrawContext context, int mouseX, int mouseY) {
 		if (newLineButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "New production line", "Right-click a line tab to rename it");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.new_line", "New production line"), PlannerText.tr("tooltip.rename_line", "Right-click a line tab to rename it"));
 			return;
 		}
 		if (closeLineButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Delete active production line");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.delete_line", "Delete active production line"));
 			return;
 		}
 		Line activeLine = ProductionPlanner.getOrCreateActiveLine();
@@ -1707,77 +1763,77 @@ public class ProductionPlannerScreen extends Screen {
 			if (hitbox.icon.contains(mouseX, mouseY)) {
 				List<String> lines = new ArrayList<>();
 				lines.add(stack.getName().getString());
-				lines.add((target.getMode() == TargetMode.INPUT ? "Input goal: " : "Output target: ") + formatExactDisplayRate(target.getRate()) + unitSuffix(stack));
+				lines.add((target.getMode() == TargetMode.INPUT ? PlannerText.tr("tooltip.input_goal", "Input goal") + ": " : PlannerText.tr("tooltip.output_target", "Output target") + ": ") + formatExactDisplayRate(target.getRate()) + unitSuffix(stack));
 				if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
-					lines.add("Achievable: " + formatExactDisplayRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
+					lines.add(PlannerText.tr("tooltip.achievable", "Achievable") + ": " + formatExactDisplayRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
 				}
-				lines.add("Ctrl + left-click: toggle IN / OUT goal");
-				lines.add("Left-click: view recipes");
-				lines.add("Right-click: view uses");
+				lines.add(PlannerText.tr("tooltip.toggle_goal", "Ctrl + left-click: toggle IN / OUT goal"));
+				lines.add(PlannerText.tr("tooltip.view_recipes", "Left-click: view recipes"));
+				lines.add(PlannerText.tr("tooltip.view_uses", "Right-click: view uses"));
 				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				return;
 			}
 			if (hitbox.rate.contains(mouseX, mouseY)) {
 				List<String> lines = new ArrayList<>();
-				lines.add(target.getMode() == TargetMode.INPUT ? "Requested external input rate" : "Requested target output rate");
+				lines.add(target.getMode() == TargetMode.INPUT ? PlannerText.tr("tooltip.requested_input", "Requested external input rate") : PlannerText.tr("tooltip.requested_output", "Requested target output rate"));
 				lines.add(stack.getName().getString());
-				lines.add("Click to type an exact amount per " + displayTimeUnit.longLabel);
-				lines.add("Items use /" + displayTimeUnit.suffix + "; fluids use mB/" + displayTimeUnit.suffix);
+				lines.add(PlannerText.tr("tooltip.type_exact", "Click to type an exact amount per") + " " + localizedTimeUnitLong());
+				lines.add(PlannerText.tr("tooltip.items_fluids", "Items use /%s; fluids use mB/%s", displayTimeUnit.suffix, displayTimeUnit.suffix));
 				if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
-					lines.add("Achievable: " + formatExactDisplayRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
+					lines.add(PlannerText.tr("tooltip.achievable", "Achievable") + ": " + formatExactDisplayRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
 					if (!activeLine.getBottleneckName().isBlank()) {
-						lines.add("Bottleneck: " + activeLine.getBottleneckName());
+						lines.add(PlannerText.tr("tooltip.bottleneck", "Bottleneck") + ": " + activeLine.getBottleneckName());
 					}
 				}
 				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				return;
 			}
 			if (hitbox.remove.contains(mouseX, mouseY)) {
-				drawTooltip(context, mouseX, mouseY, "Remove target", stack.getName().getString());
+				drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.remove_target", "Remove target"), stack.getName().getString());
 				return;
 			}
 		}
 		if (activeLine.getTargets().isEmpty() && targetIconBounds.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "No balance goals", "Click recipe outputs to add OUT targets", "Ctrl + click inputs to add IN goals");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.no_goals", "No balance goals"), PlannerText.tr("tooltip.add_out_goal", "Click recipe outputs to add OUT targets"), PlannerText.tr("tooltip.add_in_goal", "Ctrl + click inputs to add IN goals"));
 			return;
 		}
 		if (balanceButton.contains(mouseX, mouseY)) {
 			List<String> lines = new ArrayList<>();
-			lines.add(activeLine.isBalanceEnabled() ? "Recalculate line balance" : "Auto-balance line");
-			lines.add("Matches internal produced/consumed resources");
-			lines.add("and solves every selected target at its requested rate");
-			lines.add("Fixed MACH/PAR values are treated as hard equipment constraints");
-			lines.add("A bottleneck is propagated through every recipe in the line");
+			lines.add(activeLine.isBalanceEnabled() ? PlannerText.tr("tooltip.recalculate", "Recalculate line balance") : PlannerText.tr("tooltip.autobalance", "Auto-balance line"));
+			lines.add(PlannerText.tr("tooltip.balance_match", "Matches internal produced/consumed resources"));
+			lines.add(PlannerText.tr("tooltip.balance_solve", "and solves every selected target at its requested rate"));
+			lines.add(PlannerText.tr("tooltip.balance_locks", "Fixed MACH/PAR values are treated as hard equipment constraints"));
+			lines.add(PlannerText.tr("tooltip.balance_bottleneck", "A bottleneck is propagated through every recipe in the line"));
 			if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
 				if (activeLine.getTargets().size() == 1) {
-					lines.add("Requested: " + formatExactDisplayRate(activeLine.getTargetRate()) + unitSuffix(activeLine.getTarget()));
-					lines.add("Achievable: " + formatExactDisplayRate(activeLine.getAchievableTargetRate()) + unitSuffix(activeLine.getTarget()));
+					lines.add(PlannerText.tr("tooltip.requested", "Requested") + ": " + formatExactDisplayRate(activeLine.getTargetRate()) + unitSuffix(activeLine.getTarget()));
+					lines.add(PlannerText.tr("tooltip.achievable", "Achievable") + ": " + formatExactDisplayRate(activeLine.getAchievableTargetRate()) + unitSuffix(activeLine.getTarget()));
 				} else {
-					lines.add("Targets: " + activeLine.getTargets().size());
+					lines.add(PlannerText.tr("tooltip.targets_count", "Targets") + ": " + activeLine.getTargets().size());
 					double percent = activeLine.getAchievableTargetRate() / Math.max(EPSILON, activeLine.getTargetRate()) * 100.0D;
-					lines.add("Achievable throughput: " + formatExactRate(percent) + "%");
+					lines.add(PlannerText.tr("tooltip.achievable_throughput", "Achievable throughput") + ": " + formatExactRate(percent) + "%");
 				}
 				if (!activeLine.getBottleneckName().isBlank()) {
-					lines.add("Bottleneck: " + activeLine.getBottleneckName());
+					lines.add(PlannerText.tr("tooltip.bottleneck", "Bottleneck") + ": " + activeLine.getBottleneckName());
 				}
 			}
 			drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 			return;
 		}
 		if (clearTargetButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Clear all targets and leave balance mode");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.clear_targets", "Clear all targets and leave balance mode"));
 			return;
 		}
 		if (standardVoltageBounds.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Standard Voltage for machines: " + activeLine.getStandardVoltageName(),
-				"New recipes inherit this voltage automatically",
-				"Left-click: choose a tier", "Right-click: Recipe minimum",
-				"Rows with an individual VOLT override are preserved");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.standard_voltage", "Standard Voltage for machines") + ": " + activeLine.getStandardVoltageName(),
+				PlannerText.tr("tooltip.voltage_inherit", "New recipes inherit this voltage automatically"),
+				PlannerText.tr("tooltip.left_choose_tier", "Left-click: choose a tier"), PlannerText.tr("tooltip.right_recipe_min", "Right-click: Recipe minimum"),
+				PlannerText.tr("tooltip.voltage_overrides_preserved", "Rows with an individual VOLT override are preserved"));
 			return;
 		}
 		if (applyStandardVoltageBounds.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Apply Standard Voltage to every recipe in this Line",
-				"Clears individual VOLT overrides and makes every row inherit the Line setting");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.apply_voltage", "Apply Standard Voltage to every recipe in this Line"),
+				PlannerText.tr("tooltip.apply_voltage2", "Clears individual VOLT overrides and makes every row inherit the Line setting"));
 			return;
 		}
 		if (groupsButton.contains(mouseX, mouseY)) {
@@ -1786,31 +1842,36 @@ public class ProductionPlannerScreen extends Screen {
 				PlannerText.tr("groups.tooltip2", "MATCH keeps a resource inside the group; IGNORE passes it to the parent"));
 			return;
 		}
+		if (toolsButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tools.tooltip", "Planner tools"),
+				PlannerText.tr("tools.tooltip_help", "Export / import Line, display time unit and Line Report"));
+			return;
+		}
 		if (exportLineButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Export current Production Line",
-				"Copies the complete Line JSON to the clipboard",
-				"and writes a .json file to config/emi-production-planner-exports",
-				"Includes recipes, groups, targets, MACH/PAR/VOLT and Machine CFG");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.export", "Export current Production Line"),
+				PlannerText.tr("tooltip.export2", "Copies the complete Line JSON to the clipboard"),
+				PlannerText.tr("tooltip.export3", "and writes a .json file to config/emi-production-planner-exports"),
+				PlannerText.tr("tooltip.export4", "Includes recipes, groups, targets, MACH/PAR/VOLT and Machine CFG"));
 			return;
 		}
 		if (importLineButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Import Production Line from clipboard",
-				"Copy exported JSON, then click IMPORT",
-				"The imported plan is created as a new Line",
-				"Existing Lines are not overwritten");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.import", "Import Production Line from clipboard"),
+				PlannerText.tr("tooltip.import2", "Copy exported JSON, then click IMPORT"),
+				PlannerText.tr("tooltip.import3", "The imported plan is created as a new Line"),
+				PlannerText.tr("tooltip.import4", "Existing Lines are not overwritten"));
 			return;
 		}
 		if (timeUnitButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Display time unit: /" + displayTimeUnit.suffix,
-				"Cycles /s -> /min -> /h",
-				"Only the UI unit changes; Planner math remains per second");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.time_unit", "Display time unit") + ": /" + displayTimeUnit.suffix,
+				PlannerText.tr("tooltip.time_cycle", "Cycles /s -> /min -> /h"),
+				PlannerText.tr("tooltip.time_math", "Only the UI unit changes; Planner math remains per second"));
 			return;
 		}
 		if (buildSummaryButton.contains(mouseX, mouseY)) {
-			drawTooltip(context, mouseX, mouseY, "Build Summary",
-				"Shows how many machines to build for the current Line",
-				"Groups identical VOLT / PAR / OC / Machine CFG setups",
-				"Uses the current MACH values; BALANCE sizes them automatically");
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.build_summary", "Build Summary"),
+				PlannerText.tr("tooltip.build_summary2", "Shows how many machines to build for the current Line"),
+				PlannerText.tr("tooltip.build_summary3", "Groups identical VOLT / PAR / OC / Machine CFG setups"),
+				PlannerText.tr("tooltip.build_summary4", "Uses the current MACH values; BALANCE sizes them automatically"));
 			return;
 		}
 		if (SHOW_GTO_AUDIT && gtoAuditButton.contains(mouseX, mouseY)) {
@@ -1823,21 +1884,21 @@ public class ProductionPlannerScreen extends Screen {
 			PowerSummary power = calculatePower(activeLine);
 			List<String> lines = new ArrayList<>();
 			if (power.knownEntries > 0) {
-				lines.add("Average power: " + formatExactRate(power.averageEUt) + " EU/t");
-				lines.add("Calculated from current recipe rates and selected machine profiles");
+				lines.add(PlannerText.tr("tooltip.average_power", "Average power") + ": " + formatExactRate(power.averageEUt) + " EU/t");
+				lines.add(PlannerText.tr("tooltip.power_calc", "Calculated from current recipe rates and selected machine profiles"));
 			} else {
-				lines.add("Power unavailable for this line");
+				lines.add(PlannerText.tr("tooltip.power_unavailable", "Power unavailable for this line"));
 			}
 			if (power.unknownEntries > 0) {
-				lines.add(power.unknownEntries + " active recipe(s) have no detected GT EU/t");
+				lines.add(power.unknownEntries + " " + PlannerText.tr("tooltip.power_missing", "active recipe(s) have no detected GT EU/t"));
 			}
-			lines.add("Profiles without exact modifiers currently fall back to generic GT math");
+			lines.add(PlannerText.tr("tooltip.generic_fallback", "Profiles without exact modifiers currently fall back to generic GT math"));
 			drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 			return;
 		}
 		for (TabHitbox tab : tabHitboxes) {
 			if (tab.bounds.contains(mouseX, mouseY)) {
-				drawTooltip(context, mouseX, mouseY, ProductionPlanner.displayName(tab.index), "Right-click to rename");
+				drawTooltip(context, mouseX, mouseY, ProductionPlanner.displayName(tab.index), PlannerText.tr("tooltip.right_rename", "Right-click to rename"));
 				return;
 			}
 		}
@@ -1845,17 +1906,17 @@ public class ProductionPlannerScreen extends Screen {
 			Entry entry = row.entry;
 			if (row.mode.contains(mouseX, mouseY)) {
 				if (activeLine.isBalanceEnabled()) {
-					drawTooltip(context, mouseX, mouseY, "BAL rate", "Rate is controlled by Line Auto-Balance",
-						"Click to leave balance mode and restore AUTO/MAN rates");
+					drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.rate_bal", "BAL rate"), PlannerText.tr("tooltip.rate_bal_help", "Rate is controlled by Line Auto-Balance"),
+						PlannerText.tr("tooltip.rate_bal_exit", "Click to leave balance mode and restore AUTO/MAN rates"));
 				} else if (entry.isAutomatic()) {
-					drawTooltip(context, mouseX, mouseY, "AUTO rate", "Displayed as crafts/" + displayTimeUnit.suffix + "; internally calculated per second",
-						"Click to switch to manual rate");
+					drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.rate_auto", "AUTO rate"), PlannerText.tr("tooltip.rate_auto_help", "Displayed as crafts/%s; internally calculated per second", displayTimeUnit.suffix),
+						PlannerText.tr("tooltip.rate_to_manual", "Click to switch to manual rate"));
 				} else if (entry.getDurationTicks() > 0.0D) {
-					drawTooltip(context, mouseX, mouseY, "MAN rate", "Direct crafts/" + displayTimeUnit.suffix + " control",
-						"Click to switch to automatic machine calculation");
+					drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.rate_manual", "MAN rate"), PlannerText.tr("tooltip.rate_manual_help", "Direct crafts/%s control", displayTimeUnit.suffix),
+						PlannerText.tr("tooltip.rate_to_auto", "Click to switch to automatic machine calculation"));
 				} else {
-					drawTooltip(context, mouseX, mouseY, "MAN rate", "Recipe duration was not detected",
-						"Right-click Duration and enter seconds before enabling AUTO");
+					drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.rate_manual", "MAN rate"), PlannerText.tr("tooltip.duration_missing", "Recipe duration was not detected"),
+						PlannerText.tr("tooltip.duration_set_first", "Right-click Duration and enter seconds before enabling AUTO"));
 				}
 				return;
 			}
@@ -1863,28 +1924,28 @@ public class ProductionPlannerScreen extends Screen {
 				MachineProfile profile = entry.getMachineProfile();
 				List<MachineProfile> compatible = ProductionPlanner.getCompatibleMachineProfiles(entry);
 				List<String> lines = new ArrayList<>();
-				lines.add("Machine: " + profile.displayName());
-				lines.add(profile.description());
+				lines.add(PlannerText.tr("tooltip.machine", "Machine") + ": " + profile.displayName());
+				lines.add(localizedProfileDescription(profile));
 				lines.add(profile.parallelDescription());
-				lines.add(profile.allowsPerfectOc() ? "Perfect OC: selectable" : "Perfect OC: unavailable for this profile");
+				lines.add(profile.allowsPerfectOc() ? PlannerText.tr("tooltip.perfect_selectable", "Perfect OC: selectable") : PlannerText.tr("tooltip.perfect_unavailable", "Perfect OC: unavailable for this profile"));
 				lines.addAll(profile.modifierDescriptions());
 				if (profile.coilEfficiencyPerTier() > 0.0D) {
-					lines.add("Selected coils: " + entry.getCoilName() + " (x" + formatExactRate(entry.getCoilMultiplier()) + ")");
+					lines.add(PlannerText.tr("tooltip.selected_coils", "Selected coils") + ": " + entry.getCoilName() + " (x" + formatExactRate(entry.getCoilMultiplier()) + ")");
 				}
 				if (profile.parallelControl()) {
-					lines.add("Parallel Control setting: " + entry.getParallel());
+					lines.add(PlannerText.tr("tooltip.parallel_setting", "Parallel Control setting") + ": " + entry.getParallel());
 				}
-				lines.add("Left-click: open machine selector");
-				lines.add("Right-click: Generic GT");
-				lines.add("Compatible profiles: " + compatible.size());
+				lines.add(PlannerText.tr("tooltip.open_machine", "Left-click: open machine selector"));
+				lines.add(PlannerText.tr("tooltip.generic_gt", "Right-click: Generic GT"));
+				lines.add(PlannerText.tr("tooltip.compatible_profiles", "Compatible profiles") + ": " + compatible.size());
 				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				return;
 			}
 			if (row.machineConfig.contains(mouseX, mouseY) && entry.getMachineProfile().hasConfigurableSettings()) {
 				List<String> lines = new ArrayList<>();
-				lines.add("Machine-specific settings");
+				lines.add(PlannerText.tr("tooltip.machine_settings", "Machine-specific settings"));
 				if (entry.getMachineProfile().coilEfficiencyPerTier() > 0.0D) {
-					lines.add("Coils: " + entry.getCoilName() + " (tier +" + entry.getCoilTier() + ")");
+					lines.add(PlannerText.tr("tooltip.coils", "Coils") + ": " + entry.getCoilName() + " (tier +" + entry.getCoilTier() + ")");
 				}
 				if (entry.getMachineProfile().parallelControl()) {
 					lines.add(PlannerText.tr("machine.parallel_control", "Parallel Control") + ": " + entry.getParallel());
@@ -1892,34 +1953,34 @@ public class ProductionPlannerScreen extends Screen {
 				for (MachineSettingSpec spec : ProductionPlanner.getMachineSettingSpecs(entry)) {
 					lines.add(PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ": " + entry.getMachineSettingDisplayValue(spec));
 				}
-				lines.add("Click to configure this machine");
+				lines.add(PlannerText.tr("tooltip.configure_machine", "Click to configure this machine"));
 				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				return;
 			}
 			if (row.machinesLock.contains(mouseX, mouseY)) {
 				drawTooltip(context, mouseX, mouseY,
-					"Fixed machine count: " + (entry.isMachinesFixed() ? "ON" : "OFF"),
-					"Left-click to toggle",
-					entry.isMachinesFixed() ? "BALANCE will keep MACH at " + entry.getMachines() : "BALANCE may resize MACH automatically");
+					PlannerText.tr("tooltip.fixed_mach", "Fixed machine count") + ": " + (entry.isMachinesFixed() ? PlannerText.tr("common.on", "ON") : PlannerText.tr("common.off", "OFF")),
+					PlannerText.tr("tooltip.left_toggle", "Left-click to toggle"),
+					entry.isMachinesFixed() ? PlannerText.tr("tooltip.balance_keep_mach", "BALANCE will keep MACH at %s", entry.getMachines()) : PlannerText.tr("tooltip.balance_resize_mach", "BALANCE may resize MACH automatically"));
 				return;
 			}
 			if (row.parallelLock.contains(mouseX, mouseY)) {
 				drawTooltip(context, mouseX, mouseY,
-					"Fixed parallel: " + (entry.isParallelFixed() ? "ON" : "OFF"),
-					"Left-click to toggle",
-					entry.isParallelFixed() ? "BALANCE will keep PAR at " + entry.getParallel() : "BALANCE may resize PAR automatically");
+					PlannerText.tr("tooltip.fixed_par", "Fixed parallel") + ": " + (entry.isParallelFixed() ? PlannerText.tr("common.on", "ON") : PlannerText.tr("common.off", "OFF")),
+					PlannerText.tr("tooltip.left_toggle", "Left-click to toggle"),
+					entry.isParallelFixed() ? PlannerText.tr("tooltip.balance_keep_par", "BALANCE will keep PAR at %s", entry.getParallel()) : PlannerText.tr("tooltip.balance_resize_par", "BALANCE may resize PAR automatically"));
 				return;
 			}
 			if (row.machineArea().contains(mouseX, mouseY)) {
 				if (activeLine.isBalanceEnabled()) {
 					List<String> lines = new ArrayList<>();
-					lines.add("Machines: " + entry.getMachines());
+					lines.add(PlannerText.tr("tooltip.machines", "Machines") + ": " + entry.getMachines());
 					addMachineSizingTooltip(lines, entry, activeLine.getEffectiveRate(entry));
-					lines.add(entry.isMachinesFixed() ? "MACH is fixed for BALANCE" : "Use the F button to fix MACH during BALANCE");
+					lines.add(entry.isMachinesFixed() ? PlannerText.tr("tooltip.mach_fixed", "MACH is fixed for BALANCE") : PlannerText.tr("tooltip.mach_fix_help", "Use the F button to fix MACH during BALANCE"));
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				} else {
-					drawTooltip(context, mouseX, mouseY, "Machines: " + entry.getMachines(),
-						"Use +/- or mouse wheel", "Shift changes by 10", "Right-click the number to type an exact value");
+					drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.machines", "Machines") + ": " + entry.getMachines(),
+						PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"), PlannerText.tr("tooltip.shift_10", "Shift changes by 10"), PlannerText.tr("tooltip.right_exact", "Right-click the number to type an exact value"));
 				}
 				return;
 			}
@@ -1927,84 +1988,84 @@ public class ProductionPlannerScreen extends Screen {
 				int configuredMaxParallel = entry.getConfiguredMaxParallel();
 				if (activeLine.isBalanceEnabled()) {
 					List<String> lines = new ArrayList<>();
-					lines.add("Parallel per machine: " + entry.getParallel());
+					lines.add(PlannerText.tr("tooltip.parallel_per_machine", "Parallel per machine") + ": " + entry.getParallel());
 					if (configuredMaxParallel > 0) {
-						lines.add("Configured max parallel: " + configuredMaxParallel);
+						lines.add(PlannerText.tr("tooltip.configured_max_parallel", "Configured max parallel") + ": " + configuredMaxParallel);
 					}
 					addMachineSizingTooltip(lines, entry, activeLine.getEffectiveRate(entry));
-					lines.add(entry.isParallelFixed() ? "PAR is fixed for BALANCE" : "Use the F button to fix PAR during BALANCE");
+					lines.add(entry.isParallelFixed() ? PlannerText.tr("tooltip.par_fixed", "PAR is fixed for BALANCE") : PlannerText.tr("tooltip.par_fix_help", "Use the F button to fix PAR during BALANCE"));
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				} else if (configuredMaxParallel > 0) {
-					drawTooltip(context, mouseX, mouseY, "Parallel per machine: " + entry.getParallel(),
-						"Configured max parallel: " + configuredMaxParallel, "Use +/- or mouse wheel",
-						"Shift changes by 10", "Right-click the number to type an exact value");
+					drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.parallel_per_machine", "Parallel per machine") + ": " + entry.getParallel(),
+						PlannerText.tr("tooltip.configured_max_parallel", "Configured max parallel") + ": " + configuredMaxParallel, PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"),
+						PlannerText.tr("tooltip.shift_10", "Shift changes by 10"), PlannerText.tr("tooltip.right_exact", "Right-click the number to type an exact value"));
 				} else {
-					drawTooltip(context, mouseX, mouseY, "Parallel per machine: " + entry.getParallel(),
-						"Use +/- or mouse wheel", "Shift changes by 10", "Right-click the number to type an exact value");
+					drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.parallel_per_machine", "Parallel per machine") + ": " + entry.getParallel(),
+						PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"), PlannerText.tr("tooltip.shift_10", "Shift changes by 10"), PlannerText.tr("tooltip.right_exact", "Right-click the number to type an exact value"));
 				}
 				return;
 			}
 			if (row.voltage.contains(mouseX, mouseY)) {
 				if (entry.getRecipeEUt() > 0L) {
 					List<String> lines = new ArrayList<>();
-					lines.add("Machine voltage: " + entry.getVoltageName() + " (" + entry.getSelectedVoltage() + " V)");
-					lines.add("Recipe: " + entry.getRecipeEUt() + " EU/t, tier " + entry.getRecipeTier());
-					lines.add("Overclocks: " + entry.getOverclockCount());
+					lines.add(PlannerText.tr("tooltip.machine_voltage", "Machine voltage") + ": " + entry.getVoltageName() + " (" + entry.getSelectedVoltage() + " V)");
+					lines.add(PlannerText.tr("tooltip.recipe", "Recipe") + ": " + entry.getRecipeEUt() + " EU/t, tier " + entry.getRecipeTier());
+					lines.add(PlannerText.tr("tooltip.overclocks", "Overclocks") + ": " + entry.getOverclockCount());
 					if (entry.isVoltageFixedByMachine()) {
-						lines.add("VOLT: fixed by selected machine profile");
+						lines.add(PlannerText.tr("tooltip.volt_fixed", "VOLT: fixed by selected machine profile"));
 					} else {
-						lines.add(entry.isVoltageOverridden() ? "VOLT: individual row override" : "VOLT: inherited from Line Standard");
-						lines.add("Left-click: open voltage selector");
-						lines.add("Right-click: reset to Line Standard");
+						lines.add(entry.isVoltageOverridden() ? PlannerText.tr("tooltip.volt_override", "VOLT: individual row override") : PlannerText.tr("tooltip.volt_inherited", "VOLT: inherited from Line Standard"));
+						lines.add(PlannerText.tr("tooltip.open_voltage", "Left-click: open voltage selector"));
+						lines.add(PlannerText.tr("tooltip.reset_voltage", "Right-click: reset to Line Standard"));
 					}
-					lines.add("Machine profile: " + entry.getMachineProfileName());
+					lines.add(PlannerText.tr("tooltip.machine_profile", "Machine profile") + ": " + entry.getMachineProfileName());
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				} else {
-					drawTooltip(context, mouseX, mouseY, "GT EU/t was not detected for this recipe",
-						"Voltage overclocking is disabled for this row");
+					drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.no_gt_eut", "GT EU/t was not detected for this recipe"),
+						PlannerText.tr("tooltip.voltage_oc_disabled", "Voltage overclocking is disabled for this row"));
 				}
 				return;
 			}
 			if (row.oc.contains(mouseX, mouseY)) {
 				String behavior = switch (entry.getOcMode()) {
-					case NONE -> "No voltage overclocking";
+					case NONE -> PlannerText.tr("tooltip.oc_none", "No voltage overclocking");
 					case STANDARD -> Math.abs(entry.getOcDurationMultiplierPerStep() - 0.5D) > EPSILON
-						? "Each OC: 4x EU/t, x" + formatExactRate(entry.getOcDurationMultiplierPerStep()) + " duration"
-						: "Each OC: 4x EU/t, 2x speed";
-					case PERFECT -> "Each OC: 4x EU/t, 4x speed";
+						? PlannerText.tr("tooltip.oc_4x_duration", "Each OC: 4x EU/t, x%s duration", formatExactRate(entry.getOcDurationMultiplierPerStep()))
+						: PlannerText.tr("tooltip.oc_2x", "Each OC: 4x EU/t, 2x speed");
+					case PERFECT -> PlannerText.tr("tooltip.oc_4x", "Each OC: 4x EU/t, 4x speed");
 				};
-				drawTooltip(context, mouseX, mouseY, "OC mode: " + entry.getOcDisplayLabel(), behavior,
-					"Left-click: next mode", "Right-click: previous mode",
-					entry.getMachineProfile().allowsPerfectOc() ? "Perfect OC is allowed by this profile" : "This machine profile does not allow Perfect OC");
+				drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.oc_mode", "OC mode") + ": " + entry.getOcDisplayLabel(), behavior,
+					PlannerText.tr("tooltip.oc_next", "Left-click: next mode"), PlannerText.tr("tooltip.oc_prev", "Right-click: previous mode"),
+					entry.getMachineProfile().allowsPerfectOc() ? PlannerText.tr("tooltip.perfect_allowed", "Perfect OC is allowed by this profile") : PlannerText.tr("tooltip.perfect_denied", "This machine profile does not allow Perfect OC"));
 				return;
 			}
 			if (row.duration.contains(mouseX, mouseY)) {
 				List<String> lines = new ArrayList<>();
 				double baseSeconds = entry.getDurationSeconds();
 				double processedSeconds = entry.getProcessedDurationSeconds();
-				lines.add(baseSeconds > 0.0D ? "Base duration: " + formatExactRate(baseSeconds) + " s" : "Base duration: not detected");
+				lines.add(baseSeconds > 0.0D ? PlannerText.tr("tooltip.base_duration", "Base duration") + ": " + formatExactRate(baseSeconds) + " s" : PlannerText.tr("tooltip.base_duration", "Base duration") + ": " + PlannerText.tr("tooltip.not_detected", "not detected"));
 				if (processedSeconds > 0.0D && entry.getOverclockCount() > 0) {
-					lines.add("After " + entry.getOverclockCount() + " OC: " + formatExactRate(processedSeconds) + " s");
+					lines.add(PlannerText.tr("tooltip.after_oc", "After %s OC", entry.getOverclockCount()) + ": " + formatExactRate(processedSeconds) + " s");
 				}
 				if (entry.getProcessedEUt() > 0L) {
-					lines.add("Processed power: " + entry.getProcessedEUt() + " EU/t");
+					lines.add(PlannerText.tr("tooltip.processed_power", "Processed power") + ": " + entry.getProcessedEUt() + " EU/t");
 				}
 				if (entry.getMachineProfile().coilEfficiencyPerTier() > 0.0D) {
-					lines.add("Coils: " + entry.getCoilName() + " -> x" + formatExactRate(entry.getCoilMultiplier()) + " duration/EU");
+					lines.add(PlannerText.tr("tooltip.coils", "Coils") + ": " + entry.getCoilName() + " -> x" + formatExactRate(entry.getCoilMultiplier()) + " duration/EU");
 				}
 				if (Math.abs(entry.getMachineSettingDurationMultiplier() - 1.0D) > EPSILON) {
-					lines.add("Machine settings -> x" + formatExactRate(entry.getMachineSettingDurationMultiplier()) + " duration");
+					lines.add(PlannerText.tr("tooltip.machine_settings_duration", "Machine settings -> x%s duration", formatExactRate(entry.getMachineSettingDurationMultiplier())));
 				}
 				if (Math.abs(entry.getMachineSettingThroughputMultiplier() - 1.0D) > EPSILON) {
-					lines.add("Machine settings -> x" + formatExactRate(entry.getMachineSettingThroughputMultiplier()) + " throughput");
+					lines.add(PlannerText.tr("tooltip.machine_settings_throughput", "Machine settings -> x%s throughput", formatExactRate(entry.getMachineSettingThroughputMultiplier())));
 				}
 				if (entry.isDurationOverridden()) {
 					double detected = entry.getDetectedDurationSeconds();
-					lines.add(detected > 0.0D ? "Recipe duration: " + formatExactRate(detected) + " s" : "Recipe duration unavailable");
-					lines.add("* Manual base-duration override is active");
+					lines.add(detected > 0.0D ? PlannerText.tr("tooltip.recipe_duration", "Recipe duration") + ": " + formatExactRate(detected) + " s" : PlannerText.tr("tooltip.recipe_duration_unavailable", "Recipe duration unavailable"));
+					lines.add(PlannerText.tr("tooltip.manual_duration", "* Manual base-duration override is active"));
 				}
-				lines.add("Right-click to type base duration in seconds");
-				lines.add("Middle-click to reset to recipe duration");
+				lines.add(PlannerText.tr("tooltip.right_duration", "Right-click to type base duration in seconds"));
+				lines.add(PlannerText.tr("tooltip.middle_reset_duration", "Middle-click to reset to recipe duration"));
 				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				return;
 			}
@@ -2012,35 +2073,46 @@ public class ProductionPlannerScreen extends Screen {
 				if (activeLine.isBalanceEnabled()) {
 					double balancedRate = activeLine.getEffectiveRate(entry);
 					List<String> lines = new ArrayList<>();
-					lines.add("Balanced crafts/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(balancedRate));
+					lines.add(PlannerText.tr("tooltip.balanced_crafts", "Balanced crafts") + "/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(balancedRate));
+					if (isCompactLayout() && entry.getProcessedDurationSeconds() > 0.0D) {
+						lines.add(PlannerText.tr("tooltip.duration", "Duration") + ": " + formatExactRate(entry.getProcessedDurationSeconds()) + " s");
+					}
 					addMachineSizingTooltip(lines, entry, balancedRate);
 					if (entry.getRecipeEUt() > 0L) {
-						lines.add("Average power: " + formatExactRate(entry.getAveragePowerEUt(balancedRate)) + " EU/t");
+						lines.add(PlannerText.tr("tooltip.average_power", "Average power") + ": " + formatExactRate(entry.getAveragePowerEUt(balancedRate)) + " EU/t");
 					}
-					lines.add("Resource flow stays at the exact BAL rate; spare machine capacity is not treated as extra output");
-					lines.add("Click BAL mode to return to AUTO/MAN");
+					lines.add(PlannerText.tr("tooltip.resource_exact", "Resource flow stays at the exact BAL rate; spare machine capacity is not treated as extra output"));
+					lines.add(PlannerText.tr("tooltip.return_auto_man", "Click BAL mode to return to AUTO/MAN"));
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				} else if (entry.isAutomatic()) {
 					double seconds = entry.getProcessedDurationSeconds();
-					drawTooltip(context, mouseX, mouseY, "Crafts/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(entry.getEffectiveRate()),
-						entry.getMachines() + " machines x " + entry.getParallel() + " parallel / " + formatExactRate(seconds) + " s",
-						entry.getOverclockCount() + " overclock(s), " + entry.getProcessedEUt() + " EU/t",
-						"Switch to MAN to edit the displayed rate directly");
+					if (isCompactLayout()) {
+						drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.crafts", "Crafts") + "/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(entry.getEffectiveRate()),
+							PlannerText.tr("tooltip.machines_parallel", "%s machines x %s parallel / %s s", entry.getMachines(), entry.getParallel(), formatExactRate(seconds)),
+							PlannerText.tr("tooltip.overclocks_power", "%s overclock(s), %s EU/t", entry.getOverclockCount(), entry.getProcessedEUt()),
+							PlannerText.tr("tooltip.edit_duration", "Right-click: edit base duration"), PlannerText.tr("tooltip.reset_duration", "Middle-click: reset duration override"),
+							PlannerText.tr("tooltip.switch_man", "Switch to MAN to edit the displayed rate directly"));
+					} else {
+						drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.crafts", "Crafts") + "/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(entry.getEffectiveRate()),
+							PlannerText.tr("tooltip.machines_parallel", "%s machines x %s parallel / %s s", entry.getMachines(), entry.getParallel(), formatExactRate(seconds)),
+							PlannerText.tr("tooltip.overclocks_power", "%s overclock(s), %s EU/t", entry.getOverclockCount(), entry.getProcessedEUt()),
+							PlannerText.tr("tooltip.switch_man", "Switch to MAN to edit the displayed rate directly"));
+					}
 				} else {
-					drawTooltip(context, mouseX, mouseY, "Manual crafts/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(entry.getRate()),
-						"Mouse wheel: 1", "Shift: 10   Ctrl: 0.1   Alt: 0.01", "Right-click to type an exact value");
+					drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.manual_crafts", "Manual crafts") + "/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(entry.getRate()),
+						PlannerText.tr("tooltip.mouse_wheel", "Mouse wheel: 1"), PlannerText.tr("tooltip.modifiers", "Shift: 10   Ctrl: 0.1   Alt: 0.01"), "Right-click to type an exact value");
 				}
 				return;
 			}
 			if (row.replace.contains(mouseX, mouseY)) {
-				drawTooltip(context, mouseX, mouseY, "Replace recipe",
-					"Opens alternative recipes for this row's primary output",
-					"Choose a recipe and press the Planner button to replace this row",
-					"Group, MACH/PAR/VOLT and compatible machine CFG are preserved");
+				drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.replace", "Replace recipe"),
+					PlannerText.tr("tooltip.replace2", "Opens alternative recipes for this row's primary output"),
+					PlannerText.tr("tooltip.replace3", "Choose a recipe and press the Planner button to replace this row"),
+					PlannerText.tr("tooltip.replace4", "Group, MACH/PAR/VOLT and compatible machine CFG are preserved"));
 				return;
 			}
 			if (row.remove.contains(mouseX, mouseY)) {
-				drawTooltip(context, mouseX, mouseY, "Remove recipe from line");
+				drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.remove_recipe", "Remove recipe from line"));
 				return;
 			}
 		}
@@ -2050,31 +2122,31 @@ public class ProductionPlannerScreen extends Screen {
 				List<TooltipComponent> tooltip = new ArrayList<>();
 				tooltip.add(TooltipComponent.of(EmiPort.ordered(flow.stack.getName())));
 				if (flow.input > EPSILON || flow.output > EPSILON || flow.internal > EPSILON || flow.external > EPSILON) {
-					tooltip.add(line("Total consumed: " + formatExactDisplayRate(flow.input) + unitSuffix(flow.stack)));
-					tooltip.add(line("Total produced: " + formatExactDisplayRate(flow.output) + unitSuffix(flow.stack)));
-					tooltip.add(line("Internal flow: " + formatExactDisplayRate(flow.internal) + unitSuffix(flow.stack)));
-					tooltip.add(line("External input: " + formatExactDisplayRate(flow.external) + unitSuffix(flow.stack)));
-					tooltip.add(line("Net output: " + formatExactDisplayRate(Math.max(0, flow.output - flow.input)) + unitSuffix(flow.stack)));
+					tooltip.add(line(PlannerText.tr("flow.total_consumed", "Total consumed") + ": " + formatExactDisplayRate(flow.input) + unitSuffix(flow.stack)));
+					tooltip.add(line(PlannerText.tr("flow.total_produced", "Total produced") + ": " + formatExactDisplayRate(flow.output) + unitSuffix(flow.stack)));
+					tooltip.add(line(PlannerText.tr("flow.internal_flow", "Internal flow") + ": " + formatExactDisplayRate(flow.internal) + unitSuffix(flow.stack)));
+					tooltip.add(line(PlannerText.tr("flow.external_input_label", "External input") + ": " + formatExactDisplayRate(flow.external) + unitSuffix(flow.stack)));
+					tooltip.add(line(PlannerText.tr("flow.net_output_label", "Net output") + ": " + formatExactDisplayRate(Math.max(0, flow.output - flow.input)) + unitSuffix(flow.stack)));
 				} else {
-					tooltip.add(line("Rate: " + formatExactDisplayRate(flow.displayValue) + unitSuffix(flow.stack)));
+					tooltip.add(line(PlannerText.tr("flow.rate", "Rate") + ": " + formatExactDisplayRate(flow.displayValue) + unitSuffix(flow.stack)));
 				}
 				if (flow.approximate) {
-					tooltip.add(line("Expected value: chance or alternative ingredient involved"));
+					tooltip.add(line(PlannerText.tr("flow.expected", "Expected value: chance or alternative ingredient involved")));
 				}
 				if (hitbox.goalMode == TargetMode.OUTPUT) {
 					tooltip.add(line(isTarget(ProductionPlanner.getOrCreateActiveLine(), flow.stack)
-						? "Already selected as a Line goal"
-						: "Left-click: add as OUT Auto-Balance target"));
-					tooltip.add(line("Shift + left-click: view recipes"));
+						? PlannerText.tr("flow.already_goal", "Already selected as a Line goal")
+						: PlannerText.tr("flow.add_out", "Left-click: add as OUT Auto-Balance target")));
+					tooltip.add(line(PlannerText.tr("flow.shift_recipes", "Shift + left-click: view recipes")));
 				} else if (hitbox.goalMode == TargetMode.INPUT) {
 					tooltip.add(line(isTarget(ProductionPlanner.getOrCreateActiveLine(), flow.stack)
-						? "Already selected as a Line goal"
-						: "Ctrl + left-click: add as IN input goal"));
-					tooltip.add(line("Left-click: view recipes"));
+						? PlannerText.tr("flow.already_goal", "Already selected as a Line goal")
+						: PlannerText.tr("flow.add_in", "Ctrl + left-click: add as IN input goal")));
+					tooltip.add(line(PlannerText.tr("tooltip.view_recipes", "Left-click: view recipes")));
 				} else {
-					tooltip.add(line("Left-click: view recipes"));
+					tooltip.add(line(PlannerText.tr("tooltip.view_recipes", "Left-click: view recipes")));
 				}
-				tooltip.add(line("Right-click: view uses"));
+				tooltip.add(line(PlannerText.tr("tooltip.view_uses", "Right-click: view uses")));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 				return;
 			}
@@ -2084,22 +2156,22 @@ public class ProductionPlannerScreen extends Screen {
 	private void addMachineSizingTooltip(List<String> lines, Entry entry, double craftsPerSecond) {
 		MachineSizing sizing = entry.getMachineSizing(craftsPerSecond);
 		if (!sizing.available()) {
-			lines.add("Machine sizing unavailable for this row");
+			lines.add(PlannerText.tr("sizing.unavailable_row", "Machine sizing unavailable for this row"));
 			return;
 		}
-		lines.add("Required effective parallel: " + formatExactRate(sizing.requiredEffectiveParallel()));
-		String setupLabel = entry.isMachinesFixed() || entry.isParallelFixed() ? "Constrained setup: " : "Recommended setup: ";
-		lines.add(setupLabel + sizing.machines() + " machine(s) x " + sizing.parallel() + " parallel");
-		lines.add("Installed capacity: " + formatExactDisplayRate(sizing.capacityRate()) + " crafts/" + displayTimeUnit.suffix);
+		lines.add(PlannerText.tr("sizing.required_parallel", "Required effective parallel") + ": " + formatExactRate(sizing.requiredEffectiveParallel()));
+		String setupLabel = (entry.isMachinesFixed() || entry.isParallelFixed() ? PlannerText.tr("sizing.constrained", "Constrained setup") : PlannerText.tr("sizing.recommended", "Recommended setup")) + ": ";
+		lines.add(setupLabel + PlannerText.tr("sizing.setup", "%s machine(s) x %s parallel", sizing.machines(), sizing.parallel()));
+		lines.add(PlannerText.tr("sizing.installed_capacity", "Installed capacity") + ": " + formatExactDisplayRate(sizing.capacityRate()) + " crafts/" + displayTimeUnit.suffix);
 		if (sizing.sufficient()) {
-			lines.add("Headroom: " + formatExactRate(sizing.headroomPercent()) + "%");
+			lines.add(PlannerText.tr("sizing.headroom", "Headroom") + ": " + formatExactRate(sizing.headroomPercent()) + "%");
 		} else {
-			lines.add("CAPACITY SHORTFALL: " + formatExactRate(sizing.shortfallPercent()) + "%");
+			lines.add(PlannerText.tr("sizing.shortfall", "CAPACITY SHORTFALL") + ": " + formatExactRate(sizing.shortfallPercent()) + "%");
 		}
 		if (entry.isMachinesFixed() || entry.isParallelFixed()) {
-			lines.add("Locks: MACH " + (entry.isMachinesFixed() ? "FIXED" : "auto") + ", PAR " + (entry.isParallelFixed() ? "FIXED" : "auto"));
+			lines.add(PlannerText.tr("sizing.locks", "Locks: MACH %s, PAR %s", entry.isMachinesFixed() ? PlannerText.tr("common.fixed", "FIXED") : PlannerText.tr("common.auto", "auto"), entry.isParallelFixed() ? PlannerText.tr("common.fixed", "FIXED") : PlannerText.tr("common.auto", "auto")));
 		}
-		lines.add((sizing.exact() ? "Sizing: exact from detected machine limit" : "Sizing: provisional") + " - " + sizing.note());
+		lines.add((sizing.exact() ? PlannerText.tr("sizing.exact", "Sizing: exact from detected machine limit") : PlannerText.tr("sizing.provisional", "Sizing: provisional")) + " - " + sizing.note());
 	}
 
 	private void drawTooltip(EmiDrawContext context, int mouseX, int mouseY, String... lines) {
@@ -2223,18 +2295,18 @@ public class ProductionPlannerScreen extends Screen {
 			if (button == 0 && buildSummaryCopyButton.contains(mx, my)) {
 				String text = buildSummaryText(currentLine);
 				MinecraftClient.getInstance().keyboard.setClipboard(text);
-				buildSummaryTransferStatus = "Line Report copied to clipboard";
+				buildSummaryTransferStatus = PlannerText.tr("transfer.report_copied", "Line Report copied to clipboard");
 				return true;
 			}
 			if (button == 0 && buildSummarySaveButton.contains(mx, my)) {
 				String text = buildSummaryText(currentLine);
 				String path = ProductionPlanner.writeBuildSummaryExportFile(text);
 				if (path.isBlank()) {
-					buildSummaryTransferStatus = "Could not save Line Report; use COPY instead";
+					buildSummaryTransferStatus = PlannerText.tr("transfer.report_save_failed", "Could not save Line Report; use COPY instead");
 				} else {
 					int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
 					String fileName = slash >= 0 ? path.substring(slash + 1) : path;
-					buildSummaryTransferStatus = "Saved " + fileName;
+					buildSummaryTransferStatus = PlannerText.tr("transfer.saved", "Saved") + " " + fileName;
 				}
 				return true;
 			}
@@ -2416,6 +2488,15 @@ public class ProductionPlannerScreen extends Screen {
 			}
 		}
 		Line line = ProductionPlanner.getOrCreateActiveLine();
+		if (button == 0 && toolsButton.contains(mx, my)) {
+			boolean open = !toolsOpen;
+			closeDropdowns();
+			toolsOpen = open;
+			return true;
+		}
+		if (toolsOpen && !toolsMenuBounds.contains(mx, my)) {
+			toolsOpen = false;
+		}
 		if ((button == 0 || button == 1) && standardVoltageBounds.contains(mx, my)) {
 			if (button == 1) {
 				ProductionPlanner.setLineStandardVoltage(line, -1);
@@ -2441,16 +2522,16 @@ public class ProductionPlannerScreen extends Screen {
 			closeDropdowns();
 			String json = ProductionPlanner.exportActiveLineJson();
 			if (json.isBlank()) {
-				lineTransferStatus = "Export failed";
+				lineTransferStatus = PlannerText.tr("transfer.export_failed", "Export failed");
 			} else {
 				MinecraftClient.getInstance().keyboard.setClipboard(json);
 				String path = ProductionPlanner.writeActiveLineExportFile(json);
 				if (path.isBlank()) {
-					lineTransferStatus = "Line JSON copied to clipboard";
+					lineTransferStatus = PlannerText.tr("transfer.json_copied", "Line JSON copied to clipboard");
 				} else {
 					int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
 					String fileName = slash >= 0 ? path.substring(slash + 1) : path;
-					lineTransferStatus = "Exported " + fileName + " + copied JSON to clipboard";
+					lineTransferStatus = PlannerText.tr("transfer.exported", "Exported %s + copied JSON to clipboard", fileName);
 				}
 			}
 			return true;
@@ -2478,6 +2559,9 @@ public class ProductionPlannerScreen extends Screen {
 			buildSummaryFlowsView = false;
 			buildSummaryScroll = 0;
 			buildSummaryTransferStatus = "";
+			return true;
+		}
+		if (toolsOpen && toolsMenuBounds.contains(mx, my)) {
 			return true;
 		}
 		if (SHOW_GTO_AUDIT && button == 0 && gtoAuditButton.contains(mx, my)) {
@@ -2634,9 +2718,22 @@ public class ProductionPlannerScreen extends Screen {
 				}
 				return true;
 			}
-			if (button == 1 && row.rate.contains(mx, my) && !line.isBalanceEnabled() && !entry.isAutomatic()) {
-				startEntryEdit(row, EditKind.RATE);
-				return true;
+			if (row.rate.contains(mx, my) && !line.isBalanceEnabled()) {
+				if (button == 1 && entry.isAutomatic() && isCompactLayout()) {
+					startEntryEdit(row, EditKind.DURATION);
+					return true;
+				}
+				if (button == 2 && entry.isAutomatic() && isCompactLayout()) {
+					ProductionPlanner.clearDurationOverride(entry);
+					if (entry.getDurationTicks() <= 0.0D) {
+						ProductionPlanner.setAutomatic(entry, false);
+					}
+					return true;
+				}
+				if (button == 1 && !entry.isAutomatic()) {
+					startEntryEdit(row, EditKind.RATE);
+					return true;
+				}
 			}
 			if (button == 0 && row.replace.contains(mx, my)) {
 				return openRecipeReplacement(line, entry);
@@ -2891,6 +2988,9 @@ public class ProductionPlannerScreen extends Screen {
 			}
 			return true;
 		}
+		if (toolsOpen) {
+			return true;
+		}
 		if (groupsOpen) {
 			Line line = ProductionPlanner.getOrCreateActiveLine();
 			int direction = (int) -Math.signum(amount);
@@ -3050,6 +3150,10 @@ public class ProductionPlannerScreen extends Screen {
 			groupsOpen = false;
 			return true;
 		}
+		if (toolsOpen && keyCode == GLFW.GLFW_KEY_ESCAPE) {
+			toolsOpen = false;
+			return true;
+		}
 		if (keyCode == GLFW.GLFW_KEY_ESCAPE && isDropdownOpen()) {
 			closeDropdowns();
 			return true;
@@ -3131,13 +3235,13 @@ public class ProductionPlannerScreen extends Screen {
 			case RATE -> row.rate;
 			case MACHINES -> row.machinesValue;
 			case PARALLEL -> row.parallelValue;
-			case DURATION -> row.duration;
+			case DURATION -> row.duration.width() > 0 ? row.duration : row.rate;
 		};
 		String label = switch (kind) {
-			case RATE -> "Crafts per " + displayTimeUnit.longLabel;
-			case MACHINES -> "Machines";
-			case PARALLEL -> "Parallel";
-			case DURATION -> "Duration seconds";
+			case RATE -> PlannerText.tr("edit.crafts_per", "Crafts per") + " " + localizedTimeUnitLong();
+			case MACHINES -> PlannerText.tr("edit.machines", "Machines");
+			case PARALLEL -> PlannerText.tr("edit.parallel", "Parallel");
+			case DURATION -> PlannerText.tr("edit.duration_seconds", "Duration seconds");
 		};
 		editField = new TextFieldWidget(client.textRenderer, bounds.x() + 2, bounds.y() + 2,
 			Math.max(20, bounds.width() - 4), bounds.height() - 4, EmiPort.literal(label));
@@ -3196,7 +3300,7 @@ public class ProductionPlannerScreen extends Screen {
 		targetEditTarget = target;
 		targetEditBounds = bounds == null ? targetRateBounds : bounds;
 		targetRateField = new TextFieldWidget(client.textRenderer, targetEditBounds.x() + 2, targetEditBounds.y() + 2,
-			Math.max(20, targetEditBounds.width() - 4), targetEditBounds.height() - 4, EmiPort.literal("Target rate"));
+			Math.max(20, targetEditBounds.width() - 4), targetEditBounds.height() - 4, EmiPort.literal(PlannerText.tr("edit.target_rate", "Target rate")));
 		targetRateField.setMaxLength(24);
 		targetRateField.setText(formatExactDisplayRate(target.getRate()));
 		EmiPort.focus(targetRateField, true);
@@ -3226,7 +3330,7 @@ public class ProductionPlannerScreen extends Screen {
 	private void startRename(TabHitbox tab) {
 		renameIndex = tab.index;
 		renameField = new TextFieldWidget(client.textRenderer, tab.bounds.x() + 2, tab.bounds.y() + 2,
-			Math.max(20, tab.bounds.width() - 4), tab.bounds.height() - 4, EmiPort.literal("Line name"));
+			Math.max(20, tab.bounds.width() - 4), tab.bounds.height() - 4, EmiPort.literal(PlannerText.tr("edit.line_name", "Line name")));
 		renameField.setMaxLength(48);
 		renameField.setText(ProductionPlanner.displayName(tab.index));
 		EmiPort.focus(renameField, true);
@@ -3349,7 +3453,7 @@ public class ProductionPlannerScreen extends Screen {
 		searchCloseButton = new Bounds(searchPanelBounds.right() - 20, y + 2, 18, 18);
 		int fieldX = x + 38;
 		int fieldWidth = Math.max(90, panelWidth - 132);
-		searchField = new TextFieldWidget(client.textRenderer, fieldX, y + 3, fieldWidth, 16, EmiPort.literal("Search current line"));
+		searchField = new TextFieldWidget(client.textRenderer, fieldX, y + 3, fieldWidth, 16, EmiPort.literal(PlannerText.tr("search.placeholder", "Search current line")));
 		searchField.setMaxLength(128);
 		searchField.setText(query == null ? "" : query);
 		EmiPort.focus(searchField, true);
@@ -3527,12 +3631,40 @@ public class ProductionPlannerScreen extends Screen {
 		}
 		context.fill(searchPanelBounds.x(), searchPanelBounds.y(), searchPanelBounds.width(), searchPanelBounds.height(), 0xFF1A1A22);
 		drawBorder(context, searchPanelBounds, 0xFF8A8A96);
-		context.drawTextWithShadow(EmiPort.literal("Find:"), searchPanelBounds.x() + 6, searchPanelBounds.y() + 7, 0xFFD0D0D8);
+		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("search.find", "Find:")), searchPanelBounds.x() + 6, searchPanelBounds.y() + 7, 0xFFD0D0D8);
 		String count = searchMatchRows.isEmpty() ? "0/0" : (searchMatchIndex + 1) + "/" + searchMatchRows.size();
 		int countX = searchCloseButton.x() - 8 - textRenderer.getWidth(count);
 		context.drawTextWithShadow(EmiPort.literal(count), countX, searchPanelBounds.y() + 7, searchMatchRows.isEmpty() ? 0xFFFF7777 : 0xFFB8E6CF);
 		drawButton(context, searchCloseButton, mouseX, mouseY, "x", false);
 		searchField.render(raw, mouseX, mouseY, delta);
+	}
+
+	private String localizedProfileDescription(MachineProfile profile) {
+		if (profile == null) return "";
+		String description = profile.description();
+		return switch (profile.id()) {
+			case "generic" -> PlannerText.tr("profile.generic.description", description);
+			case "chemical_reactor" -> PlannerText.tr("profile.chemical_reactor.description", description);
+			case "large_chemical_reactor" -> PlannerText.tr("profile.large_chemical_reactor.description", description);
+			case "electrolyzer" -> PlannerText.tr("profile.electrolyzer.description", description);
+			default -> {
+				if ("EMI workstation; detected machine properties are applied".equals(description)) {
+					yield PlannerText.tr("profile.runtime.modeled", description);
+				}
+				if ("EMI workstation; unknown bonuses use Generic GT math".equals(description)) {
+					yield PlannerText.tr("profile.runtime.generic", description);
+				}
+				yield description;
+			}
+		};
+	}
+
+	private String localizedTimeUnitLong() {
+		return switch (displayTimeUnit) {
+			case SECOND -> PlannerText.tr("time.second", "second");
+			case MINUTE -> PlannerText.tr("time.minute", "minute");
+			case HOUR -> PlannerText.tr("time.hour", "hour");
+		};
 	}
 
 	private double adjustmentStep() {
@@ -3562,12 +3694,42 @@ public class ProductionPlannerScreen extends Screen {
 		rowScroll = Math.max(0, Math.min(rowScroll, max));
 	}
 
+	private boolean isCompactLayout() {
+		return width < 1050;
+	}
+
+	private TableLayout tableLayout() {
+		if (!isCompactLayout()) {
+			return new TableLayout(false, true,
+				8, 42, 54, 112, 170, 26,
+				198, 216, 230, 262,
+				280, 298, 312, 344,
+				16, 14, 32,
+				362, 54, 420, 44, 468, 62, 534, 68,
+				608, inputsColumnX(), outputsColumnX());
+		}
+		return new TableLayout(true, false,
+			4, 36, 42, 90, 136, 24,
+			164, 179, 191, 215,
+			231, 246, 258, 282,
+			14, 12, 24,
+			298, 44, 346, 34, 0, 0, 384, 42,
+			430, inputsColumnX(), outputsColumnX());
+	}
+
 	private int inputsColumnX() {
+		if (isCompactLayout()) {
+			return Math.max(500, width - 220);
+		}
 		return Math.max(780, width * 45 / 100);
 	}
 
 	private int outputsColumnX() {
-		return Math.max(inputsColumnX() + 180, width * 72 / 100);
+		int inputs = inputsColumnX();
+		if (isCompactLayout()) {
+			return Math.max(inputs + 70, width - 100);
+		}
+		return Math.max(inputs + 180, width * 72 / 100);
 	}
 
 	private String recipeName(EmiRecipe recipe) {
@@ -3935,6 +4097,15 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private record GroupMainHitbox(Bounds bounds, Group group) {
+	}
+
+	private record TableLayout(boolean compact, boolean showDuration,
+			int modeX, int modeW, int machineX, int machineW, int cfgX, int cfgW,
+			int machinesLockX, int machinesMinusX, int machinesValueX, int machinesPlusX,
+			int parallelLockX, int parallelMinusX, int parallelValueX, int parallelPlusX,
+			int lockW, int stepW, int valueW,
+			int voltageX, int voltageW, int ocX, int ocW, int durationX, int durationW,
+			int rateX, int rateW, int recipeX, int inputsX, int outputsX) {
 	}
 
 	private record PlannerDisplayRow(Entry entry, Group group, int depth) {

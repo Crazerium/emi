@@ -1003,7 +1003,7 @@ public final class ProductionPlanner {
 				: vector != null && maxPositive(vector.net) > 0.0D;
 			if (!available) {
 				String direction = target.mode == TargetMode.INPUT
-					? "No recipe in this line consumes input goal outside matched groups"
+					? PlannerText.tr("status.input_blocked", "No recipe in this line consumes input goal outside matched groups")
 					: PlannerText.tr("status.target_blocked", "No recipe in this line produces target outside matched groups");
 				return failBalance(line, direction + ": " + target.stack.getName().getString());
 			}
@@ -1420,7 +1420,7 @@ public final class ProductionPlanner {
 	}
 
 	public static String voltageTierName(int tier) {
-		return tier < 0 ? "Recipe minimum" : GtVoltageResolver.name(tier);
+		return tier < 0 ? PlannerText.tr("machine.recipe_minimum", "Recipe minimum") : GtVoltageResolver.name(tier);
 	}
 
 	public static int voltageTierColor(int tier) {
@@ -1907,17 +1907,17 @@ public final class ProductionPlanner {
 	public static synchronized LineTransferResult importLineJson(String json) {
 		ensureLoaded();
 		if (json == null || json.isBlank()) {
-			return new LineTransferResult(false, "Clipboard is empty", -1);
+			return new LineTransferResult(false, PlannerText.tr("planner.import.empty", "Clipboard is empty"), -1);
 		}
 		JsonObject before = serializeState();
 		try {
 			JsonObject parsed = EmiPersistentData.GSON.fromJson(json, JsonObject.class);
 			if (parsed == null) {
-				return new LineTransferResult(false, "Clipboard does not contain planner JSON", -1);
+				return new LineTransferResult(false, PlannerText.tr("planner.import.not_json", "Clipboard does not contain planner JSON"), -1);
 			}
 			JsonObject imported = extractImportedLine(parsed);
 			if (imported == null) {
-				return new LineTransferResult(false, "No Production Line found in clipboard JSON", -1);
+				return new LineTransferResult(false, PlannerText.tr("planner.import.no_line", "No Production Line found in clipboard JSON"), -1);
 			}
 			JsonObject merged = before.deepCopy();
 			JsonArray lines = merged.getAsJsonArray("lines");
@@ -1939,12 +1939,12 @@ public final class ProductionPlanner {
 				EmiProductionPlannerPersistence.save(before);
 				loaded = false;
 				ensureLoaded();
-				return new LineTransferResult(false, "Imported line could not be loaded", -1);
+				return new LineTransferResult(false, PlannerText.tr("planner.import.load_failed", "Imported line could not be loaded"), -1);
 			}
 			if (historyActionDepth == 0) {
 				recordUndoSnapshot(serializeState());
 			}
-			return new LineTransferResult(true, "Imported " + displayName(importedIndex), importedIndex);
+			return new LineTransferResult(true, PlannerText.tr("planner.import.success", "Imported %s", displayName(importedIndex)), importedIndex);
 		} catch (Throwable ignored) {
 			try {
 				EmiProductionPlannerPersistence.save(before);
@@ -1952,7 +1952,7 @@ public final class ProductionPlanner {
 				ensureLoaded();
 			} catch (Throwable restoreIgnored) {
 			}
-			return new LineTransferResult(false, "Invalid Production Line JSON", -1);
+			return new LineTransferResult(false, PlannerText.tr("planner.import.invalid", "Invalid Production Line JSON"), -1);
 		}
 	}
 
@@ -1982,7 +1982,7 @@ public final class ProductionPlanner {
 			requested = suggestedName.trim();
 		}
 		if (requested.isEmpty()) {
-			requested = "Imported Line";
+			requested = PlannerText.tr("planner.import.default_name", "Imported Line");
 		}
 		Set<String> used = new HashSet<>();
 		for (int i = 0; i < existingLines.size(); i++) {
@@ -2495,7 +2495,7 @@ public final class ProductionPlanner {
 		}
 
 		public String parallelDescription() {
-			return maxParallel > 0 ? "Max parallel per machine: " + maxParallel : "Parallel limit: profile-specific / not modeled yet";
+			return maxParallel > 0 ? PlannerText.tr("machine.parallel_max", "Max parallel per machine") + ": " + maxParallel : PlannerText.tr("machine.parallel_unknown", "Parallel limit: profile-specific / not modeled yet");
 		}
 
 		public boolean hasFixedVoltage() {
@@ -2524,40 +2524,87 @@ public final class ProductionPlanner {
 		public List<String> modifierDescriptions() {
 			List<String> lines = new ArrayList<>();
 			if (fixedVoltageTier >= 0) {
-				lines.add("Fixed machine voltage: " + voltageTierName(fixedVoltageTier));
+				lines.add(PlannerText.tr("machine.fixed_voltage", "Fixed machine voltage") + ": " + voltageTierName(fixedVoltageTier));
 			}
 			if (perfectOcKnown) {
-				lines.add("Perfect OC: " + (allowsPerfectOc ? "supported" : "not supported"));
+				lines.add(PlannerText.tr("machine.perfect_oc", "Perfect OC") + ": " + (allowsPerfectOc ? PlannerText.tr("common.supported", "supported") : PlannerText.tr("common.not_supported", "not supported")));
 			}
 			if (maxParallel > 0) {
-				lines.add("Detected max parallel: " + maxParallel);
+				lines.add(PlannerText.tr("machine.detected_max_parallel", "Detected max parallel") + ": " + maxParallel);
 			} else if (parallelControl) {
-				lines.add("Parallel Control support detected");
+				lines.add(PlannerText.tr("machine.parallel_detected", "Parallel Control support detected"));
 			}
 			if (Math.abs(durationMultiplier - 1.0D) > 0.0000001D) {
-				lines.add("Machine duration multiplier: x" + formatSolverNumber(durationMultiplier));
+				lines.add(PlannerText.tr("machine.duration_multiplier", "Machine duration multiplier") + ": x" + formatSolverNumber(durationMultiplier));
 			}
 			if (Math.abs(energyMultiplier - 1.0D) > 0.0000001D) {
-				lines.add("Machine energy multiplier: x" + formatSolverNumber(energyMultiplier));
+				lines.add(PlannerText.tr("machine.energy_multiplier", "Machine energy multiplier") + ": x" + formatSolverNumber(energyMultiplier));
 			}
 			if (coilEfficiencyPerTier > 0.0D) {
-				lines.add("Coil efficiency: -" + formatSolverNumber(coilEfficiencyPerTier * 100.0D) + "% duration/EU per tier");
-				lines.add("Coil tier is configurable in Machine Settings");
+				lines.add(PlannerText.tr("machine.coil_efficiency", "Coil efficiency") + ": -" + formatSolverNumber(coilEfficiencyPerTier * 100.0D) + "% duration/EU per tier");
+				lines.add(PlannerText.tr("machine.coil_configurable", "Coil tier is configurable in Machine Settings"));
 			}
 			if (Math.abs(standardOcDurationMultiplier - 0.5D) > 0.0000001D) {
-				lines.add("Special OC: each 4x EU/t multiplies duration by x" + formatSolverNumber(standardOcDurationMultiplier));
+				lines.add(PlannerText.tr("machine.special_oc", "Special OC: each 4x EU/t multiplies duration by x%s", formatSolverNumber(standardOcDurationMultiplier)));
 			}
 			lines.addAll(machineRule.modifierDescriptions(this));
 			for (MachineSettingSpec spec : machineSettingSpecsFor(this)) {
-				lines.add(spec.englishLabel() + " is configurable in Machine Settings");
+				lines.add(PlannerText.tr("machine.setting_configurable", "%s is configurable in Machine Settings", PlannerText.tr(spec.labelKey(), spec.englishLabel())));
 			}
-			lines.addAll(runtimeNotes);
+			for (String note : runtimeNotes) {
+				String localized = localizeRuntimeNote(note);
+				if (!localized.isBlank()) {
+					lines.add(localized);
+				}
+			}
 			return List.copyOf(lines);
 		}
 
 		public boolean hasIcon() {
 			return icon != null && !icon.isEmpty();
 		}
+	}
+
+
+	private static String localizeRuntimeNote(String note) {
+		if (note == null || note.isBlank()) {
+			return "";
+		}
+		if (note.equals("GTO generic capability scanner matched this machine")) {
+			return PlannerText.tr("gto.note.scanner", note);
+		}
+		if (note.startsWith("GTO auto capabilities: ")) {
+			return PlannerText.tr("gto.note.capabilities", "GTO auto capabilities")
+				+ ": " + note.substring("GTO auto capabilities: ".length());
+		}
+		if (note.equals("GTO configurable mechanics are generated from detected capabilities")) {
+			return PlannerText.tr("gto.note.configurable", note);
+		}
+		if (note.startsWith("GTO fixed built-in parallel detected: ")) {
+			return PlannerText.tr("gto.note.fixed_parallel", "GTO fixed built-in parallel detected")
+				+ ": " + note.substring("GTO fixed built-in parallel detected: ".length());
+		}
+		if (note.startsWith("GTO processing-time multiplier detected: ")) {
+			return PlannerText.tr("gto.note.time_multiplier", "GTO processing-time multiplier detected")
+				+ ": " + note.substring("GTO processing-time multiplier detected: ".length());
+		}
+		if (note.startsWith("GTO standard OC multiplier detected: ")) {
+			return PlannerText.tr("gto.note.oc_multiplier", "GTO standard OC multiplier detected")
+				+ ": " + note.substring("GTO standard OC multiplier detected: ".length());
+		}
+		if (note.equals("GTCEu Electric Blast Furnace heat mechanics modeled")) {
+			return PlannerText.tr("gtceu.note.modeled", note);
+		}
+		if (note.equals("GTCEu EBF recipe type detected automatically")) {
+			return PlannerText.tr("gtceu.note.recipe_type", note);
+		}
+		if (note.equals("GTCEu heating-coil capability detected automatically")) {
+			return PlannerText.tr("gtceu.note.coils", note);
+		}
+		if (note.equals("GTCEu EBF heat inherited from recipe type + heating-coil capability")) {
+			return PlannerText.tr("gtceu.note.inherited", note);
+		}
+		return note;
 	}
 
 	private record MachineRuntimeInfo(int fixedVoltageTier, int maxParallel, boolean perfectOcKnown,
@@ -2843,12 +2890,12 @@ public final class ProductionPlanner {
 			double requiredEffectiveParallel, double installedEffectiveParallel, double capacityRate,
 			double headroomPercent, String note) {
 		private static MachineSizing unavailable() {
-			return unavailable("Machine sizing unavailable");
+			return unavailable(PlannerText.tr("machine.sizing_unavailable", "Machine sizing unavailable"));
 		}
 
 		private static MachineSizing unavailable(String note) {
 			return new MachineSizing(false, false, 1, 1, 0.0D, 1.0D, 0.0D, 0.0D,
-				note == null || note.isBlank() ? "Machine sizing unavailable" : note);
+				note == null || note.isBlank() ? PlannerText.tr("machine.sizing_unavailable", "Machine sizing unavailable") : note);
 		}
 
 		public boolean sufficient() {
@@ -3263,54 +3310,54 @@ public final class ProductionPlanner {
 				machines = sanitizeCount(this.machines);
 				parallel = clampParallelForProfile(this, sanitizeCount(this.parallel));
 				exact = maxParallel > 0;
-				note = "MACH and PAR are fixed by the user";
+				note = PlannerText.tr("sizing.note.fixed_both", "MACH and PAR are fixed by the user");
 			} else if (machinesFixed) {
 				machines = sanitizeCount(this.machines);
 				if (maxParallel > 0) {
 					parallel = Math.min(maxParallel, ceilCount(required / (machines * throughput)));
 					exact = true;
-					note = "MACH is fixed; PAR is sized up to detected max parallel " + maxParallel;
+					note = PlannerText.tr("sizing.note.fixed_mach_max", "MACH is fixed; PAR is sized up to detected max parallel %s", maxParallel);
 				} else if (profile.parallelControl() || "generic".equals(profile.id())) {
 					parallel = ceilCount(required / (machines * throughput));
 					exact = false;
-					note = "MACH is fixed; PAR is provisional because the machine parallel limit is unknown";
+					note = PlannerText.tr("sizing.note.fixed_mach_provisional", "MACH is fixed; PAR is provisional because the machine parallel limit is unknown");
 				} else {
 					parallel = 1;
 					exact = false;
-					note = "MACH is fixed; unknown machine parallel limit is treated conservatively as 1";
+					note = PlannerText.tr("sizing.note.fixed_mach_one", "MACH is fixed; unknown machine parallel limit is treated conservatively as 1");
 				}
 			} else if (parallelFixed) {
 				parallel = clampParallelForProfile(this, sanitizeCount(this.parallel));
 				machines = ceilCount(required / (parallel * throughput));
 				exact = maxParallel > 0;
 				note = maxParallel > 0
-					? "PAR is fixed; MACH is sized from the fixed parallel"
-					: "PAR is fixed by the user; MACH sizing is provisional because the profile parallel limit is unknown";
+					? PlannerText.tr("sizing.note.fixed_par", "PAR is fixed; MACH is sized from the fixed parallel")
+					: PlannerText.tr("sizing.note.fixed_par_provisional", "PAR is fixed by the user; MACH sizing is provisional because the profile parallel limit is unknown");
 			} else if (maxParallel > 0) {
 				machines = ceilCount(required / (maxParallel * throughput));
 				parallel = Math.min(maxParallel, ceilCount(required / (machines * throughput)));
 				exact = true;
-				note = "Sized from detected max parallel " + maxParallel + " per machine";
+				note = PlannerText.tr("sizing.note.detected_max", "Sized from detected max parallel %s per machine", maxParallel);
 			} else if (profile.parallelControl()) {
 				machines = 1;
 				parallel = ceilCount(required / throughput);
 				exact = false;
-				note = "Parallel Control detected, but its maximum parallel is unknown";
+				note = PlannerText.tr("sizing.note.parallel_control_unknown", "Parallel Control detected, but its maximum parallel is unknown");
 			} else if ("generic".equals(profile.id())) {
 				machines = 1;
 				parallel = ceilCount(required / throughput);
 				exact = false;
-				note = "Generic profile assumes the requested effective parallel can be supplied";
+				note = PlannerText.tr("sizing.note.generic", "Generic profile assumes the requested effective parallel can be supplied");
 			} else {
 				machines = ceilCount(required / throughput);
 				parallel = 1;
 				exact = false;
-				note = "Parallel limit is unknown; conservative 1 parallel per machine sizing";
+				note = PlannerText.tr("sizing.note.conservative", "Parallel limit is unknown; conservative 1 parallel per machine sizing");
 			}
 			double installed = machines * (double) parallel * throughput;
 			double capacityRate = installed / seconds;
 			if (throughput > 1.0D + 0.0000001D) {
-				note += "; machine throughput multiplier x" + formatSolverNumber(throughput);
+				note += PlannerText.tr("sizing.note.throughput", "; machine throughput multiplier x%s", formatSolverNumber(throughput));
 			}
 			double headroom = craftsPerSecond > 0.0D
 				? Math.max(0.0D, (capacityRate / craftsPerSecond - 1.0D) * 100.0D)

@@ -409,116 +409,104 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 	public List<String> modifierDescriptions(MachineProfile profile) {
 		List<String> lines = new ArrayList<>();
 		if (capabilities.standardOcDurationMultiplier() > 0.0D) {
-			lines.add("GTO auto-detected special standard OC time multiplier: "
+			lines.add(PlannerText.tr("gto.mod.special_oc", "GTO auto-detected special standard OC time multiplier") + ": "
 				+ Math.round(capabilities.standardOcDurationMultiplier() * 10000.0D) / 100.0D + "%");
 		}
 		if (capabilities.enablesPerfectOc()) {
-			lines.add("GTO Perfect OC support detected automatically");
+			lines.add(PlannerText.tr("gto.mod.perfect_oc", "GTO Perfect OC support detected automatically"));
 		}
 		if (capabilities.glassParallelBase() > 1) {
-			lines.add("GTO auto-detected glass-tier built-in parallel formula: " + capabilities.glassParallelBase() + "^(Glass Tier)");
+			lines.add(PlannerText.tr("gto.mod.glass_parallel", "GTO auto-detected glass-tier built-in parallel formula") + ": " + capabilities.glassParallelBase() + "^(Glass Tier)");
 		}
 		if (capabilities.casingTierLimit()) {
-			lines.add("GTO auto-detected recipe-tier limit from machine casing tier");
+			lines.add(PlannerText.tr("gto.mod.casing_limit", "GTO auto-detected recipe-tier limit from machine casing tier"));
 		}
 		if (capabilities.glassTierLimit()) {
-			lines.add("GTO auto-detected recipe-tier limit from glass tier");
+			lines.add(PlannerText.tr("gto.mod.glass_limit", "GTO auto-detected recipe-tier limit from glass tier"));
 		}
 		if (capabilities.hasCoilParallel()) {
-			lines.add("GTO auto-detected coil parallel: x" + capabilities.coilParallelFactor() + " per "
+			lines.add(PlannerText.tr("gto.mod.coil_parallel", "GTO auto-detected coil parallel") + ": x" + capabilities.coilParallelFactor() + " / "
 				+ capabilities.coilParallelStepKelvin() + "K");
 		}
 		if (capabilities.coilLogParallelFormula() != null) {
 			GtoCoilLogParallelFormula formula = capabilities.coilLogParallelFormula();
-			lines.add("GTO auto-detected coil logarithmic parallel formula: log" + formula.logBase()
+			lines.add(PlannerText.tr("gto.mod.coil_log_parallel", "GTO auto-detected coil logarithmic parallel formula") + ": log" + formula.logBase()
 				+ "(T-" + formula.temperatureOffset() + ")-" + formula.subtract());
 		}
 		if (capabilities.voltageParallelFormula() != null) {
 			GtoVoltageParallelFormula formula = capabilities.voltageParallelFormula();
-			lines.add("GTO auto-detected voltage-tier parallel formula: " + formula.base()
-				+ "^(tiers above " + ProductionPlanner.voltageTierName(formula.referenceTier()) + ")");
+			lines.add(PlannerText.tr("gto.mod.voltage_parallel", "GTO auto-detected voltage-tier parallel formula") + ": " + formula.base()
+				+ "^(" + PlannerText.tr("gto.mod.tiers_above", "tiers above") + " " + ProductionPlanner.voltageTierName(formula.referenceTier()) + ")");
 		}
 		if (capabilities.configuredTierParallelFormula() != null) {
 			GtoConfiguredTierParallelFormula formula = capabilities.configuredTierParallelFormula();
-			lines.add("GTO auto-detected configured-tier parallel formula: " + configuredTierFormulaText(formula));
+			lines.add(PlannerText.tr("gto.mod.configured_parallel", "GTO auto-detected configured-tier parallel formula") + ": " + configuredTierFormulaText(formula));
 		}
 		if (capabilities.glassDurationFormula() != null) {
-			lines.add("GTO auto-detected glass-tier duration formula: " + glassDurationFormulaText(capabilities.glassDurationFormula()));
+			lines.add(PlannerText.tr("gto.mod.glass_duration", "GTO auto-detected glass-tier duration formula") + ": " + glassDurationFormulaText(capabilities.glassDurationFormula()));
 		}
 		if (capabilities.coilTierEfficiencyFormula() != null) {
 			GtoCoilTierEfficiencyFormula formula = capabilities.coilTierEfficiencyFormula();
 			if (formula.durationReductionPerTier() > 0.0D) {
-				lines.add("GTO auto-detected coil-tier duration reduction: -"
-					+ formatNumber(formula.durationReductionPerTier() * 100.0D) + "% per tier above Cupronickel");
+				lines.add(PlannerText.tr("gto.mod.coil_duration_reduction", "GTO auto-detected coil-tier duration reduction") + ": -" + formatNumber(formula.durationReductionPerTier() * 100.0D) + "%/tier");
 			}
 			if (formula.energyReductionPerTier() > 0.0D) {
-				lines.add("GTO auto-detected coil-tier energy reduction: -"
-					+ formatNumber(formula.energyReductionPerTier() * 100.0D) + "% per tier above Cupronickel");
+				lines.add(PlannerText.tr("gto.mod.coil_energy_reduction", "GTO auto-detected coil-tier energy reduction") + ": -" + formatNumber(formula.energyReductionPerTier() * 100.0D) + "%/tier");
 			}
 		}
 		if (capabilities.coilTemperatureDurationFormula() != null) {
-			lines.add("GTO auto-detected coil-temperature duration formula: log("
-				+ formatNumber(capabilities.coilTemperatureDurationFormula().numeratorKelvin()) + ") / log(T)");
+			lines.add(PlannerText.tr("gto.mod.coil_temp_duration", "GTO auto-detected coil-temperature duration formula") + ": log(" + formatNumber(capabilities.coilTemperatureDurationFormula().numeratorKelvin()) + ") / log(T)");
 		}
 		if (capabilities.coilExponentialDurationFormula() != null) {
 			GtoCoilExponentialDurationFormula formula = capabilities.coilExponentialDurationFormula();
-			lines.add("GTO auto-detected coil-temperature exponential duration formula: "
-				+ formatNumber(formula.leadingMultiplier()) + " x " + formatNumber(formula.exponentialBase())
-				+ "^((T-" + formula.temperatureOffset() + ")/" + formula.temperatureScale() + ")");
+			lines.add(PlannerText.tr("gto.mod.coil_exp_duration", "GTO auto-detected coil-temperature exponential duration formula") + ": " + formatNumber(formula.leadingMultiplier()) + " x " + formatNumber(formula.exponentialBase()) + "^((T-" + formula.temperatureOffset() + ")/" + formula.temperatureScale() + ")");
 		}
 		if (capabilities.auxiliaryParallel() > 0) {
-			lines.add("GTO auto-detected Auxiliary Module built-in parallel: " + capabilities.auxiliaryParallel());
+			lines.add(PlannerText.tr("gto.mod.aux_parallel", "GTO auto-detected Auxiliary Module built-in parallel") + ": " + capabilities.auxiliaryParallel());
 		}
 		if (capabilities.auxiliaryDurationMultiplier() > 0.0D) {
-			lines.add("GTO auto-detected Auxiliary Module duration multiplier: x"
-				+ formatMultiplier(capabilities.auxiliaryDurationMultiplier()));
+			lines.add(PlannerText.tr("gto.mod.aux_duration", "GTO auto-detected Auxiliary Module duration multiplier") + ": x" + formatMultiplier(capabilities.auxiliaryDurationMultiplier()));
 		}
 		if (capabilities.configuredCountDurationFormula() != null) {
 			GtoConfiguredCountDurationFormula formula = capabilities.configuredCountDurationFormula();
-			lines.add("GTO auto-detected count-based duration formula: " + formatNumber(formula.base()) + "^count");
+			lines.add(PlannerText.tr("gto.mod.count_duration", "GTO auto-detected count-based duration formula") + ": " + formatNumber(formula.base()) + "^count");
 		}
 		if (capabilities.structureTemperatureFormula() != null) {
 			GtoStructureTemperatureFormula formula = capabilities.structureTemperatureFormula();
-			lines.add("GTO auto-detected structure/temperature mechanics: " + formula.parallelPerLayer()
-				+ " parallel per layer, x1 parallel multiplier per " + formula.parallelTemperatureStepKelvin()
-				+ "K, duration x" + formatNumber(formula.durationNumeratorKelvin()) + "/T");
+			lines.add(PlannerText.tr("gto.mod.structure_temp", "GTO auto-detected structure/temperature mechanics") + ": " + formula.parallelPerLayer() + " parallel/layer, x1/" + formula.parallelTemperatureStepKelvin() + "K, duration x" + formatNumber(formula.durationNumeratorKelvin()) + "/T");
 		}
 		if (capabilities.tierDurationFormula() != null) {
-			lines.add("GTO auto-detected progression-tier duration bonus");
+			lines.add(PlannerText.tr("gto.mod.progression_duration", "GTO auto-detected progression-tier duration bonus"));
 		}
 		if (capabilities.tierParallelFormula() != null) {
-			lines.add("GTO auto-detected progression-tier parallel formula from machine bytecode");
+			lines.add(PlannerText.tr("gto.mod.progression_parallel", "GTO auto-detected progression-tier parallel formula from machine bytecode"));
 		}
 		if (capabilities.productionBoostFormula() != null) {
 			GtoProductionBoostFormula formula = capabilities.productionBoostFormula();
-			lines.add("GTO auto-detected Production-Boosting Mode: output x" + formatMultiplier(formula.outputMultiplier())
-				+ ", duration x" + formatMultiplier(formula.durationMultiplier()) + ", energy/steam x"
-				+ formatMultiplier(formula.energyMultiplier()) + (formula.enabledByDefault() ? " (default ON)" : ""));
+			lines.add(PlannerText.tr("gto.mod.production_boost", "GTO auto-detected Production-Boosting Mode") + ": output x" + formatMultiplier(formula.outputMultiplier()) + ", duration x" + formatMultiplier(formula.durationMultiplier()) + ", energy/steam x" + formatMultiplier(formula.energyMultiplier()) + (formula.enabledByDefault() ? " (default ON)" : ""));
 		}
 		if (capabilities.neutronFluxDurationFormula() != null) {
 			GtoNeutronFluxDurationFormula formula = capabilities.neutronFluxDurationFormula();
-			lines.add("GTO auto-detected neutron-flux duration formula: sqrt(" + formatNumber(formula.baseTerm())
-				+ " - (current-required)/" + formatNumber(formula.divisorMeV()) + "MeV)");
+			lines.add(PlannerText.tr("gto.mod.neutron_formula", "GTO auto-detected neutron-flux duration formula") + ": sqrt(" + formatNumber(formula.baseTerm()) + " - (current-required)/" + formatNumber(formula.divisorMeV()) + "MeV)");
 		}
 		if (capabilities.fissionCoolingFormula() != null) {
 			GtoFissionCoolingFormula formula = capabilities.fissionCoolingFormula();
-			lines.add("GTO auto-detected fission cooling parallel limit: supply/demand with temperature divisor "
-				+ formatNumber(formula.temperatureDivisor()));
+			lines.add(PlannerText.tr("gto.mod.fission_cooling", "GTO auto-detected fission cooling parallel limit") + ": supply/demand, T divisor " + formatNumber(formula.temperatureDivisor()));
 		}
 		if (capabilities.parallelControl()) {
-			lines.add("GTO/GTM Parallel Control Hatch detected automatically");
+			lines.add(PlannerText.tr("gto.mod.parallel_hatch", "GTO/GTM Parallel Control Hatch detected automatically"));
 		}
 		if (capabilities.acceleration()) {
-			lines.add("GTO Acceleration Hatch detected automatically");
+			lines.add(PlannerText.tr("gto.mod.acceleration_hatch", "GTO Acceleration Hatch detected automatically"));
 		}
 		if (capabilities.thread()) {
-			lines.add("GTO Thread Hatch detected automatically");
+			lines.add(PlannerText.tr("gto.mod.thread_hatch", "GTO Thread Hatch detected automatically"));
 		}
 		if (capabilities.overclocking()) {
-			lines.add("GTO Overclocking Hatch detected automatically");
+			lines.add(PlannerText.tr("gto.mod.overclock_hatch", "GTO Overclocking Hatch detected automatically"));
 		}
 		if (capabilities.laserEnergy()) {
-			lines.add("GTO Laser Energy Hatch support detected");
+			lines.add(PlannerText.tr("gto.mod.laser_hatch", "GTO Laser Energy Hatch support detected"));
 		}
 		return List.copyOf(lines);
 	}
@@ -659,7 +647,7 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 		if (duration == null && parallel == null) return List.of();
 		int tier = configuredInteger(entry, PROGRESSION_TIER, 1);
 		List<String> lines = new ArrayList<>();
-		lines.add("Progression Tier: " + tier);
+		lines.add(PlannerText.tr("gto.dynamic.progression_tier", "Progression Tier") + ": " + tier);
 		if (duration != null) {
 			lines.add(PlannerText.tr("gto.dynamic.duration_multiplier", "Duration multiplier") + ": x"
 				+ formatMultiplier(tierDurationMultiplier(entry, duration)));
@@ -672,7 +660,7 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 			lines.add(PlannerText.tr("gto.precision.current_parallel", "Current built-in parallel") + ": "
 				+ (raw == Long.MAX_VALUE ? "Long.MAX_VALUE" : Long.toString(raw)));
 			if (raw > 1_000_000_000L) {
-				lines.add("Planner effective parallel cap: 1000000000");
+				lines.add(PlannerText.tr("gto.mod.parallel_cap", "Planner effective parallel cap") + ": 1000000000");
 			}
 			lines.add(PlannerText.tr("gto.auto.detected_formula", "Detected parallel formula")
 				+ ": extracted from getMaxParallel(short)");
@@ -701,14 +689,14 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 		int current = configuredInteger(entry, CURRENT_NEUTRON_FLUX_KEV, 0);
 		int required = configuredInteger(entry, REQUIRED_NEUTRON_FLUX_KEV, 0);
 		List<String> lines = new ArrayList<>();
-		lines.add("Current Neutron Flux: " + (current <= 0 ? "AUTO" : current + " keV"));
-		lines.add("Required Neutron Flux: " + (required <= 0 ? "AUTO" : required + " keV"));
+		lines.add(PlannerText.tr("gto.dynamic.current_neutron_flux", "Current Neutron Flux") + ": " + (current <= 0 ? "AUTO" : current + " keV"));
+		lines.add(PlannerText.tr("gto.dynamic.required_neutron_flux", "Required Neutron Flux") + ": " + (required <= 0 ? "AUTO" : required + " keV"));
 		if (neutronFluxConfigured(entry)) {
 			lines.add(PlannerText.tr("gto.dynamic.duration_multiplier", "Duration multiplier") + ": x"
 				+ formatMultiplier(neutronFluxDurationMultiplier(entry, formula)));
 			lines.add(PlannerText.tr("gto.precision.recipe_allowed", "Recipe allowed") + ": " + yesNo(allowsRecipe(entry)));
 		} else {
-			lines.add("Set both flux values to apply the detected runtime formula");
+			lines.add(PlannerText.tr("gto.mod.set_flux", "Set both flux values to apply the detected runtime formula"));
 		}
 		lines.add(PlannerText.tr("gto.auto.detected_formula", "Detected formula") + ": sqrt("
 			+ formatNumber(formula.baseTerm()) + " - (current-required)/" + formatNumber(formula.divisorMeV()) + "MeV)");
@@ -723,17 +711,17 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 		int components = configuredInteger(entry, FISSION_COOLING_COMPONENTS, 0);
 		int adjacent = configuredInteger(entry, FISSION_ADJACENT_COMPONENTS, 0);
 		List<String> lines = new ArrayList<>();
-		lines.add("Recipe Heat Generation: " + (heat <= 0 ? "AUTO" : heat));
-		lines.add("Current Reactor Temperature: " + (temperature <= 0 ? "AUTO" : temperature));
-		lines.add("Cooling Components: " + components + ", adjacent count: " + adjacent);
+		lines.add(PlannerText.tr("gto.dynamic.fission_recipe_heat", "Recipe Heat Generation") + ": " + (heat <= 0 ? "AUTO" : heat));
+		lines.add(PlannerText.tr("gto.dynamic.fission_temperature", "Current Reactor Temperature") + ": " + (temperature <= 0 ? "AUTO" : temperature));
+		lines.add(PlannerText.tr("gto.dynamic.fission_cooling_components", "Cooling Components") + ": " + components + ", " + PlannerText.tr("gto.mod.adjacent_count", "adjacent count") + ": " + adjacent);
 		if (fissionCoolingConfigured(entry)) {
-			lines.add("Cooling supply: " + formatNumber(fissionCoolingSupply(entry, formula)));
-			lines.add("Demand per parallel: " + formatNumber(fissionDemandPerParallel(entry, formula)));
+			lines.add(PlannerText.tr("gto.mod.cooling_supply", "Cooling supply") + ": " + formatNumber(fissionCoolingSupply(entry, formula)));
+			lines.add(PlannerText.tr("gto.mod.demand_parallel", "Demand per parallel") + ": " + formatNumber(fissionDemandPerParallel(entry, formula)));
 			lines.add(PlannerText.tr("gto.precision.current_parallel", "Current built-in parallel") + ": "
 				+ fissionCoolingMaxParallel(entry, formula));
 			lines.add(PlannerText.tr("gto.precision.recipe_allowed", "Recipe allowed") + ": " + yesNo(allowsRecipe(entry)));
 		} else {
-			lines.add("Set recipe heat, reactor temperature and cooling component count to apply the detected cooling limit");
+			lines.add(PlannerText.tr("gto.mod.set_cooling", "Set recipe heat, reactor temperature and cooling component count to apply the detected cooling limit"));
 		}
 		lines.add(PlannerText.tr("gto.auto.detected_formula", "Detected formula") + ": Demand=heat*PAR*T/"
 			+ formatNumber(formula.temperatureDivisor()) + "; Supply=(components-adjacent/"
@@ -1064,7 +1052,7 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 		if (formula.mode() == GtoConfiguredTierParallelFormula.Mode.POWER) {
 			return formatNumber(formula.factorOrBase()) + "^(Tier - " + formula.exponentOffset() + ")";
 		}
-		return "Tier x " + formatNumber(formula.factorOrBase());
+		return PlannerText.tr("gto.mod.tier_x", "Tier x") + " " + formatNumber(formula.factorOrBase());
 	}
 
 	private static String glassDurationFormulaText(GtoGlassDurationFormula formula) {

@@ -118,9 +118,9 @@ final class GtceuElectricBlastFurnaceRule implements PlannerMachineRule {
 	@Override
 	public List<String> modifierDescriptions(MachineProfile profile) {
 		return List.of(
-			"GTCEu EBF heat: +100K per selected voltage tier above MV",
-			"GTCEu EBF heat discount: x0.95 EU/t for every 900K above recipe temperature",
-			"GTCEu EBF heat OC: every 1800K above recipe temperature upgrades one OC to a perfect OC"
+			PlannerText.tr("gtceu.ebf.mod_heat", "GTCEu EBF heat: +100K per selected voltage tier above MV"),
+			PlannerText.tr("gtceu.ebf.mod_discount", "GTCEu EBF heat discount: x0.95 EU/t for every 900K above recipe temperature"),
+			PlannerText.tr("gtceu.ebf.mod_perfect", "GTCEu EBF heat OC: every 1800K above recipe temperature upgrades one OC to a perfect OC")
 		);
 	}
 

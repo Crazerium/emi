@@ -24,6 +24,7 @@ import dev.emi.emi.api.widget.Bounds;
 import dev.emi.emi.config.SidebarSide;
 import dev.emi.emi.config.SidebarType;
 import dev.emi.emi.input.EmiInput;
+import dev.emi.emi.planner.PlannerText;
 import dev.emi.emi.registry.EmiDragDropHandlers;
 import dev.emi.emi.registry.EmiRecipeFiller;
 import dev.emi.emi.runtime.EmiCraftingToolCompat;
@@ -125,25 +126,25 @@ public final class FavoriteGroupSidebar {
 			appendPullTooltip(tooltip, pull);
 		}
 		if (EmiInput.isAltDown()) {
-			tooltip.add(line("LMB - Toggle Group Mode", Formatting.YELLOW));
-			tooltip.add(line("CTRL + LMB - Open Crafting Tree", Formatting.YELLOW));
-			tooltip.add(line("RMB - Toggle Crafting Chain", Formatting.YELLOW));
-			tooltip.add(line("CTRL + L - Send Bookmark Group to Chat", Formatting.YELLOW));
-			tooltip.add(line("ALT + LMB - Toggle Collapse/Expand", Formatting.YELLOW));
-			tooltip.add(line("SHIFT + A - Remove Group", Formatting.YELLOW));
-			tooltip.add(line("SHIFT + C - Craft Items", Formatting.YELLOW));
-			tooltip.add(line("LMB on Recipe - Open Exact Recipe", Formatting.YELLOW));
-			tooltip.add(line("LMB + Drag - Create/Include Group", Formatting.YELLOW));
-			tooltip.add(line("RMB + Drag - Remove/Exclude Group", Formatting.YELLOW));
-			tooltip.add(line("SHIFT/CTRL + Scroll - Change Recipe Quantity", Formatting.YELLOW));
-			tooltip.add(line("CTRL + SHIFT + Scroll - Change Whole Group", Formatting.YELLOW));
-			tooltip.add(line("+ ALT - Use Output Stack Size Step", Formatting.YELLOW));
-			tooltip.add(line("SHIFT + LMB + Drag - Move Position", Formatting.YELLOW));
-			tooltip.add(line("SHIFT + Drag Handle to < > - Move Page", Formatting.YELLOW));
-			tooltip.add(line("SHIFT + Drag Handle to Ghost Slots - Fill Group", Formatting.YELLOW));
-			tooltip.add(line("CTRL + SHIFT + C - Craft Missing Items", Formatting.YELLOW));
-			tooltip.add(line("SHIFT + P - Pull Bookmarked Items", Formatting.YELLOW));
-			tooltip.add(line("CTRL + SHIFT + P - Pull Missing Items", Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.toggle_group_mode", "LMB - Toggle Group Mode"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.open_crafting_tree", "CTRL + LMB - Open Crafting Tree"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.toggle_crafting_chain", "RMB - Toggle Crafting Chain"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.send_to_chat", "CTRL + L - Send Bookmark Group to Chat"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.toggle_collapse", "ALT + LMB - Toggle Collapse/Expand"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.remove_group", "SHIFT + A - Remove Group"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.craft_items", "SHIFT + C - Craft Items"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.open_exact_recipe", "LMB on Recipe - Open Exact Recipe"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.create_include_group", "LMB + Drag - Create/Include Group"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.remove_exclude_group", "RMB + Drag - Remove/Exclude Group"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.change_recipe_quantity", "SHIFT/CTRL + Scroll - Change Recipe Quantity"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.change_whole_group", "CTRL + SHIFT + Scroll - Change Whole Group"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.output_stack_step", "+ ALT - Use Output Stack Size Step"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.move_position", "SHIFT + LMB + Drag - Move Position"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.move_page", "SHIFT + Drag Handle to < > - Move Page"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.fill_ghost_slots", "SHIFT + Drag Handle to Ghost Slots - Fill Group"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.craft_missing", "CTRL + SHIFT + C - Craft Missing Items"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.pull_bookmarked", "SHIFT + P - Pull Bookmarked Items"), Formatting.YELLOW));
+			tooltip.add(line(PlannerText.tr("bookmark.help.pull_missing", "CTRL + SHIFT + P - Pull Missing Items"), Formatting.YELLOW));
 		}
 		if (box.group.craftingChain) {
 			appendChainTooltip(tooltip, box.group);
@@ -608,12 +609,12 @@ public final class FavoriteGroupSidebar {
 	private static void appendAutoCraftTooltip(List<TooltipComponent> tooltip, AutoCraftJob job) {
 		int total = Math.max(1, job.steps.size());
 		int current = Math.min(total, job.index + 1);
-		tooltip.add(line((job.missingOnly ? "Craft Missing: " : "Crafting: ") + current + "/" + total, Formatting.GOLD));
+		tooltip.add(line((job.missingOnly ? PlannerText.tr("bookmark.status.craft_missing", "Craft Missing: ") : PlannerText.tr("bookmark.status.crafting", "Crafting: ")) + current + "/" + total, Formatting.GOLD));
 		if (job.index < job.steps.size()) {
 			CraftStep step = job.steps.get(job.index);
-			tooltip.add(line("Current: " + ingredientName(step.output), Formatting.GRAY));
+			tooltip.add(line(PlannerText.tr("bookmark.status.current", "Current: ") + ingredientName(step.output), Formatting.GRAY));
 		}
-		tooltip.add(line("SHIFT + C - Cancel Crafting", Formatting.YELLOW));
+		tooltip.add(line(PlannerText.tr("bookmark.status.cancel_crafting", "SHIFT + C - Cancel Crafting"), Formatting.YELLOW));
 	}
 
 	private static AutoCraftJob activeJob(EmiFavoriteGroups.Group group) {
@@ -624,12 +625,12 @@ public final class FavoriteGroupSidebar {
 	private static void appendMeAutoCraftTooltip(List<TooltipComponent> tooltip, MeAutoCraftJob job) {
 		int total = Math.max(1, job.steps.size());
 		int current = Math.min(total, job.index + 1);
-		tooltip.add(line((job.missingOnly ? "ME Craft Missing: " : "ME Crafting: ") + current + "/" + total, Formatting.GOLD));
+		tooltip.add(line((job.missingOnly ? PlannerText.tr("bookmark.status.me_craft_missing", "ME Craft Missing: ") : PlannerText.tr("bookmark.status.me_crafting", "ME Crafting: ")) + current + "/" + total, Formatting.GOLD));
 		if (job.index < job.steps.size()) {
 			CraftStep step = job.steps.get(job.index);
-			tooltip.add(line("Current: " + ingredientName(step.output), Formatting.GRAY));
+			tooltip.add(line(PlannerText.tr("bookmark.status.current", "Current: ") + ingredientName(step.output), Formatting.GRAY));
 		}
-		tooltip.add(line("SHIFT + C - Cancel Crafting", Formatting.YELLOW));
+		tooltip.add(line(PlannerText.tr("bookmark.status.cancel_crafting", "SHIFT + C - Cancel Crafting"), Formatting.YELLOW));
 	}
 
 	private static MeAutoCraftJob activeMeJob(EmiFavoriteGroups.Group group) {
@@ -640,12 +641,12 @@ public final class FavoriteGroupSidebar {
 	private static void appendPullTooltip(List<TooltipComponent> tooltip, PullJob job) {
 		int total = Math.max(1, job.steps.size());
 		int current = Math.min(total, job.index + 1);
-		tooltip.add(line((job.missingOnly ? "Pull Missing: " : "Pulling: ") + current + "/" + total, Formatting.GOLD));
+		tooltip.add(line((job.missingOnly ? PlannerText.tr("bookmark.status.pull_missing", "Pull Missing: ") : PlannerText.tr("bookmark.status.pulling", "Pulling: ")) + current + "/" + total, Formatting.GOLD));
 		if (job.index < job.steps.size()) {
 			PullStep step = job.steps.get(job.index);
-			tooltip.add(line("Current: " + ingredientName(step.ingredient), Formatting.GRAY));
+			tooltip.add(line(PlannerText.tr("bookmark.status.current", "Current: ") + ingredientName(step.ingredient), Formatting.GRAY));
 		}
-		tooltip.add(line("SHIFT + P - Cancel Pulling", Formatting.YELLOW));
+		tooltip.add(line(PlannerText.tr("bookmark.status.cancel_pulling", "SHIFT + P - Cancel Pulling"), Formatting.YELLOW));
 	}
 
 	private static PullJob activePullJob(EmiFavoriteGroups.Group group) {
@@ -658,14 +659,14 @@ public final class FavoriteGroupSidebar {
 		EmiPlayerInventory inventory = client.player == null ? EmiScreenManager.lastPlayerInventory : EmiPlayerInventory.of(client.player);
 		ChainPlan plan = EmiFavoriteGroups.calculatePlan(group, inventory);
 		MissingCraftPlan missingPlan = buildMissingCraftPlan(group, inventory, false);
-		tooltip.add(line("Crafting Chain", Formatting.AQUA));
-		appendAmounts(tooltip, "Results:", plan.results, Formatting.GRAY);
+		tooltip.add(line(PlannerText.tr("bookmark.chain.title", "Crafting Chain"), Formatting.AQUA));
+		appendAmounts(tooltip, PlannerText.tr("bookmark.chain.results", "Results:"), plan.results, Formatting.GRAY);
 		if (!missingPlan.missing.isEmpty()) {
-			appendAmounts(tooltip, "Missing Items:", missingPlan.missing, Formatting.RED);
+			appendAmounts(tooltip, PlannerText.tr("bookmark.chain.missing_items", "Missing Items:"), missingPlan.missing, Formatting.RED);
 		}
 		List<AmountEntry> requiredCrafts = requiredCrafts(group, plan, missingPlan.steps);
 		if (!requiredCrafts.isEmpty()) {
-			appendAmounts(tooltip, "Required Crafts:", requiredCrafts, Formatting.BLUE);
+			appendAmounts(tooltip, PlannerText.tr("bookmark.chain.required_crafts", "Required Crafts:"), requiredCrafts, Formatting.BLUE);
 		}
 	}
 
@@ -2544,8 +2545,11 @@ public final class FavoriteGroupSidebar {
 	}
 
 	private static final class GroupHeaderTooltipComponent implements EmiTooltipComponent {
-		private static final Text TITLE = EmiPort.literal("Bookmarks Group").formatted(Formatting.WHITE);
 		private static final Text ALT = EmiPort.literal("[alt]").formatted(Formatting.YELLOW);
+
+		private static Text title() {
+			return EmiPort.literal(PlannerText.tr("bookmark.group.title", "Bookmarks Group")).formatted(Formatting.WHITE);
+		}
 
 		@Override
 		public int getHeight() {
@@ -2554,12 +2558,13 @@ public final class FavoriteGroupSidebar {
 
 		@Override
 		public int getWidth(TextRenderer textRenderer) {
-			return Math.max(textRenderer.getWidth(TITLE), textRenderer.getWidth(ALT));
+			Text title = title();
+			return Math.max(textRenderer.getWidth(title), textRenderer.getWidth(ALT));
 		}
 
 		@Override
 		public void drawTooltipText(EmiTooltipComponent.TextRenderData text) {
-			text.draw(TITLE, 0, 0, 0xFFFFFFFF, false);
+			text.draw(title(), 0, 0, 0xFFFFFFFF, false);
 			text.draw(ALT, 0, 10, 0xFFFFFFFF, false);
 		}
 	}

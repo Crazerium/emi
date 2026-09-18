@@ -24,6 +24,10 @@ public final class GtceuPlannerMachineCompat implements PlannerMachineCompatProv
 		Map.entry("gtceu.ebf.perfect_ocs", "Доступные тепловые perfect OC"),
 		Map.entry("gtceu.ebf.applied_perfect_ocs", "Примененные тепловые perfect OC"),
 		Map.entry("gtceu.ebf.heat_too_low", "Температура EBF слишком низкая"),
+		Map.entry("gtceu.note.modeled", "GTCEu: механика температуры Electric Blast Furnace смоделирована"),
+		Map.entry("gtceu.note.recipe_type", "GTCEu: тип рецепта EBF обнаружен автоматически"),
+		Map.entry("gtceu.note.coils", "GTCEu: поддержка нагревательных катушек обнаружена автоматически"),
+		Map.entry("gtceu.note.inherited", "GTCEu: механика температуры EBF получена из типа рецепта + поддержки нагревательных катушек"),
 		Map.entry("gtceu.ebf.recipe_heat_unknown", "Температура рецепта не определена")
 	);
 
@@ -66,6 +70,7 @@ public final class GtceuPlannerMachineCompat implements PlannerMachineCompatProv
 			List.copyOf(notes)
 		);
 	}
+
 
 	@Override
 	public String russianText(String key) {
