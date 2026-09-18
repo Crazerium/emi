@@ -4,6 +4,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,10 +24,14 @@ import dev.emi.emi.api.recipe.EmiRecipe;
 import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.api.stack.serializer.EmiIngredientSerializer;
+import dev.emi.emi.bom.BoM;
 import dev.emi.emi.planner.compat.PlannerMachineCompatRegistry;
 import dev.emi.emi.planner.compat.PlannerMachineRule;
 import dev.emi.emi.planner.compat.PlannerMachineRuntimeOverride;
 import dev.emi.emi.registry.EmiRecipes;
+import dev.emi.emi.runtime.EmiCraftingToolCompat;
+import dev.emi.emi.runtime.EmiFavorite;
+import dev.emi.emi.runtime.EmiFavorites;
 import dev.emi.emi.runtime.EmiProductionPlannerPersistence;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
@@ -35,6 +40,8 @@ public final class ProductionPlanner {
 	private static final double TICKS_PER_SECOND = 20.0D;
 	private static final List<Line> LINES = new ArrayList<>();
 	private static final Map<String, MachineRuntimeInfo> MACHINE_RUNTIME_CACHE = new LinkedHashMap<>();
+	private static final Map<String, String> PREFERRED_MACHINE_PROFILES = new LinkedHashMap<>();
+	private static final int MAX_FAVORITE_CHAIN_RECIPES = 128;
 	private static int activeIndex = -1;
 	private static boolean loaded;
 
@@ -60,7 +67,22 @@ public final class ProductionPlanner {
 		}
 		loaded = true;
 		LINES.clear();
+		PREFERRED_MACHINE_PROFILES.clear();
 		JsonObject root = EmiProductionPlannerPersistence.load();
+		if (root.has("preferred_machines") && root.get("preferred_machines").isJsonObject()) {
+			for (Map.Entry<String, JsonElement> preference : root.getAsJsonObject("preferred_machines").entrySet()) {
+				try {
+					if (preference.getValue().isJsonPrimitive() && preference.getValue().getAsJsonPrimitive().isString()) {
+						String category = preference.getKey().trim();
+						String profile = sanitizeMachineProfile(preference.getValue().getAsString());
+						if (!category.isEmpty() && !profile.isEmpty()) {
+							PREFERRED_MACHINE_PROFILES.put(category, profile);
+						}
+					}
+				} catch (Throwable ignored) {
+				}
+			}
+		}
 		if (root.has("lines") && root.get("lines").isJsonArray()) {
 			for (JsonElement element : root.getAsJsonArray("lines")) {
 				if (!element.isJsonObject()) {
@@ -252,25 +274,229 @@ public final class ProductionPlanner {
 			return false;
 		}
 		Line line = getOrCreateActiveLine();
+		Entry root = addRecipeToLine(line, recipe, true);
+		if (root == null) {
+			return false;
+		}
+		Set<Identifier> visited = new HashSet<>();
+		visited.add(recipe.getId());
+		addFavoritedDependencies(line, recipe, visited);
+		invalidateBalance(line);
+		save();
+		return true;
+	}
+
+	private static Entry addRecipeToLine(Line line, EmiRecipe recipe, boolean incrementExisting) {
+		if (line == null || recipe == null || recipe.getId() == null) {
+			return null;
+		}
 		for (Entry entry : line.entries) {
 			if (entry.recipeId.equals(recipe.getId())) {
-				invalidateBalance(line);
-				if (entry.automatic && entry.getDurationTicks() > 0.0D) {
-					entry.machines = sanitizeCount(entry.machines + 1);
-				} else {
-					entry.rate = sanitizeRate(entry.rate + 1.0D);
+				if (incrementExisting) {
+					if (entry.automatic && entry.getDurationTicks() > 0.0D) {
+						entry.machines = sanitizeCount(entry.machines + 1);
+					} else {
+						entry.rate = sanitizeRate(entry.rate + 1.0D);
+					}
 				}
-				save();
-				return true;
+				return entry;
 			}
 		}
 		Entry entry = new Entry(recipe.getId(), 1.0D, false, 1, 1, 0.0D, 0.0D, "generic", -1, false, OcMode.STANDARD, 0, false, false);
 		applyLineStandardVoltage(line, entry);
+		applyPreferredMachine(entry);
 		entry.automatic = entry.getDetectedDurationTicks() > 0.0D;
 		line.entries.add(entry);
-		invalidateBalance(line);
-		save();
-		return true;
+		return entry;
+	}
+
+	private static void addFavoritedDependencies(Line line, EmiRecipe recipe, Set<Identifier> visited) {
+		if (line == null || recipe == null || visited.size() >= MAX_FAVORITE_CHAIN_RECIPES) {
+			return;
+		}
+		for (EmiIngredient input : recipe.getInputs()) {
+			if (input == null || input.isEmpty() || visited.size() >= MAX_FAVORITE_CHAIN_RECIPES) {
+				continue;
+			}
+			EmiRecipe favoriteRecipe = findFavoritedRecipeFor(input, visited);
+			if (favoriteRecipe == null || favoriteRecipe.getId() == null || !visited.add(favoriteRecipe.getId())) {
+				continue;
+			}
+			addRecipeToLine(line, favoriteRecipe, false);
+			addFavoritedDependencies(line, favoriteRecipe, visited);
+		}
+	}
+
+	private static EmiRecipe findFavoritedRecipeFor(EmiIngredient input, Set<Identifier> excluded) {
+		if (input == null || input.isEmpty()) {
+			return null;
+		}
+
+		EmiRecipe defaultRecipe = findDefaultRecipeFor(input, excluded);
+		if (defaultRecipe != null) {
+			return defaultRecipe;
+		}
+
+		int currentPage = EmiFavorites.currentFavoritePage();
+		EmiRecipe currentPageRecipe = findFavoritedRecipeFor(input, currentPage, excluded);
+		if (currentPageRecipe != null) {
+			return currentPageRecipe;
+		}
+		return findFavoritedRecipeFor(input, -1, excluded);
+	}
+
+	private static EmiRecipe findDefaultRecipeFor(EmiIngredient input, Set<Identifier> excluded) {
+		try {
+			EmiRecipe recipe = BoM.getRecipe(input);
+			if (isUsableDependencyRecipe(recipe, input, excluded)) {
+				return recipe;
+			}
+		} catch (Throwable ignored) {
+		}
+		for (EmiStack option : input.getEmiStacks()) {
+			if (option == null || option.isEmpty()) {
+				continue;
+			}
+			try {
+				EmiRecipe recipe = BoM.getRecipe(option);
+				if (isUsableDependencyRecipe(recipe, input, excluded)) {
+					return recipe;
+				}
+			} catch (Throwable ignored) {
+			}
+		}
+		return null;
+	}
+
+	private static boolean isUsableDependencyRecipe(EmiRecipe recipe, EmiIngredient input, Set<Identifier> excluded) {
+		if (recipe == null || recipe.getId() == null) {
+			return false;
+		}
+		if (excluded != null && excluded.contains(recipe.getId())) {
+			return false;
+		}
+		return recipeProducesIngredient(recipe, input);
+	}
+
+	private static EmiRecipe findFavoritedRecipeFor(EmiIngredient input, int page, Set<Identifier> excluded) {
+		Map<Identifier, EmiRecipe> resultRecipes = new LinkedHashMap<>();
+		Map<Identifier, EmiIngredient> resultStacks = new LinkedHashMap<>();
+		for (EmiFavorite favorite : EmiFavorites.favorites) {
+			if (favorite == null || favorite.getRecipeId() == null || favorite.getRole() != EmiFavorite.Role.RESULT) {
+				continue;
+			}
+			if (page >= 0 && EmiFavorites.getFavoritePage(favorite) != page) {
+				continue;
+			}
+			Identifier recipeId = favorite.getRecipeId();
+			if (excluded != null && excluded.contains(recipeId)) {
+				continue;
+			}
+			EmiRecipe recipe = resolveFavoriteRecipe(favorite);
+			if (recipe != null && recipe.getId() != null) {
+				resultRecipes.putIfAbsent(recipeId, recipe);
+				resultStacks.putIfAbsent(recipeId, favorite.getStack());
+			}
+		}
+		if (resultRecipes.isEmpty()) {
+			return null;
+		}
+
+		for (Map.Entry<Identifier, EmiIngredient> entry : resultStacks.entrySet()) {
+			if (ingredientMatches(input, entry.getValue())) {
+				return resultRecipes.get(entry.getKey());
+			}
+		}
+
+		for (Map.Entry<Identifier, EmiRecipe> entry : resultRecipes.entrySet()) {
+			if (recipeProducesIngredient(entry.getValue(), input)) {
+				return entry.getValue();
+			}
+		}
+
+		for (EmiStack option : input.getEmiStacks()) {
+			if (option == null || option.isEmpty()) {
+				continue;
+			}
+			try {
+				for (EmiRecipe producer : EmiApi.getRecipeManager().getRecipesByOutput(option)) {
+					if (producer == null || producer.getId() == null || !resultRecipes.containsKey(producer.getId())) {
+						continue;
+					}
+					return resultRecipes.get(producer.getId());
+				}
+			} catch (Throwable ignored) {
+			}
+		}
+		return null;
+	}
+
+	private static EmiRecipe resolveFavoriteRecipe(EmiFavorite favorite) {
+		if (favorite == null || favorite.getRecipeId() == null) {
+			return null;
+		}
+		Identifier id = favorite.getRecipeId();
+		EmiRecipe recipe = favorite.getRecipe();
+		if (recipe != null && id.equals(recipe.getId())) {
+			return recipe;
+		}
+		try {
+			recipe = EmiApi.getRecipeManager().getRecipe(id);
+			if (recipe != null) {
+				return recipe;
+			}
+			for (EmiRecipe candidate : EmiApi.getRecipeManager().getRecipes()) {
+				if (candidate != null && id.equals(candidate.getId())) {
+					return candidate;
+				}
+			}
+		} catch (Throwable ignored) {
+		}
+		return null;
+	}
+
+	private static boolean recipeProducesIngredient(EmiRecipe recipe, EmiIngredient input) {
+		if (recipe == null || input == null || input.isEmpty()) {
+			return false;
+		}
+		for (EmiStack output : recipe.getOutputs()) {
+			if (output != null && !output.isEmpty() && ingredientMatches(input, output)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean ingredientMatches(EmiIngredient input, EmiIngredient candidate) {
+		if (input == null || candidate == null || input.isEmpty() || candidate.isEmpty()) {
+			return false;
+		}
+		for (EmiStack inputStack : input.getEmiStacks()) {
+			if (inputStack == null || inputStack.isEmpty()) {
+				continue;
+			}
+			for (EmiStack candidateStack : candidate.getEmiStacks()) {
+				if (candidateStack == null || candidateStack.isEmpty()) {
+					continue;
+				}
+				if (EmiCraftingToolCompat.matches(inputStack, candidateStack)) {
+					return true;
+				}
+				try {
+					if (inputStack.getKey().equals(candidateStack.getKey())) {
+						return true;
+					}
+				} catch (Throwable ignored) {
+				}
+				try {
+					if (inputStack.getId() != null && inputStack.getId().equals(candidateStack.getId())) {
+						return true;
+					}
+				} catch (Throwable ignored) {
+				}
+			}
+		}
+		return false;
 	}
 
 	public static synchronized Line getOrCreateActiveLine() {
@@ -1073,6 +1299,64 @@ public final class ProductionPlanner {
 		refreshBalancedSizing(entry);
 	}
 
+	public static synchronized boolean isPreferredMachine(Entry entry, String profileId) {
+		if (entry == null || profileId == null) {
+			return false;
+		}
+		String category = machinePreferenceCategory(entry);
+		if (category.isEmpty()) {
+			return false;
+		}
+		return sanitizeMachineProfile(profileId).equals(PREFERRED_MACHINE_PROFILES.get(category));
+	}
+
+	public static synchronized void togglePreferredMachine(Entry entry, String profileId) {
+		if (entry == null || profileId == null) {
+			return;
+		}
+		String category = machinePreferenceCategory(entry);
+		if (category.isEmpty()) {
+			return;
+		}
+		String profile = sanitizeMachineProfile(profileId);
+		if (profile.equals(PREFERRED_MACHINE_PROFILES.get(category))) {
+			PREFERRED_MACHINE_PROFILES.remove(category);
+		} else {
+			MachineProfile compatible = findMachineProfile(entry, profile);
+			if (!compatible.id().equals(profile)) {
+				return;
+			}
+			PREFERRED_MACHINE_PROFILES.put(category, profile);
+			setMachineProfile(entry, profile);
+		}
+		save();
+	}
+
+	private static void applyPreferredMachine(Entry entry) {
+		if (entry == null) {
+			return;
+		}
+		String category = machinePreferenceCategory(entry);
+		String preferred = PREFERRED_MACHINE_PROFILES.get(category);
+		if (preferred == null || preferred.isBlank()) {
+			return;
+		}
+		for (MachineProfile profile : getCompatibleMachineProfiles(entry)) {
+			if (profile.id().equals(preferred)) {
+				setMachineProfile(entry, profile.id());
+				return;
+			}
+		}
+	}
+
+	private static String machinePreferenceCategory(Entry entry) {
+		EmiRecipe recipe = entry == null ? null : entry.getRecipe();
+		if (recipe == null || recipe.getCategory() == null || recipe.getCategory().getId() == null) {
+			return "";
+		}
+		return recipe.getCategory().getId().toString();
+	}
+
 	public static synchronized void cycleMachineProfile(Entry entry, int direction) {
 		if (entry == null || direction == 0) {
 			return;
@@ -1434,6 +1718,13 @@ public final class ProductionPlanner {
 		}
 		root.add("lines", lines);
 		root.addProperty("active", activeIndex);
+		if (!PREFERRED_MACHINE_PROFILES.isEmpty()) {
+			JsonObject preferredMachines = new JsonObject();
+			for (Map.Entry<String, String> preference : PREFERRED_MACHINE_PROFILES.entrySet()) {
+				preferredMachines.addProperty(preference.getKey(), preference.getValue());
+			}
+			root.add("preferred_machines", preferredMachines);
+		}
 		EmiProductionPlannerPersistence.save(root);
 	}
 

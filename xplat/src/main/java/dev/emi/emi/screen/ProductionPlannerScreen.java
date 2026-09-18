@@ -13,10 +13,12 @@ import dev.emi.emi.EmiPort;
 import dev.emi.emi.EmiRenderHelper;
 import dev.emi.emi.api.EmiApi;
 import dev.emi.emi.api.recipe.EmiRecipe;
+import dev.emi.emi.api.recipe.EmiRecipeCategory;
 import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.api.widget.Bounds;
 import dev.emi.emi.input.EmiInput;
+import dev.emi.emi.bom.BoM;
 import dev.emi.emi.planner.ProductionPlanner;
 import dev.emi.emi.planner.compat.gto.GtoCapabilityAudit;
 import dev.emi.emi.platform.EmiAgnos;
@@ -31,6 +33,8 @@ import dev.emi.emi.planner.ProductionPlanner.MachineSizing;
 import dev.emi.emi.planner.ProductionPlanner.OcMode;
 import dev.emi.emi.planner.ProductionPlanner.Target;
 import dev.emi.emi.runtime.EmiDrawContext;
+import dev.emi.emi.runtime.EmiHistory;
+import dev.emi.emi.runtime.EmiSidebars;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
@@ -142,6 +146,9 @@ public class ProductionPlannerScreen extends Screen {
 	private Line targetEditLine;
 	private Target targetEditTarget;
 	private Bounds targetEditBounds = EMPTY;
+	private EmiStack pendingStackClick = EmiStack.EMPTY;
+	private int pendingStackButton = -1;
+
 
 	public ProductionPlannerScreen(HandledScreen<?> old) {
 		super(EmiPort.literal(PlannerText.tr("planner.title", "Production Planner")));
@@ -422,7 +429,15 @@ public class ProductionPlannerScreen extends Screen {
 			if (recipe == null) {
 				context.drawTextWithShadow(EmiPort.literal("Missing recipe: " + entry.getRecipeId()), 610 + recipeIndent, y + 9, 0xFFFF7777);
 			} else {
-				recipe.getCategory().renderSimplified(context.raw(), 610 + recipeIndent, y + 9, delta);
+				EmiStack recipeIcon = firstOutput(recipe);
+				if (!recipeIcon.isEmpty()) {
+					int recipeIconX = 610 + recipeIndent;
+					context.drawStack(recipeIcon, recipeIconX, y + 9, EmiIngredient.RENDER_ICON);
+					flowHitboxes.add(new FlowHitbox(new Bounds(recipeIconX, y + 9, 18, 18),
+						new Flow(recipeIcon, 0, 0, 0, 0, false, "", 0), false));
+				} else {
+					recipe.getCategory().renderSimplified(context.raw(), 610 + recipeIndent, y + 9, delta);
+				}
 				String name = recipeName(recipe);
 				String trimmed = textRenderer.trimToWidth(name, Math.max(20, recipeBounds.width() - 24 - recipeIndent));
 				context.drawTextWithShadow(EmiPort.literal(trimmed), 632 + recipeIndent, y + 7, 0xFFFFFFFF);
@@ -939,7 +954,7 @@ public class ProductionPlannerScreen extends Screen {
 		}
 		int visible = Math.min(MENU_MAX_ROWS, profiles.size());
 		machineMenuScroll = Math.max(0, Math.min(machineMenuScroll, Math.max(0, profiles.size() - visible)));
-		int menuWidth = 236;
+		int menuWidth = 252;
 		int menuHeight = MENU_HEADER_HEIGHT + visible * MENU_ROW_HEIGHT + 2;
 		int x = Math.max(4, Math.min(machineMenuAnchor.x(), width - menuWidth - 4));
 		int y = machineMenuAnchor.bottom() + 2;
@@ -959,8 +974,10 @@ public class ProductionPlannerScreen extends Screen {
 		for (int i = 0; i < visible; i++) {
 			MachineProfile profile = profiles.get(machineMenuScroll + i);
 			Bounds row = new Bounds(x + 2, y + MENU_HEADER_HEIGHT + i * MENU_ROW_HEIGHT, menuWidth - 4, MENU_ROW_HEIGHT);
+			Bounds favorite = new Bounds(row.right() - 22, row.y() + 2, 20, row.height() - 4);
 			boolean selected = profile.id().equals(machineMenuEntry.getMachineProfileId());
 			boolean hovered = row.contains(mouseX, mouseY);
+			boolean preferred = ProductionPlanner.isPreferredMachine(machineMenuEntry, profile.id());
 			context.fill(row.x(), row.y(), row.width(), row.height(), selected ? ACTIVE_COLOR : hovered ? HOVER_COLOR : 0xFF18181F);
 			if (selected) {
 				context.fill(row.x(), row.y(), 3, row.height(), 0xFF7FD8A1);
@@ -970,9 +987,13 @@ public class ProductionPlannerScreen extends Screen {
 				context.drawStack(profile.icon(), row.x() + 6, row.y() + 3, EmiIngredient.RENDER_ICON);
 				textX = row.x() + 28;
 			}
-			String name = textRenderer.trimToWidth(profile.displayName(), Math.max(8, row.right() - textX - 6));
+			String name = textRenderer.trimToWidth(profile.displayName(), Math.max(8, favorite.x() - textX - 5));
 			context.drawTextWithShadow(EmiPort.literal(name), textX, row.y() + 7, 0xFFFFFFFF);
-			hitboxes.add(new MachineOptionHitbox(row, profile));
+			context.fill(favorite.x(), favorite.y(), favorite.width(), favorite.height(), preferred ? 0xFF5A5030 : 0xFF24242B);
+			drawBorder(context, favorite, preferred ? 0xFFFFD76A : favorite.contains(mouseX, mouseY) ? 0xFFB8B8C0 : 0xFF55555E);
+			context.drawCenteredText(EmiPort.literal("♥"), favorite.x() + favorite.width() / 2, favorite.y() + 5,
+				preferred ? 0xFFFFD76A : 0xFF777780);
+			hitboxes.add(new MachineOptionHitbox(row, favorite, profile));
 		}
 		machineOptionHitboxes = hitboxes;
 	}
@@ -1274,6 +1295,15 @@ public class ProductionPlannerScreen extends Screen {
 		}
 		if (machineMenuEntry != null) {
 			for (MachineOptionHitbox option : machineOptionHitboxes) {
+				if (option.favoriteBounds.contains(mouseX, mouseY)) {
+					boolean preferred = ProductionPlanner.isPreferredMachine(machineMenuEntry, option.profile.id());
+					drawTooltip(context, mouseX, mouseY,
+						preferred ? "Preferred machine" : "Set as preferred machine",
+						option.profile.displayName(),
+						"Preferred machines are selected automatically for new recipes in this recipe category",
+						preferred ? "Click to clear preference" : "Click to save preference");
+					return;
+				}
 				if (option.bounds.contains(mouseX, mouseY)) {
 					MachineProfile profile = option.profile;
 					List<String> lines = new ArrayList<>();
@@ -1310,6 +1340,8 @@ public class ProductionPlannerScreen extends Screen {
 				if (activeLine.isBalanceEnabled() && activeLine.hasMachineCapacityShortfall()) {
 					lines.add("Achievable: " + formatExactRate(activeLine.getAchievableTargetRate(target)) + unitSuffix(stack));
 				}
+				lines.add("Left-click: view recipes");
+				lines.add("Right-click: view uses");
 				drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 				return;
 			}
@@ -1627,7 +1659,11 @@ public class ProductionPlannerScreen extends Screen {
 					tooltip.add(line(isTarget(ProductionPlanner.getOrCreateActiveLine(), flow.stack)
 						? "Already selected as a Line target"
 						: "Left-click: add as a Line Auto-Balance target"));
+					tooltip.add(line("Shift + left-click: view recipes"));
+				} else {
+					tooltip.add(line("Left-click: view recipes"));
 				}
+				tooltip.add(line("Right-click: view uses"));
 				EmiRenderHelper.drawTooltip(this, context, tooltip, mouseX, mouseY);
 				return;
 			}
@@ -1833,6 +1869,10 @@ public class ProductionPlannerScreen extends Screen {
 			}
 			if (button == 0 && machineMenuEntry != null) {
 				for (MachineOptionHitbox option : machineOptionHitboxes) {
+					if (option.favoriteBounds.contains(mx, my)) {
+						ProductionPlanner.togglePreferredMachine(machineMenuEntry, option.profile.id());
+						return true;
+					}
 					if (option.bounds.contains(mx, my)) {
 						ProductionPlanner.setMachineProfile(machineMenuEntry, option.profile.id());
 						closeDropdowns();
@@ -1938,6 +1978,10 @@ public class ProductionPlannerScreen extends Screen {
 			return true;
 		}
 		for (TargetHitbox hitbox : targetHitboxes) {
+			if (hitbox.icon.contains(mx, my) && (button == 0 || button == 1)) {
+				queueStackClick(hitbox.target.getStack(), button);
+				return true;
+			}
 			if (button == 0 && hitbox.remove.contains(mx, my)) {
 				ProductionPlanner.removeBalanceTarget(line, hitbox.target);
 				return true;
@@ -1956,9 +2000,20 @@ public class ProductionPlannerScreen extends Screen {
 			return true;
 		}
 		for (FlowHitbox hitbox : flowHitboxes) {
-			if (button == 0 && hitbox.targetCandidate && hitbox.bounds.contains(mx, my)) {
-				double defaultRate = hitbox.flow.stack.getKey() instanceof Fluid ? 1000.0D : 1.0D;
-				ProductionPlanner.setBalanceTarget(line, hitbox.flow.stack, defaultRate);
+			if (!hitbox.bounds.contains(mx, my)) {
+				continue;
+			}
+			if (button == 0) {
+				if (hitbox.targetCandidate && !EmiInput.isShiftDown()) {
+					double defaultRate = hitbox.flow.stack.getKey() instanceof Fluid ? 1000.0D : 1.0D;
+					ProductionPlanner.setBalanceTarget(line, hitbox.flow.stack, defaultRate);
+					return true;
+				}
+				queueStackClick(hitbox.flow.stack, button);
+				return true;
+			}
+			if (button == 1) {
+				queueStackClick(hitbox.flow.stack, button);
 				return true;
 			}
 		}
@@ -2082,6 +2137,145 @@ public class ProductionPlannerScreen extends Screen {
 		return super.mouseClicked(mouseX, mouseY, button);
 	}
 
+	private void queueStackClick(EmiStack stack, int button) {
+		if (stack == null || stack.isEmpty()) {
+			pendingStackClick = EmiStack.EMPTY;
+			pendingStackButton = -1;
+			return;
+		}
+		pendingStackClick = stack.copy();
+		pendingStackButton = button;
+	}
+
+	private void clearPendingStackClick() {
+		pendingStackClick = EmiStack.EMPTY;
+		pendingStackButton = -1;
+	}
+
+	private boolean openStackRecipes(EmiStack stack) {
+		if (stack == null || stack.isEmpty()) {
+			return false;
+		}
+		List<EmiRecipe> recipes = findOutputRecipes(stack);
+		if (recipes.isEmpty()) {
+			return false;
+		}
+		EmiRecipe preferred = findPreferredRecipe(stack, recipes);
+		return openRecipeScreen(stack, recipes, preferred);
+	}
+
+	private boolean openStackUses(EmiStack stack) {
+		if (stack == null || stack.isEmpty()) {
+			return false;
+		}
+		List<EmiRecipe> uses = findUseRecipes(stack);
+		if (uses.isEmpty()) {
+			return false;
+		}
+		return openRecipeScreen(stack, uses, null);
+	}
+
+	private boolean openRecipeScreen(EmiStack context, List<EmiRecipe> recipes, EmiRecipe preferred) {
+		Map<EmiRecipeCategory, List<EmiRecipe>> pages = new LinkedHashMap<>();
+		for (EmiRecipe recipe : recipes) {
+			if (recipe == null || recipe.getCategory() == null) {
+				continue;
+			}
+			pages.computeIfAbsent(recipe.getCategory(), key -> new ArrayList<>()).add(recipe);
+		}
+		if (pages.isEmpty()) {
+			return false;
+		}
+
+		ProductionPlanner.save();
+		EmiSidebars.lookup(context);
+		MinecraftClient client = MinecraftClient.getInstance();
+		RecipeScreen recipeScreen = new RecipeScreen(old, pages);
+		EmiHistory.push(this);
+		client.setScreen(recipeScreen);
+		if (client.currentScreen != recipeScreen) {
+			return false;
+		}
+		if (preferred != null) {
+			recipeScreen.focusRecipe(preferred);
+		}
+		return true;
+	}
+
+	private List<EmiRecipe> findOutputRecipes(EmiStack stack) {
+		List<EmiRecipe> recipes = new ArrayList<>();
+		for (EmiRecipe recipe : EmiApi.getRecipeManager().getRecipes()) {
+			boolean matches = false;
+			for (EmiStack output : recipe.getOutputs()) {
+				if (sameLookupStack(stack, output)) {
+					matches = true;
+					break;
+				}
+			}
+			if (matches && !recipes.contains(recipe)) {
+				recipes.add(recipe);
+			}
+		}
+		return recipes;
+	}
+
+	private List<EmiRecipe> findUseRecipes(EmiStack stack) {
+		List<EmiRecipe> recipes = new ArrayList<>();
+		for (EmiRecipe recipe : EmiApi.getRecipeManager().getRecipes()) {
+			boolean matches = ingredientListContains(recipe.getInputs(), stack)
+				|| ingredientListContains(recipe.getCatalysts(), stack);
+			if (matches && !recipes.contains(recipe)) {
+				recipes.add(recipe);
+			}
+		}
+		return recipes;
+	}
+
+	private boolean ingredientListContains(List<EmiIngredient> ingredients, EmiStack stack) {
+		for (EmiIngredient ingredient : ingredients) {
+			for (EmiStack candidate : ingredient.getEmiStacks()) {
+				if (sameLookupStack(stack, candidate)) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private EmiRecipe findPreferredRecipe(EmiStack stack, List<EmiRecipe> recipes) {
+		EmiRecipe preferred = BoM.getRecipe(stack);
+		if (preferred != null && recipes.contains(preferred)) {
+			return preferred;
+		}
+		for (EmiRecipe recipe : recipes) {
+			for (EmiStack output : recipe.getOutputs()) {
+				if (!sameLookupStack(stack, output)) {
+					continue;
+				}
+				preferred = BoM.getRecipe(output);
+				if (preferred != null && recipes.contains(preferred)) {
+					return preferred;
+				}
+			}
+		}
+		return null;
+	}
+
+	private boolean sameLookupStack(EmiStack a, EmiStack b) {
+		if (a == null || b == null || a.isEmpty() || b.isEmpty()) {
+			return false;
+		}
+		if (a.isEqual(b)) {
+			return true;
+		}
+		Object aKey = a.getKey();
+		Object bKey = b.getKey();
+		if (aKey != null && aKey.equals(bKey)) {
+			return true;
+		}
+		return a.getId() != null && a.getId().equals(b.getId());
+	}
+
 	@Override
 	public boolean mouseDragged(double mouseX, double mouseY, int button, double deltaX, double deltaY) {
 		if (groupsOpen && button == 0) {
@@ -2107,6 +2301,18 @@ public class ProductionPlannerScreen extends Screen {
 
 	@Override
 	public boolean mouseReleased(double mouseX, double mouseY, int button) {
+		if (pendingStackButton == button && pendingStackClick != null && !pendingStackClick.isEmpty()) {
+			EmiStack stack = pendingStackClick;
+			clearPendingStackClick();
+			if (button == 0) {
+				return openStackRecipes(stack);
+			}
+			if (button == 1) {
+				return openStackUses(stack);
+			}
+		} else if (pendingStackButton >= 0) {
+			clearPendingStackClick();
+		}
 		if (groupsOpen && button == 0) {
 			Line line = ProductionPlanner.getOrCreateActiveLine();
 			int mx = (int) mouseX;
@@ -2754,7 +2960,7 @@ public class ProductionPlannerScreen extends Screen {
 		RATE, MACHINES, PARALLEL, DURATION
 	}
 
-	private record MachineOptionHitbox(Bounds bounds, MachineProfile profile) {
+	private record MachineOptionHitbox(Bounds bounds, Bounds favoriteBounds, MachineProfile profile) {
 	}
 
 	private record VoltageOptionHitbox(Bounds bounds, int tier) {
