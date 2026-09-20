@@ -140,6 +140,13 @@ public final class RecipeFavoriteActions {
 				added.add(favorite);
 			}
 		}
+		for (EmiIngredient catalyst : aggregate(recipe.getCatalysts())) {
+			EmiIngredient single = catalyst.copy().setAmount(1);
+			EmiFavorite favorite = EmiFavorites.addRecipeFavoriteQuiet(single, recipe, Role.CATALYST, true);
+			if (favorite != null && !containsIdentity(added, favorite)) {
+				added.add(favorite);
+			}
+		}
 		return added;
 	}
 

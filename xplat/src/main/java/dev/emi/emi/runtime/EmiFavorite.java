@@ -32,7 +32,8 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 	public enum Role {
 		ITEM,
 		RESULT,
-		INGREDIENT
+		INGREDIENT,
+		CATALYST
 	}
 
 	protected EmiIngredient stack;
@@ -50,10 +51,10 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 	}
 
 	EmiFavorite(EmiIngredient stack, @Nullable EmiRecipe recipe, @Nullable Identifier recipeId, Role role) {
-		this.stack = stack;
 		this.recipe = recipe;
 		this.recipeId = recipe != null && recipe.getId() != null ? recipe.getId() : recipeId;
 		this.role = this.recipeId == null ? Role.ITEM : role;
+		this.stack = this.role == Role.CATALYST ? stack.copy().setAmount(1) : stack;
 	}
 
 	public EmiIngredient getStack() {
@@ -76,7 +77,7 @@ public class EmiFavorite implements EmiIngredient, Batchable {
 
 	@Override
 	public EmiIngredient setAmount(long amount) {
-		stack = stack.copy().setAmount(amount);
+		stack = stack.copy().setAmount(role == Role.CATALYST ? 1 : amount);
 		return this;
 	}
 

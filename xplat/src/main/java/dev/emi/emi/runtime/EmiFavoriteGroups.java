@@ -835,7 +835,9 @@ public final class EmiFavoriteGroups {
 			List<AmountEntry> results = new ArrayList<>();
 			IdentityHashMap<EmiFavorite, Long> required = new IdentityHashMap<>();
 			for (EmiFavorite favorite : group.members) {
-				long amount = safeMultiply(group.baseAmount(favorite), group.quantity);
+				long amount = favorite.getRole() == EmiFavorite.Role.CATALYST
+					? 1L
+					: safeMultiply(group.baseAmount(favorite), group.quantity);
 				results.add(new AmountEntry(normalize(favorite.getStack()), amount));
 				required.put(favorite, amount);
 			}
@@ -886,7 +888,9 @@ public final class EmiFavoriteGroups {
 		for (EmiFavorite favorite : group.members) {
 			EmiRecipe recipe = favorite.getRecipe();
 			long amount;
-			if (recipe != null && favorite.getRole() != EmiFavorite.Role.ITEM) {
+			if (favorite.getRole() == EmiFavorite.Role.CATALYST) {
+				amount = 1L;
+			} else if (recipe != null && favorite.getRole() != EmiFavorite.Role.ITEM) {
 				long batches = batchesFor(recipeBatches, recipe);
 				if (batches <= 0) {
 					batches = safeMultiply(group.quantity, recipeQuantity(group, recipe));
@@ -1127,7 +1131,8 @@ public final class EmiFavoriteGroups {
 		return switch (role) {
 			case RESULT -> 0;
 			case INGREDIENT -> 1;
-			case ITEM -> 2;
+			case CATALYST -> 2;
+			case ITEM -> 3;
 		};
 	}
 
