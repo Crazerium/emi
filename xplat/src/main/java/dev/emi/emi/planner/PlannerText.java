@@ -539,7 +539,11 @@ public final class PlannerText {
 		Map.entry("recipe_overlay.save_recipe_count", "CTRL + SHIFT + A - Сохранить с рецептом и количеством"),
 		Map.entry("recipe_overlay.share_recipe", "CTRL + SHIFT + L - Отправить ссылку на рецепт в чат"),
 		Map.entry("recipe_default.choose_outputs", "Выбрать выходы рецепта по умолчанию"),
-		Map.entry("group.default", "Группа")
+		Map.entry("group.default", "Группа"),
+		Map.entry("load.tooltip", "Загрузка машины"),
+		Map.entry("load.status.safe", "Норма"),
+		Map.entry("load.status.medium", "Высокая нагрузка"),
+		Map.entry("load.status.bottleneck", "УЗКОЕ МЕСТО")
 	);
 
 	private PlannerText() {

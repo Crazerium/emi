@@ -68,6 +68,16 @@ public class ProductionPlannerScreen extends Screen {
 	private static final int BORDER_COLOR = 0xFF55555F;
 	private static final int ACTIVE_COLOR = 0xFF355048;
 	private static final int HOVER_COLOR = 0xFF3A3A44;
+	private static final int LOAD_SAFE_BG = 0xFF142019;
+	private static final int LOAD_MEDIUM_BG = 0xFF262113;
+	private static final int LOAD_BOTTLENECK_BG = 0xFF291616;
+	private static final int LOAD_SAFE_BOX = 0xFF294838;
+	private static final int LOAD_MEDIUM_BOX = 0xFF554923;
+	private static final int LOAD_BOTTLENECK_BOX = 0xFF572929;
+	private static final int LOAD_SAFE_ACCENT = 0xFF69D58C;
+	private static final int LOAD_MEDIUM_ACCENT = 0xFFFFD45C;
+	private static final int LOAD_BOTTLENECK_ACCENT = 0xFFFF6B6B;
+	private static final double LOAD_MEDIUM_THRESHOLD = 80.0D;
 	private static final double EPSILON = 0.0000001D;
 	private static final boolean SHOW_GTO_AUDIT = EmiAgnos.isDevelopmentEnvironment();
 
@@ -415,8 +425,14 @@ public class ProductionPlannerScreen extends Screen {
 		for (int visible = 0, index = rowScroll; index < end; visible++, index++) {
 			PlannerDisplayRow displayRow = displayRows.get(index);
 			int y = ROW_TOP + visible * ROW_HEIGHT;
-			int bg = (index & 1) == 0 ? 0xFF111118 : 0xFF16161D;
+			LoadInfo loadInfo = displayRow.entry == null ? LoadInfo.none() : getLoadInfo(line, displayRow.entry);
+			int bg = loadInfo.available()
+				? loadInfo.state().rowBackground()
+				: (index & 1) == 0 ? 0xFF111118 : 0xFF16161D;
 			context.fill(0, y, width, ROW_HEIGHT - 1, bg);
+			if (loadInfo.available()) {
+				context.fill(0, y, 3, ROW_HEIGHT - 1, loadInfo.state().accentColor());
+			}
 
 			if (displayRow.group != null) {
 				Group group = displayRow.group;
@@ -487,7 +503,8 @@ public class ProductionPlannerScreen extends Screen {
 				drawValueBox(context, duration, mouseX, mouseY, durationText, entry.isAutomatic());
 			}
 			double rowRate = line.getEffectiveRate(entry);
-			drawValueBox(context, rate, mouseX, mouseY, formatDisplayRate(rowRate) + "/" + displayTimeUnit.suffix, line.isBalanceEnabled() || !entry.isAutomatic());
+			drawLoadValueBox(context, rate, mouseX, mouseY, formatDisplayRate(rowRate) + "/" + displayTimeUnit.suffix,
+				line.isBalanceEnabled() || !entry.isAutomatic(), loadInfo);
 			drawButton(context, replace, mouseX, mouseY, "R", false);
 			drawButton(context, remove, mouseX, mouseY, "x", false);
 
@@ -2215,6 +2232,10 @@ public class ProductionPlannerScreen extends Screen {
 					double balancedRate = activeLine.getEffectiveRate(entry);
 					List<String> lines = new ArrayList<>();
 					lines.add(PlannerText.tr("tooltip.balanced_crafts", "Balanced crafts") + "/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(balancedRate));
+					LoadInfo loadInfo = getLoadInfo(activeLine, entry);
+					if (loadInfo.available()) {
+						lines.add(PlannerText.tr("load.tooltip", "Machine load") + ": " + formatExactRate(loadInfo.percent()) + "% - " + loadInfo.state().displayName());
+					}
 					if (isCompactLayout() && entry.getProcessedDurationSeconds() > 0.0D) {
 						lines.add(PlannerText.tr("tooltip.duration", "Duration") + ": " + formatExactRate(entry.getProcessedDurationSeconds()) + " s");
 					}
@@ -4134,6 +4155,43 @@ public class ProductionPlannerScreen extends Screen {
 		return stack.getKey() instanceof Fluid ? "mB/" + displayTimeUnit.suffix : "/" + displayTimeUnit.suffix;
 	}
 
+	private LoadInfo getLoadInfo(Line line, Entry entry) {
+		if (line == null || entry == null || !line.isBalanceEnabled()) {
+			return LoadInfo.none();
+		}
+		double requiredRate = line.getEffectiveRate(entry);
+		if (!Double.isFinite(requiredRate) || requiredRate <= EPSILON) {
+			return LoadInfo.none();
+		}
+		MachineSizing sizing = entry.getMachineSizing(requiredRate);
+		if (!sizing.available() || !Double.isFinite(sizing.capacityRate()) || sizing.capacityRate() <= EPSILON) {
+			return LoadInfo.none();
+		}
+		double percent = Math.max(0.0D, requiredRate / sizing.capacityRate() * 100.0D);
+		boolean propagatedBottleneck = line.hasMachineCapacityShortfall()
+			&& entry.getMachineProfileName().equals(line.getBottleneckName())
+			&& percent >= 99.0D;
+		LoadState state = !sizing.sufficient() || percent > 100.0D + EPSILON || propagatedBottleneck
+			? LoadState.BOTTLENECK
+			: percent >= LOAD_MEDIUM_THRESHOLD ? LoadState.MEDIUM : LoadState.SAFE;
+		return new LoadInfo(true, Math.min(percent, 99999.0D), state);
+	}
+
+	private void drawLoadValueBox(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY, String label,
+			boolean active, LoadInfo loadInfo) {
+		if (loadInfo == null || !loadInfo.available()) {
+			drawValueBox(context, bounds, mouseX, mouseY, label, active);
+			return;
+		}
+		boolean hovered = bounds.contains(mouseX, mouseY);
+		int color = hovered ? HOVER_COLOR : loadInfo.state().boxColor();
+		context.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color);
+		drawBorder(context, bounds, hovered ? 0xFFD0D0D8 : loadInfo.state().accentColor());
+		context.fill(bounds.x(), bounds.y(), 3, bounds.height(), loadInfo.state().accentColor());
+		String trimmed = textRenderer.trimToWidth(label, Math.max(4, bounds.width() - 7));
+		context.drawCenteredText(EmiPort.literal(trimmed), bounds.x() + bounds.width() / 2 + 1, bounds.y() + 6, 0xFFFFFFFF);
+	}
+
 	private void drawValueBox(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY, String label, boolean active) {
 		drawValueBox(context, bounds, mouseX, mouseY, label, active, 0xFFFFFFFF);
 	}
@@ -4259,6 +4317,55 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private record BuildSummaryHitbox(Bounds bounds, BuildSummaryRow row) {
+	}
+
+	private record LoadInfo(boolean available, double percent, LoadState state) {
+		private static LoadInfo none() {
+			return new LoadInfo(false, 0.0D, LoadState.NONE);
+		}
+	}
+
+	private enum LoadState {
+		NONE,
+		SAFE,
+		MEDIUM,
+		BOTTLENECK;
+
+		private int rowBackground() {
+			return switch (this) {
+				case SAFE -> LOAD_SAFE_BG;
+				case MEDIUM -> LOAD_MEDIUM_BG;
+				case BOTTLENECK -> LOAD_BOTTLENECK_BG;
+				case NONE -> 0xFF111118;
+			};
+		}
+
+		private int boxColor() {
+			return switch (this) {
+				case SAFE -> LOAD_SAFE_BOX;
+				case MEDIUM -> LOAD_MEDIUM_BOX;
+				case BOTTLENECK -> LOAD_BOTTLENECK_BOX;
+				case NONE -> 0xFF222229;
+			};
+		}
+
+		private int accentColor() {
+			return switch (this) {
+				case SAFE -> LOAD_SAFE_ACCENT;
+				case MEDIUM -> LOAD_MEDIUM_ACCENT;
+				case BOTTLENECK -> LOAD_BOTTLENECK_ACCENT;
+				case NONE -> BORDER_COLOR;
+			};
+		}
+
+		private String displayName() {
+			return switch (this) {
+				case SAFE -> PlannerText.tr("load.status.safe", "Healthy");
+				case MEDIUM -> PlannerText.tr("load.status.medium", "High load");
+				case BOTTLENECK -> PlannerText.tr("load.status.bottleneck", "BOTTLENECK");
+				case NONE -> "";
+			};
+		}
 	}
 
 	private enum EditKind {

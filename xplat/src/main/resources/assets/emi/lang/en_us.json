@@ -1392,5 +1392,9 @@
   "emi.production_planner.bookmark_tree.crafts": "Crafts: %s",
   "emi.production_planner.machine.select_setting": "Select %s",
   "emi.production_planner.tooltip.select_or_wheel": "Click to select; mouse wheel to cycle",
-  "emi.production_planner.tooltip.click_toggle": "Click to toggle"
+  "emi.production_planner.tooltip.click_toggle": "Click to toggle",
+  "emi.production_planner.load.tooltip": "Machine load",
+  "emi.production_planner.load.status.safe": "Healthy",
+  "emi.production_planner.load.status.medium": "High load",
+  "emi.production_planner.load.status.bottleneck": "BOTTLENECK"
 }

@@ -1392,5 +1392,9 @@
   "emi.production_planner.bookmark_tree.crafts": "Крафтов: %s",
   "emi.production_planner.machine.select_setting": "Выбор: %s",
   "emi.production_planner.tooltip.select_or_wheel": "Нажмите для выбора; колесо мыши переключает варианты",
-  "emi.production_planner.tooltip.click_toggle": "Нажмите для переключения"
+  "emi.production_planner.tooltip.click_toggle": "Нажмите для переключения",
+  "emi.production_planner.load.tooltip": "Загрузка машины",
+  "emi.production_planner.load.status.safe": "Норма",
+  "emi.production_planner.load.status.medium": "Высокая нагрузка",
+  "emi.production_planner.load.status.bottleneck": "УЗКОЕ МЕСТО"
 }
