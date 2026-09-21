@@ -24,10 +24,6 @@ public abstract class EmiAgnos {
 
 	static {
 		try {
-			Class.forName("dev.emi.emi.platform.fabric.EmiAgnosFabric");
-		} catch (Throwable t) {
-		}
-		try {
 			Class.forName("dev.emi.emi.platform.forge.EmiAgnosForge");
 		} catch (Throwable t) {
 		}

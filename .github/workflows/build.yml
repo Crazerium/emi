@@ -26,8 +26,6 @@ jobs:
           key: ${{ runner.os }}-gradle-${{ hashFiles('**/gradle-wrapper.properties') }}
           restore-keys: ${{ runner.os }}-gradle
 
-      - name: Build Fabric
-        run: ./gradlew :fabric:build
 
       - name: Build Forge
         run: ./gradlew :forge:build
@@ -37,5 +35,4 @@ jobs:
         with:
           name: Artifacts
           path: |
-            fabric/build/libs/
             forge/build/libs/

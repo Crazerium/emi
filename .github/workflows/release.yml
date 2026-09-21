@@ -39,11 +39,6 @@ jobs:
         id: composite_version
         run: echo "composite_version=${{ steps.mod_version.outputs.mod_version }}+${{ steps.minecraft_version.outputs.minecraft_version }}" >> $GITHUB_OUTPUT
 
-      - name: Build Fabric
-        env:
-          RELEASE: true
-        run: ./gradlew :fabric:build
-
       - name: Build Forge
         env:
           RELEASE: true
@@ -67,17 +62,6 @@ jobs:
           body_path: CHANGELOG.md
           draft: false
           prerelease: false
-
-      - name: Upload Fabric Release Asset
-        id: upload_fabric_release_asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./fabric/build/libs/emi-${{ steps.composite_version.outputs.composite_version }}+fabric.jar
-          asset_name: emi-${{ steps.composite_version.outputs.composite_version }}+fabric.jar
-          asset_content_type: application/java-archive
 
       - name: Upload Forge Release Asset
         id: upload_forge_release_asset
