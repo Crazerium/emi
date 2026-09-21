@@ -11,8 +11,8 @@ import dev.emi.emi.platform.EmiAgnos;
 
 public final class GtoPlannerMachineCompat implements PlannerMachineCompatProvider {
 	private static final Map<String, String> RU = Map.ofEntries(
-		Map.entry("gto.precision.glass_tier", "Тир стекла"),
-		Map.entry("gto.precision.glass_tier_help", "Встроенные параллели определяются обнаруженной формулой от тира стекла"),
+		Map.entry("gto.precision.glass_tier", "Стекло"),
+		Map.entry("gto.precision.glass_tier_help", "Установленное стекло определяет механику машины, обнаруженную по её подсказке"),
 		Map.entry("gto.precision.casing_tier", "Тир корпуса машины"),
 		Map.entry("gto.precision.casing_tier_help", "Тир рецепта не может быть выше тира корпуса машины; AUTO использует минимум рецепта"),
 		Map.entry("gto.precision.current_parallel", "Текущие встроенные параллели"),
@@ -32,7 +32,7 @@ public final class GtoPlannerMachineCompat implements PlannerMachineCompatProvid
 		Map.entry("gto.dynamic.power_module_tier_help", "Тир установленного силового модуля задает встроенный parallel"),
 		Map.entry("gto.dynamic.hermetic_casing_tier", "Тир герметичного корпуса"),
 		Map.entry("gto.dynamic.hermetic_casing_tier_help", "Тир установленного герметичного корпуса задает встроенный parallel"),
-		Map.entry("gto.dynamic.selected_glass_tier", "Выбранный тир стекла"),
+		Map.entry("gto.dynamic.selected_glass_tier", "Выбранное стекло"),
 		Map.entry("gto.dynamic.selected_structure_tier", "Выбранный тир структуры"),
 		Map.entry("gto.dynamic.duration_multiplier", "Множитель времени"),
 		Map.entry("gto.dynamic.production_boost", "Режим увеличения производства"),

@@ -22,6 +22,7 @@ import dev.emi.emi.input.EmiInput;
 import dev.emi.emi.bom.BoM;
 import dev.emi.emi.planner.ProductionPlanner;
 import dev.emi.emi.planner.compat.gto.GtoCapabilityAudit;
+import dev.emi.emi.planner.compat.gtceu.GtceuHeatingCoilCatalog;
 import dev.emi.emi.platform.EmiAgnos;
 import dev.emi.emi.planner.PlannerText;
 import dev.emi.emi.planner.ProductionPlanner.Entry;
@@ -31,6 +32,7 @@ import dev.emi.emi.planner.ProductionPlanner.Line;
 import dev.emi.emi.planner.ProductionPlanner.LineTransferResult;
 import dev.emi.emi.planner.ProductionPlanner.MachineProfile;
 import dev.emi.emi.planner.ProductionPlanner.MachineSettingSpec;
+import dev.emi.emi.planner.ProductionPlanner.MachineSettingType;
 import dev.emi.emi.planner.ProductionPlanner.MachineSizing;
 import dev.emi.emi.planner.ProductionPlanner.OcMode;
 import dev.emi.emi.planner.ProductionPlanner.Target;
@@ -136,7 +138,12 @@ public class ProductionPlannerScreen extends Screen {
 	private List<MachineSettingControl> configSpecialControls = List.of();
 	private boolean coilMenuOpen;
 	private Bounds coilMenuAnchor = EMPTY;
+	private int coilMenuScroll;
 	private List<CoilOptionHitbox> coilOptionHitboxes = List.of();
+	private MachineSettingSpec machineSettingMenuSpec;
+	private Bounds machineSettingMenuAnchor = EMPTY;
+	private int machineSettingMenuScroll;
+	private List<MachineSettingOptionHitbox> machineSettingOptionHitboxes = List.of();
 	private Entry voltageMenuEntry;
 	private Bounds voltageMenuAnchor = EMPTY;
 	private int voltageMenuScroll;
@@ -1357,6 +1364,8 @@ public class ProductionPlannerScreen extends Screen {
 		activeDropdownBounds = EMPTY;
 		machineOptionHitboxes = List.of();
 		voltageOptionHitboxes = List.of();
+		coilOptionHitboxes = List.of();
+		machineSettingOptionHitboxes = List.of();
 		if (!isDropdownOpen()) {
 			return;
 		}
@@ -1365,6 +1374,8 @@ public class ProductionPlannerScreen extends Screen {
 		try {
 			if (coilMenuOpen && machineConfigEntry != null) {
 				renderCoilDropdown(context, mouseX, mouseY);
+			} else if (machineSettingMenuSpec != null && machineConfigEntry != null) {
+				renderMachineSettingDropdown(context, mouseX, mouseY);
 			} else if (machineConfigEntry != null) {
 				renderMachineConfig(context, mouseX, mouseY);
 			} else if (machineMenuEntry != null) {
@@ -1521,12 +1532,10 @@ public class ProductionPlannerScreen extends Screen {
 		int cy = y + MENU_HEADER_HEIGHT + 4;
 		if (coils) {
 			context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("machine.coils", "Coils") + ":"), x + 8, cy + 5, 0xFFC8C8D0);
-			configCoilMinus = new Bounds(x + 70, cy + 1, 18, 18);
-			configCoilValue = new Bounds(x + 90, cy, 136, 20);
-			configCoilPlus = new Bounds(x + 228, cy + 1, 18, 18);
-			drawButton(context, configCoilMinus, mouseX, mouseY, "-", false);
-			drawValueBox(context, configCoilValue, mouseX, mouseY, machineConfigEntry.getCoilName(), machineConfigEntry.getCoilTier() > 0);
-			drawButton(context, configCoilPlus, mouseX, mouseY, "+", false);
+			configCoilValue = new Bounds(x + 90, cy, menuWidth - 98, 20);
+			EmiStack coilIcon = GtceuHeatingCoilCatalog.iconForName(machineConfigEntry.getCoilName());
+			drawSelectorValueBox(context, configCoilValue, mouseX, mouseY, machineConfigEntry.getCoilName(),
+				machineConfigEntry.getCoilTier() > 0, coilIcon);
 			cy += 26;
 		}
 		if (parallelControl) {
@@ -1542,21 +1551,44 @@ public class ProductionPlannerScreen extends Screen {
 			cy += 26;
 		}
 		for (MachineSettingSpec spec : specialSettings) {
-			int plusX = x + menuWidth - 36;
-			int valueWidth = 84;
-			int valueX = plusX - valueWidth - 2;
-			int minusX = valueX - 20;
-			String label = PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ":";
-			label = textRenderer.trimToWidth(label, Math.max(40, minusX - x - 16));
-			context.drawTextWithShadow(EmiPort.literal(label), x + 8, cy + 5, 0xFFC8C8D0);
-			Bounds minus = new Bounds(minusX, cy + 1, 18, 18);
-			Bounds value = new Bounds(valueX, cy, valueWidth, 20);
-			Bounds plus = new Bounds(plusX, cy + 1, 18, 18);
-			drawButton(context, minus, mouseX, mouseY, "-", false);
-			drawValueBox(context, value, mouseX, mouseY, machineConfigEntry.getMachineSettingDisplayValue(spec),
-				machineConfigEntry.getMachineSettingValue(spec) != spec.defaultValue());
-			drawButton(context, plus, mouseX, mouseY, "+", false);
-			specialControls.add(new MachineSettingControl(spec, minus, value, plus));
+			if (spec.type() == MachineSettingType.CHOICE) {
+				int valueWidth = Math.min(166, Math.max(112, menuWidth / 2));
+				int valueX = x + menuWidth - valueWidth - 8;
+				String label = PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ":";
+				label = textRenderer.trimToWidth(label, Math.max(40, valueX - x - 16));
+				context.drawTextWithShadow(EmiPort.literal(label), x + 8, cy + 5, 0xFFC8C8D0);
+				Bounds value = new Bounds(valueX, cy, valueWidth, 20);
+				int currentValue = machineConfigEntry.getMachineSettingValue(spec);
+				drawSelectorValueBox(context, value, mouseX, mouseY, spec.displayValue(currentValue),
+					currentValue != spec.defaultValue(), spec.choiceIcon(currentValue));
+				specialControls.add(new MachineSettingControl(spec, EMPTY, value, EMPTY));
+			} else if (spec.type() == MachineSettingType.TOGGLE) {
+				int valueWidth = 84;
+				int valueX = x + menuWidth - valueWidth - 8;
+				String label = PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ":";
+				label = textRenderer.trimToWidth(label, Math.max(40, valueX - x - 16));
+				context.drawTextWithShadow(EmiPort.literal(label), x + 8, cy + 5, 0xFFC8C8D0);
+				Bounds value = new Bounds(valueX, cy, valueWidth, 20);
+				int currentValue = machineConfigEntry.getMachineSettingValue(spec);
+				drawValueBox(context, value, mouseX, mouseY, spec.displayValue(currentValue), currentValue != 0);
+				specialControls.add(new MachineSettingControl(spec, EMPTY, value, EMPTY));
+			} else {
+				int plusX = x + menuWidth - 36;
+				int valueWidth = 84;
+				int valueX = plusX - valueWidth - 2;
+				int minusX = valueX - 20;
+				String label = PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ":";
+				label = textRenderer.trimToWidth(label, Math.max(40, minusX - x - 16));
+				context.drawTextWithShadow(EmiPort.literal(label), x + 8, cy + 5, 0xFFC8C8D0);
+				Bounds minus = new Bounds(minusX, cy + 1, 18, 18);
+				Bounds value = new Bounds(valueX, cy, valueWidth, 20);
+				Bounds plus = new Bounds(plusX, cy + 1, 18, 18);
+				drawButton(context, minus, mouseX, mouseY, "-", false);
+				drawValueBox(context, value, mouseX, mouseY, machineConfigEntry.getMachineSettingDisplayValue(spec),
+					machineConfigEntry.getMachineSettingValue(spec) != spec.defaultValue());
+				drawButton(context, plus, mouseX, mouseY, "+", false);
+				specialControls.add(new MachineSettingControl(spec, minus, value, plus));
+			}
 			cy += 26;
 		}
 		configSpecialControls = List.copyOf(specialControls);
@@ -1573,8 +1605,10 @@ public class ProductionPlannerScreen extends Screen {
 
 	private void renderCoilDropdown(EmiDrawContext context, int mouseX, int mouseY) {
 		int count = ProductionPlanner.maxCoilTier() + 1;
-		int menuWidth = 180;
-		int menuHeight = MENU_HEADER_HEIGHT + count * MENU_ROW_HEIGHT + 2;
+		int visible = Math.min(MENU_MAX_ROWS, count);
+		coilMenuScroll = Math.max(0, Math.min(coilMenuScroll, Math.max(0, count - visible)));
+		int menuWidth = 220;
+		int menuHeight = MENU_HEADER_HEIGHT + visible * MENU_ROW_HEIGHT + 2;
 		int x = Math.max(4, Math.min(coilMenuAnchor.x(), width - menuWidth - 4));
 		int y = coilMenuAnchor.bottom() + 2;
 		if (y + menuHeight > height - FOOTER_HEIGHT - 2) {
@@ -1585,20 +1619,94 @@ public class ProductionPlannerScreen extends Screen {
 		drawBorder(context, activeDropdownBounds, 0xFFD0D0D8);
 		context.fill(x + 1, y + 1, menuWidth - 2, MENU_HEADER_HEIGHT - 1, 0xFF262630);
 		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("machine.select_coils", "Select coils")), x + 7, y + 6, 0xFFFFFFFF);
+		if (count > visible) {
+			String marker = (coilMenuScroll > 0 ? "^ " : "") + (coilMenuScroll + visible < count ? "v" : "");
+			context.drawTextWithShadow(EmiPort.literal(marker), x + menuWidth - 20, y + 6, 0xFFB8B8C0);
+		}
 		List<CoilOptionHitbox> hitboxes = new ArrayList<>();
-		for (int tier = 0; tier < count; tier++) {
-			Bounds row = new Bounds(x + 2, y + MENU_HEADER_HEIGHT + tier * MENU_ROW_HEIGHT, menuWidth - 4, MENU_ROW_HEIGHT);
+		for (int i = 0; i < visible; i++) {
+			int tier = coilMenuScroll + i;
+			Bounds row = new Bounds(x + 2, y + MENU_HEADER_HEIGHT + i * MENU_ROW_HEIGHT, menuWidth - 4, MENU_ROW_HEIGHT);
 			boolean selected = machineConfigEntry.getCoilTier() == tier;
 			boolean hovered = row.contains(mouseX, mouseY);
 			context.fill(row.x(), row.y(), row.width(), row.height(), selected ? ACTIVE_COLOR : hovered ? HOVER_COLOR : 0xFF18181F);
 			if (selected) {
 				context.fill(row.x(), row.y(), 3, row.height(), 0xFF7FD8A1);
 			}
+			String name = ProductionPlanner.coilTierName(tier);
+			EmiStack icon = GtceuHeatingCoilCatalog.iconForName(name);
+			int textX = row.x() + 8;
+			if (icon != null && !icon.isEmpty()) {
+				context.drawStack(icon, row.x() + 6, row.y() + 3, EmiIngredient.RENDER_ICON);
+				textX = row.x() + 28;
+			}
 			String suffix = tier == 0 ? " (" + PlannerText.tr("coil.base", "base") + ")" : " (+" + tier + ")";
-			context.drawTextWithShadow(EmiPort.literal(ProductionPlanner.coilTierName(tier) + suffix), row.x() + 8, row.y() + 7, 0xFFFFFFFF);
+			int labelRight = selected ? row.right() - 24 : row.right() - 6;
+			String label = textRenderer.trimToWidth(name + suffix, Math.max(8, labelRight - textX));
+			context.drawTextWithShadow(EmiPort.literal(label), textX, row.y() + 7, 0xFFFFFFFF);
+			if (selected) {
+				context.drawTextWithShadow(EmiPort.literal("\u2713"), row.right() - 16, row.y() + 7, 0xFF7FD8A1);
+			}
 			hitboxes.add(new CoilOptionHitbox(row, tier));
 		}
 		coilOptionHitboxes = hitboxes;
+	}
+
+	private void renderMachineSettingDropdown(EmiDrawContext context, int mouseX, int mouseY) {
+		MachineSettingSpec spec = machineSettingMenuSpec;
+		if (spec == null || spec.type() != MachineSettingType.CHOICE || spec.choices().isEmpty()) {
+			machineSettingMenuSpec = null;
+			activeDropdownBounds = EMPTY;
+			return;
+		}
+		int count = spec.choices().size();
+		int visible = Math.min(MENU_MAX_ROWS, count);
+		machineSettingMenuScroll = Math.max(0, Math.min(machineSettingMenuScroll, Math.max(0, count - visible)));
+		int menuWidth = 252;
+		int menuHeight = MENU_HEADER_HEIGHT + visible * MENU_ROW_HEIGHT + 2;
+		int x = Math.max(4, Math.min(machineSettingMenuAnchor.x(), width - menuWidth - 4));
+		int y = machineSettingMenuAnchor.bottom() + 2;
+		if (y + menuHeight > height - FOOTER_HEIGHT - 2) {
+			y = Math.max(HEADER_HEIGHT + 2, machineSettingMenuAnchor.y() - menuHeight - 2);
+		}
+		activeDropdownBounds = new Bounds(x, y, menuWidth, menuHeight);
+		context.fill(x, y, menuWidth, menuHeight, 0xFF111118);
+		drawBorder(context, activeDropdownBounds, 0xFFD0D0D8);
+		context.fill(x + 1, y + 1, menuWidth - 2, MENU_HEADER_HEIGHT - 1, 0xFF262630);
+		String settingName = PlannerText.tr(spec.labelKey(), spec.englishLabel());
+		String title = PlannerText.tr("machine.select_setting", "Select %s", settingName);
+		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(title, menuWidth - 34)), x + 7, y + 6, 0xFFFFFFFF);
+		if (count > visible) {
+			String marker = (machineSettingMenuScroll > 0 ? "^ " : "") + (machineSettingMenuScroll + visible < count ? "v" : "");
+			context.drawTextWithShadow(EmiPort.literal(marker), x + menuWidth - 20, y + 6, 0xFFB8B8C0);
+		}
+
+		int currentValue = machineConfigEntry.getMachineSettingValue(spec);
+		List<MachineSettingOptionHitbox> hitboxes = new ArrayList<>();
+		for (int i = 0; i < visible; i++) {
+			int value = machineSettingMenuScroll + i;
+			Bounds row = new Bounds(x + 2, y + MENU_HEADER_HEIGHT + i * MENU_ROW_HEIGHT, menuWidth - 4, MENU_ROW_HEIGHT);
+			boolean selected = currentValue == value;
+			boolean hovered = row.contains(mouseX, mouseY);
+			context.fill(row.x(), row.y(), row.width(), row.height(), selected ? ACTIVE_COLOR : hovered ? HOVER_COLOR : 0xFF18181F);
+			if (selected) {
+				context.fill(row.x(), row.y(), 3, row.height(), 0xFF7FD8A1);
+			}
+			EmiStack icon = spec.choiceIcon(value);
+			int textX = row.x() + 8;
+			if (icon != null && !icon.isEmpty()) {
+				context.drawStack(icon, row.x() + 6, row.y() + 3, EmiIngredient.RENDER_ICON);
+				textX = row.x() + 28;
+			}
+			int labelRight = selected ? row.right() - 24 : row.right() - 6;
+			String label = textRenderer.trimToWidth(spec.displayValue(value), Math.max(8, labelRight - textX));
+			context.drawTextWithShadow(EmiPort.literal(label), textX, row.y() + 7, 0xFFFFFFFF);
+			if (selected) {
+				context.drawTextWithShadow(EmiPort.literal("\u2713"), row.right() - 16, row.y() + 7, 0xFF7FD8A1);
+			}
+			hitboxes.add(new MachineSettingOptionHitbox(row, spec, value));
+		}
+		machineSettingOptionHitboxes = hitboxes;
 	}
 
 	private boolean isDropdownOpen() {
@@ -1624,7 +1732,12 @@ public class ProductionPlannerScreen extends Screen {
 		configSpecialControls = List.of();
 		coilMenuOpen = false;
 		coilMenuAnchor = EMPTY;
+		coilMenuScroll = 0;
 		coilOptionHitboxes = List.of();
+		machineSettingMenuSpec = null;
+		machineSettingMenuAnchor = EMPTY;
+		machineSettingMenuScroll = 0;
+		machineSettingOptionHitboxes = List.of();
 		activeDropdownBounds = EMPTY;
 		machineOptionHitboxes = List.of();
 		voltageOptionHitboxes = List.of();
@@ -1685,6 +1798,22 @@ public class ProductionPlannerScreen extends Screen {
 			}
 			return;
 		}
+		if (machineSettingMenuSpec != null && machineConfigEntry != null) {
+			MachineSettingSpec spec = machineSettingMenuSpec;
+			for (MachineSettingOptionHitbox option : machineSettingOptionHitboxes) {
+				if (option.bounds.contains(mouseX, mouseY)) {
+					List<String> lines = new ArrayList<>();
+					lines.add(spec.displayValue(option.value));
+					int temperature = GtceuHeatingCoilCatalog.temperatureForName(spec.displayValue(option.value));
+					if (temperature > 0) {
+						lines.add(PlannerText.tr("gtceu.ebf.coil_heat", "Coil temperature") + ": " + temperature + "K");
+					}
+					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
+					return;
+				}
+			}
+			return;
+		}
 		if (machineConfigEntry != null) {
 			MachineProfile profile = machineConfigEntry.getMachineProfile();
 			if (configCoilValue.contains(mouseX, mouseY)) {
@@ -1693,7 +1822,7 @@ public class ProductionPlannerScreen extends Screen {
 					PlannerText.tr("coil.tier_above_cupronickel", "Tier above Cupronickel") + ": " + machineConfigEntry.getCoilTier(),
 					PlannerText.tr("machine.detected_bonus", "Detected bonus") + ": -" + formatExactRate(perTier) + "% " + PlannerText.tr("machine.duration_eu_per_tier", "duration/EU per tier (multiplicative)"),
 					PlannerText.tr("machine.current_multiplier", "Current multiplier") + ": x" + formatExactRate(machineConfigEntry.getCoilMultiplier()),
-					PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"));
+					PlannerText.tr("tooltip.select_or_wheel", "Click to select; mouse wheel to cycle"));
 				return;
 			}
 			if (configParallelValue.contains(mouseX, mouseY)) {
@@ -1720,7 +1849,13 @@ public class ProductionPlannerScreen extends Screen {
 						lines.add(PlannerText.tr("machine.throughput_multiplier", "Current throughput multiplier") + ": x"
 							+ formatExactRate(throughputMultiplier));
 					}
-					lines.add(PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"));
+					if (spec.type() == MachineSettingType.CHOICE) {
+						lines.add(PlannerText.tr("tooltip.select_or_wheel", "Click to select; mouse wheel to cycle"));
+					} else if (spec.type() == MachineSettingType.TOGGLE) {
+						lines.add(PlannerText.tr("tooltip.click_toggle", "Click to toggle"));
+					} else {
+						lines.add(PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"));
+					}
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 					return;
 				}
@@ -2367,19 +2502,30 @@ public class ProductionPlannerScreen extends Screen {
 				activeDropdownBounds = EMPTY;
 				return true;
 			}
+			if (machineSettingMenuSpec != null && machineConfigEntry != null) {
+				if (button == 0) {
+					for (MachineSettingOptionHitbox option : machineSettingOptionHitboxes) {
+						if (option.bounds.contains(mx, my)) {
+							ProductionPlanner.setMachineSetting(machineConfigEntry, option.spec, option.value);
+							machineSettingMenuSpec = null;
+							activeDropdownBounds = EMPTY;
+							return true;
+						}
+					}
+				}
+				if (activeDropdownBounds.contains(mx, my) || machineSettingMenuAnchor.contains(mx, my)) {
+					return true;
+				}
+				machineSettingMenuSpec = null;
+				activeDropdownBounds = EMPTY;
+				return true;
+			}
 			if (machineConfigEntry != null) {
-				if (button == 0 && configCoilMinus.contains(mx, my)) {
-					ProductionPlanner.cycleCoilTier(machineConfigEntry, -1);
-					return true;
-				}
-				if (button == 0 && configCoilPlus.contains(mx, my)) {
-					ProductionPlanner.cycleCoilTier(machineConfigEntry, 1);
-					return true;
-				}
 				if ((button == 0 || button == 1) && configCoilValue.contains(mx, my)) {
 					if (button == 0) {
 						coilMenuOpen = true;
 						coilMenuAnchor = configCoilValue;
+						coilMenuScroll = Math.max(0, machineConfigEntry.getCoilTier() - MENU_MAX_ROWS / 2);
 						activeDropdownBounds = EMPTY;
 					} else {
 						ProductionPlanner.cycleCoilTier(machineConfigEntry, -1);
@@ -2395,16 +2541,27 @@ public class ProductionPlannerScreen extends Screen {
 					return true;
 				}
 				for (MachineSettingControl control : configSpecialControls) {
-					if (control.minus.contains(mx, my) && (button == 0 || button == 1)) {
-						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, -1);
+					MachineSettingSpec spec = control.spec;
+					boolean selector = spec.type() == MachineSettingType.CHOICE;
+					boolean stepped = spec.type() == MachineSettingType.INTEGER || spec.type() == MachineSettingType.CYCLE;
+					if (stepped && control.minus.contains(mx, my) && (button == 0 || button == 1)) {
+						ProductionPlanner.cycleMachineSetting(machineConfigEntry, spec, -1);
 						return true;
 					}
-					if (control.plus.contains(mx, my) && (button == 0 || button == 1)) {
-						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, 1);
+					if (stepped && control.plus.contains(mx, my) && (button == 0 || button == 1)) {
+						ProductionPlanner.cycleMachineSetting(machineConfigEntry, spec, 1);
 						return true;
 					}
 					if (control.value.contains(mx, my) && (button == 0 || button == 1)) {
-						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, button == 0 ? 1 : -1);
+						if (selector && button == 0) {
+							machineSettingMenuSpec = spec;
+							machineSettingMenuAnchor = control.value;
+							int current = machineConfigEntry.getMachineSettingValue(spec);
+							machineSettingMenuScroll = Math.max(0, current - MENU_MAX_ROWS / 2);
+							activeDropdownBounds = EMPTY;
+						} else {
+							ProductionPlanner.cycleMachineSetting(machineConfigEntry, spec, button == 0 ? 1 : -1);
+						}
 						return true;
 					}
 				}
@@ -3020,6 +3177,19 @@ public class ProductionPlannerScreen extends Screen {
 			return true;
 		}
 		if (isDropdownOpen() && activeDropdownBounds.contains(mx, my)) {
+			int menuDirection = (int) -Math.signum(amount);
+			if (coilMenuOpen && machineConfigEntry != null) {
+				int count = ProductionPlanner.maxCoilTier() + 1;
+				int visible = Math.min(MENU_MAX_ROWS, count);
+				coilMenuScroll = Math.max(0, Math.min(coilMenuScroll + menuDirection, Math.max(0, count - visible)));
+				return true;
+			}
+			if (machineSettingMenuSpec != null && machineConfigEntry != null) {
+				int count = machineSettingMenuSpec.choices().size();
+				int visible = Math.min(MENU_MAX_ROWS, count);
+				machineSettingMenuScroll = Math.max(0, Math.min(machineSettingMenuScroll + menuDirection, Math.max(0, count - visible)));
+				return true;
+			}
 			if (machineConfigEntry != null) {
 				int direction = (int) Math.signum(amount);
 				if (configCoilValue.contains(mx, my) || configCoilMinus.contains(mx, my) || configCoilPlus.contains(mx, my)) {
@@ -3038,7 +3208,7 @@ public class ProductionPlannerScreen extends Screen {
 				}
 				return true;
 			}
-			int direction = (int) -Math.signum(amount);
+			int direction = menuDirection;
 			if (machineMenuEntry != null) {
 				int size = ProductionPlanner.getCompatibleMachineProfiles(machineMenuEntry).size();
 				machineMenuScroll = Math.max(0, Math.min(machineMenuScroll + direction, Math.max(0, size - MENU_MAX_ROWS)));
@@ -3977,6 +4147,23 @@ public class ProductionPlannerScreen extends Screen {
 		context.drawCenteredText(EmiPort.literal(trimmed), bounds.x() + bounds.width() / 2, bounds.y() + 6, textColor);
 	}
 
+	private void drawSelectorValueBox(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY, String label,
+			boolean active, EmiStack icon) {
+		boolean hovered = bounds.contains(mouseX, mouseY);
+		int color = active ? 0xFF263B36 : hovered ? HOVER_COLOR : 0xFF222229;
+		context.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color);
+		drawBorder(context, bounds, hovered ? 0xFFD0D0D8 : BORDER_COLOR);
+		int textX = bounds.x() + 4;
+		if (icon != null && !icon.isEmpty()) {
+			context.drawStack(icon, bounds.x() + 3, bounds.y() + 2, EmiIngredient.RENDER_ICON);
+			textX = bounds.x() + 22;
+		}
+		int arrowX = bounds.right() - 10;
+		String trimmed = textRenderer.trimToWidth(label, Math.max(4, arrowX - textX - 3));
+		context.drawTextWithShadow(EmiPort.literal(trimmed), textX, bounds.y() + 6, 0xFFFFFFFF);
+		context.drawTextWithShadow(EmiPort.literal("v"), arrowX, bounds.y() + 6, 0xFFB8B8C0);
+	}
+
 	private void drawMachineValueBox(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY, MachineProfile profile, boolean active) {
 		boolean hovered = bounds.contains(mouseX, mouseY);
 		int color = active ? 0xFF263B36 : hovered ? HOVER_COLOR : 0xFF222229;
@@ -4085,6 +4272,9 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private record CoilOptionHitbox(Bounds bounds, int tier) {
+	}
+
+	private record MachineSettingOptionHitbox(Bounds bounds, MachineSettingSpec spec, int value) {
 	}
 
 	private record MachineSettingControl(MachineSettingSpec spec, Bounds minus, Bounds value, Bounds plus) {

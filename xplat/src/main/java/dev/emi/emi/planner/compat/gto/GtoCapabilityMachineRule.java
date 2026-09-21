@@ -40,9 +40,9 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 	public List<MachineSettingSpec> settings(MachineProfile profile) {
 		List<MachineSettingSpec> settings = new ArrayList<>();
 		if (capabilities.needsGlassTierSetting()) {
-			settings.add(MachineSettingSpec.integer(
-				GLASS_TIER, "gto.precision.glass_tier", "Glass Tier", 0, 15, 0, 1,
-				"gto.precision.glass_tier_help", "Glass Tier controls the machine mechanics detected from its tooltip"));
+			settings.add(GtoGlassCatalog.spec(
+				GLASS_TIER, "gto.precision.glass_tier", "Glass",
+				"gto.precision.glass_tier_help", "Installed glass controls the machine mechanics detected from its tooltip"));
 		}
 		if (capabilities.casingTierLimit()) {
 			List<String> casingChoices = new ArrayList<>();
@@ -514,7 +514,7 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 	private List<String> glassDetails(Entry entry) {
 		int glassTier = configuredGlassTier(entry);
 		List<String> lines = new ArrayList<>();
-		lines.add(PlannerText.tr("gto.dynamic.selected_glass_tier", "Selected Glass Tier") + ": " + glassTier);
+		lines.add(PlannerText.tr("gto.dynamic.selected_glass_tier", "Selected Glass") + ": " + GtoGlassCatalog.displayForTier(glassTier));
 		if (capabilities.glassParallelBase() > 1) {
 			lines.add(PlannerText.tr("gto.precision.current_parallel", "Current built-in parallel") + ": "
 				+ configuredMaxParallel(entry, entry.getMachineProfile().maxParallel()));
@@ -925,7 +925,10 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 
 	private int configuredGlassTier(Entry entry) {
 		MachineSettingSpec glass = setting(entry, GLASS_TIER);
-		return glass == null || entry == null ? 0 : Math.max(0, entry.getMachineSettingValue(glass));
+		if (glass == null || entry == null) {
+			return 0;
+		}
+		return GtoGlassCatalog.tierForChoice(entry.getMachineSettingValue(glass));
 	}
 
 	private int configuredCoilChoice(Entry entry) {
@@ -1033,7 +1036,7 @@ final class GtoCapabilityMachineRule implements PlannerMachineRule {
 				}
 			}
 			if (glass != null) {
-				tier = Math.max(0, entry.getMachineSettingValue(glass));
+				tier = GtoGlassCatalog.tierForChoice(entry.getMachineSettingValue(glass));
 			}
 		}
 		if (tier <= 0) {

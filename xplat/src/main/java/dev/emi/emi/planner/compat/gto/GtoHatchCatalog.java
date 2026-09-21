@@ -3,6 +3,7 @@ package dev.emi.emi.planner.compat.gto;
 import java.util.ArrayList;
 import java.util.List;
 
+import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.planner.ProductionPlanner;
 import dev.emi.emi.planner.ProductionPlanner.Entry;
 import dev.emi.emi.planner.ProductionPlanner.MachineSettingSpec;
@@ -18,8 +19,7 @@ final class GtoHatchCatalog {
 	static final String OVERCLOCK_DIVISOR = "gto_overclock_divisor";
 
 	private static final int[] PARALLEL_LIMITS = {
-		0, 1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576,
-		4194304, 16777216, 67108864, 268435456, 1000000000
+		0, 1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576
 	};
 
 	private GtoHatchCatalog() {
@@ -33,25 +33,39 @@ final class GtoHatchCatalog {
 
 	static MachineSettingSpec parallelHatchLimitSpec() {
 		List<String> choices = new ArrayList<>();
+		List<EmiStack> icons = new ArrayList<>();
 		choices.add("AUTO");
+		icons.add(EmiStack.EMPTY);
 		choices.add("OFF / 1");
-		for (int i = 2; i < PARALLEL_LIMITS.length; i++) {
-			choices.add(Integer.toString(PARALLEL_LIMITS[i]));
+		icons.add(EmiStack.EMPTY);
+		for (int choice = 2; choice < PARALLEL_LIMITS.length; choice++) {
+			int limit = PARALLEL_LIMITS[choice];
+			int tier = choice + 3; // choice 2 = IV, then every tier is x4 parallel
+			EmiStack icon = parallelHatch(tier);
+			String fallback = Integer.toString(limit);
+			String name = GtoComponentCatalog.displayName(icon, fallback);
+			choices.add(icon.isEmpty() ? fallback : name + " - " + limit);
+			icons.add(icon);
 		}
 		return MachineSettingSpec.choice(
-			PARALLEL_HATCH_LIMIT, "gto.hatch.parallel_limit", "Parallel Hatch Limit", choices, 0,
+			PARALLEL_HATCH_LIMIT, "gto.hatch.parallel_limit", "Parallel Hatch Limit", choices, icons, 0,
 			"gto.hatch.parallel_limit_help",
 			"Maximum parallel printed on the installed Parallel Control Hatch; row PAR is the current configured parallel");
 	}
 
 	static MachineSettingSpec accelerationTierSpec() {
 		List<String> choices = new ArrayList<>();
+		List<EmiStack> icons = new ArrayList<>();
 		choices.add("OFF");
+		icons.add(EmiStack.EMPTY);
 		for (int tier = 1; tier <= ProductionPlanner.maxVoltageTier(); tier++) {
-			choices.add(ProductionPlanner.voltageTierName(tier));
+			String tierName = ProductionPlanner.voltageTierName(tier);
+			EmiStack icon = accelerationHatch(tier);
+			choices.add(GtoComponentCatalog.displayName(icon, tierName + " Accelerate Hatch"));
+			icons.add(icon);
 		}
 		return MachineSettingSpec.choice(
-			ACCELERATION_HATCH_TIER, "gto.hatch.acceleration_tier", "Acceleration Hatch Tier", choices, 0,
+			ACCELERATION_HATCH_TIER, "gto.hatch.acceleration_tier", "Acceleration Hatch Tier", choices, icons, 0,
 			"gto.hatch.acceleration_tier_help",
 			"Acceleration Hatch tier; lower hatch tier than the recipe adds 20% duration per missing tier");
 	}
@@ -62,7 +76,7 @@ final class GtoHatchCatalog {
 		for (int percent = 24; percent <= 100; percent++) {
 			choices.add(percent + "%");
 		}
-		return MachineSettingSpec.choice(
+		return MachineSettingSpec.cycleChoice(
 			ACCELERATION_MULTIPLIER, "gto.hatch.acceleration_multiplier", "Acceleration Setting", choices, 0,
 			"gto.hatch.acceleration_multiplier_help",
 			"Requested duration percentage; MAX SPEED uses the fastest value allowed by the selected hatch tier");
@@ -70,12 +84,17 @@ final class GtoHatchCatalog {
 
 	static MachineSettingSpec threadTierSpec() {
 		List<String> choices = new ArrayList<>();
+		List<EmiStack> icons = new ArrayList<>();
 		choices.add("OFF");
+		icons.add(EmiStack.EMPTY);
 		for (int tier = 8; tier <= ProductionPlanner.maxVoltageTier(); tier++) {
-			choices.add(ProductionPlanner.voltageTierName(tier));
+			String tierName = ProductionPlanner.voltageTierName(tier);
+			EmiStack icon = threadHatch(tier);
+			choices.add(GtoComponentCatalog.displayName(icon, tierName + " Thread Hatch"));
+			icons.add(icon);
 		}
 		return MachineSettingSpec.choice(
-			THREAD_HATCH_TIER, "gto.hatch.thread_tier", "Thread Hatch Tier", choices, 0,
+			THREAD_HATCH_TIER, "gto.hatch.thread_tier", "Thread Hatch Tier", choices, icons, 0,
 			"gto.hatch.thread_tier_help", "Thread Hatch tier determines the maximum simultaneous recipe threads");
 	}
 
@@ -85,20 +104,25 @@ final class GtoHatchCatalog {
 		for (int threads = 1; threads <= 256; threads++) {
 			choices.add(Integer.toString(threads));
 		}
-		return MachineSettingSpec.choice(
+		return MachineSettingSpec.cycleChoice(
 			THREAD_COUNT, "gto.hatch.thread_count", "Thread Count", choices, 0,
 			"gto.hatch.thread_count_help", "Number of active recipe threads; MAX uses the selected Thread Hatch maximum");
 	}
 
 	static MachineSettingSpec overclockTierSpec() {
 		List<String> choices = new ArrayList<>();
+		List<EmiStack> icons = new ArrayList<>();
 		choices.add("OFF");
+		icons.add(EmiStack.EMPTY);
 		int maxTier = Math.min(14, ProductionPlanner.maxVoltageTier());
 		for (int tier = 8; tier <= maxTier; tier++) {
-			choices.add(ProductionPlanner.voltageTierName(tier));
+			String tierName = ProductionPlanner.voltageTierName(tier);
+			EmiStack icon = overclockHatch(tier);
+			choices.add(GtoComponentCatalog.displayName(icon, tierName + " Overclock Hatch"));
+			icons.add(icon);
 		}
 		return MachineSettingSpec.choice(
-			OVERCLOCK_HATCH_TIER, "gto.hatch.overclock_tier", "Overclocking Hatch Tier", choices, 0,
+			OVERCLOCK_HATCH_TIER, "gto.hatch.overclock_tier", "Overclocking Hatch Tier", choices, icons, 0,
 			"gto.hatch.overclock_tier_help", "Overclocking Hatch tier sets the strongest selectable time divisor per 4x EU/t overclock");
 	}
 
@@ -108,9 +132,55 @@ final class GtoHatchCatalog {
 		for (int divisor = 2; divisor <= 8; divisor++) {
 			choices.add("/" + divisor);
 		}
-		return MachineSettingSpec.choice(
+		return MachineSettingSpec.cycleChoice(
 			OVERCLOCK_DIVISOR, "gto.hatch.overclock_divisor", "OC Time Divisor", choices, 0,
 			"gto.hatch.overclock_divisor_help", "Time divisor applied on each 4x EU/t overclock; MAX uses the strongest value allowed by the selected hatch tier");
+	}
+
+	private static EmiStack accelerationHatch(int tier) {
+		String token = GtoComponentCatalog.tierToken(tier);
+		EmiStack exact = GtoComponentCatalog.resolve(
+			"gtocore:" + token + "_accelerate_hatch",
+			"gtocore:" + token + "_acceleration_hatch");
+		return exact.isEmpty()
+			? GtoComponentCatalog.findTiered(tier, List.of("gtocore"), "acceler", "hatch")
+			: exact;
+	}
+
+	private static EmiStack threadHatch(int tier) {
+		String token = GtoComponentCatalog.tierToken(tier);
+		EmiStack exact = GtoComponentCatalog.resolve("gtocore:" + token + "_thread_hatch");
+		return exact.isEmpty()
+			? GtoComponentCatalog.findTiered(tier, List.of("gtocore"), "thread", "hatch")
+			: exact;
+	}
+
+	private static EmiStack overclockHatch(int tier) {
+		String token = GtoComponentCatalog.tierToken(tier);
+		EmiStack exact = GtoComponentCatalog.resolve("gtocore:" + token + "_overclock_hatch");
+		return exact.isEmpty()
+			? GtoComponentCatalog.findTiered(tier, List.of("gtocore"), "overclock", "hatch")
+			: exact;
+	}
+
+	private static EmiStack parallelHatch(int tier) {
+		if (tier > ProductionPlanner.maxVoltageTier()) {
+			return EmiStack.EMPTY;
+		}
+		String token = GtoComponentCatalog.tierToken(tier);
+		EmiStack exact;
+		if (tier <= 8) {
+			exact = GtoComponentCatalog.resolve(
+				"gtceu:" + token + "_parallel_hatch",
+				"gtocore:" + token + "_parallel_hatch");
+		} else {
+			exact = GtoComponentCatalog.resolve(
+				"gtocore:" + token + "_parallel_hatch",
+				"gtceu:" + token + "_parallel_hatch");
+		}
+		return exact.isEmpty()
+			? GtoComponentCatalog.findTiered(tier, List.of("gtocore", "gtceu"), "parallel", "hatch")
+			: exact;
 	}
 
 	static boolean auxiliaryEnabled(Entry entry) {

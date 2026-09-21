@@ -2403,11 +2403,12 @@ public final class ProductionPlanner {
 	}
 
 	public enum MachineSettingType {
-		INTEGER, CHOICE, TOGGLE
+		INTEGER, CHOICE, CYCLE, TOGGLE
 	}
 
 	public record MachineSettingSpec(String key, String labelKey, String englishLabel, MachineSettingType type,
-			int minValue, int maxValue, int defaultValue, int step, List<String> choices, String helpKey, String englishHelp) {
+			int minValue, int maxValue, int defaultValue, int step, List<String> choices, List<EmiStack> choiceIcons,
+			String helpKey, String englishHelp) {
 		public MachineSettingSpec {
 			key = sanitizeMachineSettingKey(key);
 			type = type == null ? MachineSettingType.INTEGER : type;
@@ -2419,6 +2420,16 @@ public final class ProductionPlanner {
 			defaultValue = Math.max(minValue, Math.min(maxValue, defaultValue));
 			step = Math.max(1, step);
 			choices = choices == null ? List.of() : List.copyOf(choices);
+			if (choiceIcons == null || choiceIcons.isEmpty()) {
+				choiceIcons = List.of();
+			} else {
+				List<EmiStack> normalizedIcons = new ArrayList<>(choices.size());
+				for (int i = 0; i < choices.size(); i++) {
+					EmiStack icon = i < choiceIcons.size() ? choiceIcons.get(i) : EmiStack.EMPTY;
+					normalizedIcons.add(icon == null ? EmiStack.EMPTY : icon);
+				}
+				choiceIcons = List.copyOf(normalizedIcons);
+			}
 			labelKey = labelKey == null ? "" : labelKey;
 			englishLabel = englishLabel == null ? key : englishLabel;
 			helpKey = helpKey == null ? "" : helpKey;
@@ -2428,20 +2439,32 @@ public final class ProductionPlanner {
 		public static MachineSettingSpec integer(String key, String labelKey, String englishLabel, int min, int max,
 				int defaultValue, int step, String helpKey, String englishHelp) {
 			return new MachineSettingSpec(key, labelKey, englishLabel, MachineSettingType.INTEGER, min, max, defaultValue, step,
-				List.of(), helpKey, englishHelp);
+				List.of(), List.of(), helpKey, englishHelp);
 		}
 
 		public static MachineSettingSpec choice(String key, String labelKey, String englishLabel, List<String> choices,
 				int defaultValue, String helpKey, String englishHelp) {
+			return choice(key, labelKey, englishLabel, choices, List.of(), defaultValue, helpKey, englishHelp);
+		}
+
+		public static MachineSettingSpec choice(String key, String labelKey, String englishLabel, List<String> choices,
+				List<EmiStack> choiceIcons, int defaultValue, String helpKey, String englishHelp) {
 			int max = choices == null || choices.isEmpty() ? 0 : choices.size() - 1;
 			return new MachineSettingSpec(key, labelKey, englishLabel, MachineSettingType.CHOICE, 0, max, defaultValue, 1,
-				choices, helpKey, englishHelp);
+				choices, choiceIcons, helpKey, englishHelp);
+		}
+
+		public static MachineSettingSpec cycleChoice(String key, String labelKey, String englishLabel, List<String> choices,
+				int defaultValue, String helpKey, String englishHelp) {
+			int max = choices == null || choices.isEmpty() ? 0 : choices.size() - 1;
+			return new MachineSettingSpec(key, labelKey, englishLabel, MachineSettingType.CYCLE, 0, max, defaultValue, 1,
+				choices, List.of(), helpKey, englishHelp);
 		}
 
 		public static MachineSettingSpec toggle(String key, String labelKey, String englishLabel, boolean defaultValue,
 				String helpKey, String englishHelp) {
 			return new MachineSettingSpec(key, labelKey, englishLabel, MachineSettingType.TOGGLE, 0, 1, defaultValue ? 1 : 0, 1,
-				List.of("OFF", "ON"), helpKey, englishHelp);
+				List.of("OFF", "ON"), List.of(), helpKey, englishHelp);
 		}
 
 		public int sanitize(int value) {
@@ -2450,10 +2473,20 @@ public final class ProductionPlanner {
 
 		public String displayValue(int value) {
 			int safe = sanitize(value);
-			if ((type == MachineSettingType.CHOICE || type == MachineSettingType.TOGGLE) && safe >= 0 && safe < choices.size()) {
+			if ((type == MachineSettingType.CHOICE || type == MachineSettingType.CYCLE || type == MachineSettingType.TOGGLE)
+					&& safe >= 0 && safe < choices.size()) {
 				return choices.get(safe);
 			}
 			return Integer.toString(safe);
+		}
+
+		public EmiStack choiceIcon(int value) {
+			int safe = sanitize(value);
+			if (safe >= 0 && safe < choiceIcons.size()) {
+				EmiStack icon = choiceIcons.get(safe);
+				return icon == null ? EmiStack.EMPTY : icon;
+			}
+			return EmiStack.EMPTY;
 		}
 	}
 

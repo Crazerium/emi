@@ -1389,5 +1389,8 @@
   "emi.production_planner.bookmark_tree.section.handlers": "Обработчики",
   "emi.production_planner.bookmark_tree.total": "Всего: %s",
   "emi.production_planner.bookmark_tree.missing": "Не хватает: %s",
-  "emi.production_planner.bookmark_tree.crafts": "Крафтов: %s"
+  "emi.production_planner.bookmark_tree.crafts": "Крафтов: %s",
+  "emi.production_planner.machine.select_setting": "Выбор: %s",
+  "emi.production_planner.tooltip.select_or_wheel": "Нажмите для выбора; колесо мыши переключает варианты",
+  "emi.production_planner.tooltip.click_toggle": "Нажмите для переключения"
 }
