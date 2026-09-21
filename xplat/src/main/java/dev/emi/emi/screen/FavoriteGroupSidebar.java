@@ -4,9 +4,11 @@ import java.lang.reflect.Array;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 import org.lwjgl.glfw.GLFW;
@@ -1189,18 +1191,55 @@ public final class FavoriteGroupSidebar {
 		if (inventory == null) {
 			return false;
 		}
-		List<Boolean> availability = inventory.getCraftAvailability(recipe);
-		List<EmiIngredient> inputs = recipe.getInputs();
-		if (availability.size() != inputs.size()) {
-			return false;
-		}
-		for (int i = 0; i < inputs.size(); i++) {
-			EmiIngredient ingredient = inputs.get(i);
-			if (ingredient != null && !ingredient.isEmpty() && hasReusableOption(ingredient) && !availability.get(i)) {
-				return false;
+
+		List<EmiIngredient> reusable = new ArrayList<>();
+		for (EmiIngredient ingredient : recipe.getInputs()) {
+			if (ingredient != null && !ingredient.isEmpty() && hasReusableOption(ingredient)) {
+				reusable.add(ingredient);
 			}
 		}
-		return true;
+		if (reusable.isEmpty()) {
+			return true;
+		}
+		return reserveMeReusableInputs(reusable, 0, inventory, new IdentityHashMap<>());
+	}
+
+	private static boolean reserveMeReusableInputs(List<EmiIngredient> ingredients, int index,
+			EmiPlayerInventory inventory, Map<EmiStack, Long> reserved) {
+		if (index >= ingredients.size()) {
+			return true;
+		}
+		EmiIngredient ingredient = ingredients.get(index);
+		for (EmiStack expected : ingredient.getEmiStacks()) {
+			if (expected == null || expected.isEmpty() || !isReusable(expected)) {
+				continue;
+			}
+			long requiredInstances = Math.max(1L, expected.getAmount());
+			for (EmiStack candidate : inventory.inventory.values()) {
+				if (candidate == null || candidate.isEmpty() || !EmiCraftingToolCompat.matches(expected, candidate)) {
+					continue;
+				}
+				long alreadyReserved = reserved.getOrDefault(candidate, 0L);
+				if (candidate.getAmount() - alreadyReserved < requiredInstances) {
+					continue;
+				}
+				if (EmiCraftingToolCompat.isGtTool(candidate)
+						&& EmiCraftingToolCompat.getSafeCraftingUses(candidate) <= 0L) {
+					continue;
+				}
+
+				reserved.put(candidate, safeAdd(alreadyReserved, requiredInstances));
+				if (reserveMeReusableInputs(ingredients, index + 1, inventory, reserved)) {
+					return true;
+				}
+				if (alreadyReserved == 0L) {
+					reserved.remove(candidate);
+				} else {
+					reserved.put(candidate, alreadyReserved);
+				}
+			}
+		}
+		return false;
 	}
 
 	private static void advanceMe(MeAutoCraftJob job) {
