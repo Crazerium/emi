@@ -140,7 +140,9 @@ public final class ProductionPlanner {
 									EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(linkObject.get("stack"));
 									if (ingredient instanceof EmiStack stack && !stack.isEmpty()) {
 										LinkMode mode = linkObject.has("mode") ? LinkMode.fromSerialized(linkObject.get("mode").getAsString()) : LinkMode.MATCH;
-										group.links.put(normalizeStack(stack), mode);
+										if (mode == LinkMode.IGNORE) {
+											group.links.put(normalizeStack(stack), mode);
+										}
 									}
 								}
 							}
@@ -160,8 +162,8 @@ public final class ProductionPlanner {
 							JsonObject linkObject = linkElement.getAsJsonObject();
 							EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(linkObject.get("stack"));
 							if (ingredient instanceof EmiStack stack && !stack.isEmpty()) {
-								LinkMode mode = linkObject.has("mode") ? LinkMode.fromSerialized(linkObject.get("mode").getAsString()) : LinkMode.MATCH;
-								if (mode != LinkMode.MATCH) {
+								LinkMode mode = linkObject.has("mode") ? LinkMode.fromSerialized(linkObject.get("mode").getAsString()) : LinkMode.AUTO;
+								if (mode != LinkMode.AUTO) {
 									line.rootLinks.put(normalizeStack(stack), mode);
 								}
 							}
@@ -855,8 +857,12 @@ public final class ProductionPlanner {
 		}
 		EmiStack normalized = normalizeStack(stack);
 		Map<EmiStack, LinkMode> links = group == null ? line.rootLinks : group.links;
-		LinkMode sanitized = mode == null ? LinkMode.MATCH : mode;
-		if (sanitized == LinkMode.MATCH) {
+		LinkMode defaultMode = group == null ? LinkMode.AUTO : LinkMode.MATCH;
+		LinkMode sanitized = mode == null ? defaultMode : mode;
+		if (group != null && sanitized == LinkMode.AUTO) {
+			sanitized = LinkMode.MATCH;
+		}
+		if (sanitized == defaultMode) {
 			links.remove(normalized);
 		} else {
 			links.put(normalized, sanitized);
@@ -1027,21 +1033,24 @@ public final class ProductionPlanner {
 			rhs.add(target.target.signedRate() / targetScale * 12.0D);
 		}
 
+		List<ResourceVector> rootAutoVectors = new ArrayList<>();
 		for (ResourceVector vector : rootResources.values()) {
-			if (line.hasTarget(vector.stack) || !vector.hasInput || !vector.hasOutput || line.getLinkMode(null, vector.stack) == LinkMode.IGNORE) {
+			if (line.hasTarget(vector.stack) || !vector.hasInput || !vector.hasOutput) {
 				continue;
 			}
-			addMatchConstraint(vector, rows, rhs, internalVectors);
+			LinkMode mode = line.getLinkMode(null, vector.stack);
+			if (mode == LinkMode.IGNORE) {
+				continue;
+			}
+			if (mode == LinkMode.MATCH) {
+				addMatchConstraint(vector, rows, rhs, internalVectors);
+			} else {
+				rootAutoVectors.add(vector);
+				internalVectors.add(vector);
+			}
 		}
 
-		double[][] a = rows.toArray(double[][]::new);
-		double[] b = new double[rhs.size()];
-		for (int i = 0; i < b.length; i++) {
-			b[i] = rhs.get(i);
-		}
-		double[] objective = new double[n];
-		java.util.Arrays.fill(objective, 1.0D);
-		LinearBalanceSolver.Result solveResult = LinearBalanceSolver.minimizeEqualities(a, b, objective);
+		LinearBalanceSolver.Result solveResult = solveBalanceSystem(rows, rhs, rootAutoVectors, n);
 		if (!solveResult.solved()) {
 			String message = switch (solveResult.status()) {
 				case INFEASIBLE -> PlannerText.tr("status.infeasible", "Production line constraints are infeasible");
@@ -1194,6 +1203,77 @@ public final class ProductionPlanner {
 		rows.add(row);
 		rhs.add(0.0D);
 		internalVectors.add(vector);
+	}
+
+	private static LinearBalanceSolver.Result solveBalanceSystem(List<double[]> hardRows, List<Double> hardRhs,
+			List<ResourceVector> rootMatchVectors, int recipeVariables) {
+		int softCount = rootMatchVectors.size();
+		if (softCount == 0) {
+			double[][] coefficients = hardRows.toArray(double[][]::new);
+			double[] values = new double[hardRhs.size()];
+			for (int i = 0; i < values.length; i++) {
+				values[i] = hardRhs.get(i);
+			}
+			double[] objective = new double[recipeVariables];
+			java.util.Arrays.fill(objective, 1.0D);
+			return LinearBalanceSolver.minimizeEqualities(coefficients, values, objective);
+		}
+
+		int variables = recipeVariables + softCount * 2;
+		List<double[]> rows = new ArrayList<>();
+		List<Double> rhs = new ArrayList<>();
+		for (int i = 0; i < hardRows.size(); i++) {
+			double[] source = hardRows.get(i);
+			double[] row = new double[variables];
+			System.arraycopy(source, 0, row, 0, Math.min(recipeVariables, source.length));
+			rows.add(row);
+			rhs.add(hardRhs.get(i));
+		}
+		for (int soft = 0; soft < softCount; soft++) {
+			ResourceVector vector = rootMatchVectors.get(soft);
+			double scale = maxAbs(vector.net);
+			if (scale <= 0.0D) {
+				continue;
+			}
+			double[] row = new double[variables];
+			for (int i = 0; i < recipeVariables; i++) {
+				row[i] = vector.net[i] / scale;
+			}
+			row[recipeVariables + soft * 2] = 1.0D;
+			row[recipeVariables + soft * 2 + 1] = -1.0D;
+			rows.add(row);
+			rhs.add(0.0D);
+		}
+
+		double[][] coefficients = rows.toArray(double[][]::new);
+		double[] values = new double[rhs.size()];
+		for (int i = 0; i < values.length; i++) {
+			values[i] = rhs.get(i);
+		}
+		double[] residualObjective = new double[variables];
+		for (int i = recipeVariables; i < variables; i++) {
+			residualObjective[i] = 1.0D;
+		}
+		LinearBalanceSolver.Result residualSolve = LinearBalanceSolver.minimizeEqualities(coefficients, values, residualObjective);
+		if (!residualSolve.solved()) {
+			return residualSolve;
+		}
+
+		double minimumResidual = Math.max(0.0D, residualSolve.objective());
+		double[][] finalCoefficients = java.util.Arrays.copyOf(coefficients, coefficients.length + 1);
+		double[] residualTotal = new double[variables];
+		for (int i = recipeVariables; i < variables; i++) {
+			residualTotal[i] = 1.0D;
+		}
+		finalCoefficients[coefficients.length] = residualTotal;
+		double[] finalValues = java.util.Arrays.copyOf(values, values.length + 1);
+		finalValues[values.length] = minimumResidual;
+		double[] recipeObjective = new double[variables];
+		for (int i = 0; i < recipeVariables; i++) {
+			recipeObjective[i] = 1.0D;
+		}
+		LinearBalanceSolver.Result recipeSolve = LinearBalanceSolver.minimizeEqualities(finalCoefficients, finalValues, recipeObjective);
+		return recipeSolve.solved() ? recipeSolve : residualSolve;
 	}
 
 	private static MachineSizingStatus autoSizeBalancedLine(Line line) {
@@ -2127,7 +2207,7 @@ public final class ProductionPlanner {
 					if (group.collapsed) {
 						groupObject.addProperty("collapsed", true);
 					}
-					JsonArray links = serializeLinks(group.links);
+					JsonArray links = serializeLinks(group.links, LinkMode.MATCH);
 					if (links.size() > 0) {
 						groupObject.add("links", links);
 					}
@@ -2135,7 +2215,7 @@ public final class ProductionPlanner {
 				}
 				lineObject.add("groups", groups);
 			}
-			JsonArray rootLinks = serializeLinks(line.rootLinks);
+			JsonArray rootLinks = serializeLinks(line.rootLinks, LinkMode.AUTO);
 			if (rootLinks.size() > 0) {
 				lineObject.add("root_links", rootLinks);
 			}
@@ -2195,10 +2275,10 @@ public final class ProductionPlanner {
 		return root;
 	}
 
-	private static JsonArray serializeLinks(Map<EmiStack, LinkMode> links) {
+	private static JsonArray serializeLinks(Map<EmiStack, LinkMode> links, LinkMode defaultMode) {
 		JsonArray array = new JsonArray();
 		for (Map.Entry<EmiStack, LinkMode> link : links.entrySet()) {
-			if (link.getValue() == null || link.getValue() == LinkMode.MATCH || link.getKey() == null || link.getKey().isEmpty()) {
+			if (link.getValue() == null || link.getValue() == defaultMode || link.getKey() == null || link.getKey().isEmpty()) {
 				continue;
 			}
 			JsonObject object = new JsonObject();
@@ -2702,7 +2782,7 @@ public final class ProductionPlanner {
 		public LinkMode getLinkMode(Group group, EmiStack stack) {
 			Map<EmiStack, LinkMode> links = group == null ? rootLinks : group.links;
 			LinkMode mode = links.get(normalizeStack(stack));
-			return mode == null ? LinkMode.MATCH : mode;
+			return mode == null ? (group == null ? LinkMode.AUTO : LinkMode.MATCH) : mode;
 		}
 
 		public EmiStack getTarget() {
@@ -2775,6 +2855,7 @@ public final class ProductionPlanner {
 	}
 
 	public enum LinkMode {
+		AUTO("auto"),
 		MATCH("match"),
 		IGNORE("ignore");
 
@@ -2788,11 +2869,22 @@ public final class ProductionPlanner {
 			return serialized;
 		}
 
-		public LinkMode toggled() {
-			return this == MATCH ? IGNORE : MATCH;
+		public LinkMode nextRoot() {
+			return switch (this) {
+				case AUTO -> MATCH;
+				case MATCH -> IGNORE;
+				case IGNORE -> AUTO;
+			};
+		}
+
+		public LinkMode nextGroup() {
+			return this == IGNORE ? MATCH : IGNORE;
 		}
 
 		private static LinkMode fromSerialized(String value) {
+			if (value != null && "auto".equalsIgnoreCase(value)) {
+				return AUTO;
+			}
 			return value != null && "ignore".equalsIgnoreCase(value) ? IGNORE : MATCH;
 		}
 	}

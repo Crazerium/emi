@@ -22,7 +22,6 @@ import dev.emi.emi.input.EmiInput;
 import dev.emi.emi.bom.BoM;
 import dev.emi.emi.planner.ProductionPlanner;
 import dev.emi.emi.planner.compat.gto.GtoCapabilityAudit;
-import dev.emi.emi.planner.compat.gtceu.GtceuHeatingCoilCatalog;
 import dev.emi.emi.platform.EmiAgnos;
 import dev.emi.emi.planner.PlannerText;
 import dev.emi.emi.planner.ProductionPlanner.Entry;
@@ -32,7 +31,6 @@ import dev.emi.emi.planner.ProductionPlanner.Line;
 import dev.emi.emi.planner.ProductionPlanner.LineTransferResult;
 import dev.emi.emi.planner.ProductionPlanner.MachineProfile;
 import dev.emi.emi.planner.ProductionPlanner.MachineSettingSpec;
-import dev.emi.emi.planner.ProductionPlanner.MachineSettingType;
 import dev.emi.emi.planner.ProductionPlanner.MachineSizing;
 import dev.emi.emi.planner.ProductionPlanner.OcMode;
 import dev.emi.emi.planner.ProductionPlanner.Target;
@@ -68,16 +66,6 @@ public class ProductionPlannerScreen extends Screen {
 	private static final int BORDER_COLOR = 0xFF55555F;
 	private static final int ACTIVE_COLOR = 0xFF355048;
 	private static final int HOVER_COLOR = 0xFF3A3A44;
-	private static final int LOAD_SAFE_BG = 0xFF142019;
-	private static final int LOAD_MEDIUM_BG = 0xFF262113;
-	private static final int LOAD_BOTTLENECK_BG = 0xFF291616;
-	private static final int LOAD_SAFE_BOX = 0xFF294838;
-	private static final int LOAD_MEDIUM_BOX = 0xFF554923;
-	private static final int LOAD_BOTTLENECK_BOX = 0xFF572929;
-	private static final int LOAD_SAFE_ACCENT = 0xFF69D58C;
-	private static final int LOAD_MEDIUM_ACCENT = 0xFFFFD45C;
-	private static final int LOAD_BOTTLENECK_ACCENT = 0xFFFF6B6B;
-	private static final double LOAD_MEDIUM_THRESHOLD = 80.0D;
 	private static final double EPSILON = 0.0000001D;
 	private static final boolean SHOW_GTO_AUDIT = EmiAgnos.isDevelopmentEnvironment();
 
@@ -99,6 +87,7 @@ public class ProductionPlannerScreen extends Screen {
 	private Bounds importLineButton = EMPTY;
 	private Bounds timeUnitButton = EMPTY;
 	private Bounds buildSummaryButton = EMPTY;
+	private Bounds graphViewButton = EMPTY;
 	private Bounds gtoAuditButton = EMPTY;
 	private boolean toolsOpen;
 	private String gtoAuditStatus = "";
@@ -148,12 +137,7 @@ public class ProductionPlannerScreen extends Screen {
 	private List<MachineSettingControl> configSpecialControls = List.of();
 	private boolean coilMenuOpen;
 	private Bounds coilMenuAnchor = EMPTY;
-	private int coilMenuScroll;
 	private List<CoilOptionHitbox> coilOptionHitboxes = List.of();
-	private MachineSettingSpec machineSettingMenuSpec;
-	private Bounds machineSettingMenuAnchor = EMPTY;
-	private int machineSettingMenuScroll;
-	private List<MachineSettingOptionHitbox> machineSettingOptionHitboxes = List.of();
 	private Entry voltageMenuEntry;
 	private Bounds voltageMenuAnchor = EMPTY;
 	private int voltageMenuScroll;
@@ -368,6 +352,14 @@ public class ProductionPlannerScreen extends Screen {
 		context.drawTextWithShadow(EmiPort.literal(trimmed), messageX, controlsY + 5, messageColor);
 	}
 
+	private String linkModeLabel(LinkMode mode) {
+		return switch (mode) {
+			case AUTO -> PlannerText.tr("groups.auto", "AUTO");
+			case MATCH -> PlannerText.tr("groups.match", "MATCH");
+			case IGNORE -> PlannerText.tr("groups.ignore", "IGNORE");
+		};
+	}
+
 	private void renderFlowSection(EmiDrawContext context, Line line, String label, List<Flow> flows, int x, int y, int w,
 			TargetMode goalMode) {
 		context.drawCenteredText(EmiPort.literal(label), x + w / 2, y, 0xFFE8E8EE);
@@ -387,7 +379,7 @@ public class ProductionPlannerScreen extends Screen {
 				drawBorder(context, new Bounds(ix, iy, 18, 18), selectedMode == TargetMode.INPUT ? 0xFF66D9FF : 0xFFFFFF66);
 			}
 			EmiRenderHelper.renderAmount(context, ix, iy, EmiPort.literal(formatCompactDisplayRate(flow.displayValue, flow.approximate)));
-			flowHitboxes.add(new FlowHitbox(new Bounds(ix, iy, 18, 18), flow, goalMode));
+			flowHitboxes.add(new FlowHitbox(new Bounds(ix, iy, 18, 18), flow, goalMode, goalMode == null));
 		}
 		if (flows.size() > capacity) {
 			String more = "+" + (flows.size() - capacity);
@@ -425,14 +417,8 @@ public class ProductionPlannerScreen extends Screen {
 		for (int visible = 0, index = rowScroll; index < end; visible++, index++) {
 			PlannerDisplayRow displayRow = displayRows.get(index);
 			int y = ROW_TOP + visible * ROW_HEIGHT;
-			LoadInfo loadInfo = displayRow.entry == null ? LoadInfo.none() : getLoadInfo(line, displayRow.entry);
-			int bg = loadInfo.available()
-				? loadInfo.state().rowBackground()
-				: (index & 1) == 0 ? 0xFF111118 : 0xFF16161D;
+			int bg = (index & 1) == 0 ? 0xFF111118 : 0xFF16161D;
 			context.fill(0, y, width, ROW_HEIGHT - 1, bg);
-			if (loadInfo.available()) {
-				context.fill(0, y, 3, ROW_HEIGHT - 1, loadInfo.state().accentColor());
-			}
 
 			if (displayRow.group != null) {
 				Group group = displayRow.group;
@@ -503,8 +489,7 @@ public class ProductionPlannerScreen extends Screen {
 				drawValueBox(context, duration, mouseX, mouseY, durationText, entry.isAutomatic());
 			}
 			double rowRate = line.getEffectiveRate(entry);
-			drawLoadValueBox(context, rate, mouseX, mouseY, formatDisplayRate(rowRate) + "/" + displayTimeUnit.suffix,
-				line.isBalanceEnabled() || !entry.isAutomatic(), loadInfo);
+			drawValueBox(context, rate, mouseX, mouseY, formatDisplayRate(rowRate) + "/" + displayTimeUnit.suffix, line.isBalanceEnabled() || !entry.isAutomatic());
 			drawButton(context, replace, mouseX, mouseY, "R", false);
 			drawButton(context, remove, mouseX, mouseY, "x", false);
 
@@ -623,6 +608,7 @@ public class ProductionPlannerScreen extends Screen {
 		importLineButton = EMPTY;
 		timeUnitButton = EMPTY;
 		buildSummaryButton = EMPTY;
+		graphViewButton = EMPTY;
 		String label = line.getStandardVoltageTier() < 0 ? PlannerText.tr("footer.recipe_min", "Recipe Min") : line.getStandardVoltageName();
 		drawValueBox(context, standardVoltageBounds, mouseX, mouseY, label, line.getStandardVoltageTier() >= 0,
 			ProductionPlanner.voltageTierColor(line.getStandardVoltageTier()));
@@ -650,7 +636,7 @@ public class ProductionPlannerScreen extends Screen {
 	private void renderToolsMenu(EmiDrawContext context, int mouseX, int mouseY) {
 		int menuWidth = 136;
 		int rowHeight = 22;
-		int menuHeight = rowHeight * 4 + 4;
+		int menuHeight = rowHeight * 5 + 4;
 		int x = Math.max(4, Math.min(toolsButton.x(), width - menuWidth - 4));
 		int y = Math.max(HEADER_HEIGHT + 4, toolsButton.y() - menuHeight - 2);
 		toolsMenuBounds = new Bounds(x, y, menuWidth, menuHeight);
@@ -662,10 +648,12 @@ public class ProductionPlannerScreen extends Screen {
 		importLineButton = new Bounds(x + 2, y + 2 + rowHeight, menuWidth - 4, rowHeight);
 		timeUnitButton = new Bounds(x + 2, y + 2 + rowHeight * 2, menuWidth - 4, rowHeight);
 		buildSummaryButton = new Bounds(x + 2, y + 2 + rowHeight * 3, menuWidth - 4, rowHeight);
+		graphViewButton = new Bounds(x + 2, y + 2 + rowHeight * 4, menuWidth - 4, rowHeight);
 		drawButton(context, exportLineButton, mouseX, mouseY, PlannerText.tr("tools.export_line", "EXPORT LINE"), false);
 		drawButton(context, importLineButton, mouseX, mouseY, PlannerText.tr("tools.import_line", "IMPORT LINE"), false);
 		drawButton(context, timeUnitButton, mouseX, mouseY, PlannerText.tr("tools.time", "TIME") + " /" + displayTimeUnit.suffix, false);
 		drawButton(context, buildSummaryButton, mouseX, mouseY, PlannerText.tr("tools.line_report", "LINE REPORT"), false);
+		drawButton(context, graphViewButton, mouseX, mouseY, PlannerText.tr("tools.graph", "GRAPH VIEW"), false);
 		context.pop();
 	}
 
@@ -1127,7 +1115,7 @@ public class ProductionPlannerScreen extends Screen {
 				context.drawTextWithShadow(EmiPort.literal(name), rightX + 27, rowY + 7, 0xFFE3E3E8);
 				LinkMode mode = line.getLinkMode(selectedGroup, stack);
 				Bounds modeBounds = new Bounds(rightX + rightWidth - 96, rowY + 2, 90, 20);
-				String modeText = mode == LinkMode.MATCH ? PlannerText.tr("groups.match", "MATCH") : PlannerText.tr("groups.ignore", "IGNORE");
+				String modeText = linkModeLabel(mode);
 				drawButton(context, modeBounds, mouseX, mouseY, modeText, mode == LinkMode.MATCH);
 				groupLinkHitboxes.add(new GroupLinkHitbox(modeBounds, stack, mode));
 			}
@@ -1135,8 +1123,10 @@ public class ProductionPlannerScreen extends Screen {
 
 		groupCloseButton = new Bounds(x + modalWidth - 82, footerButtonY, 72, 20);
 		drawButton(context, groupCloseButton, mouseX, mouseY, PlannerText.tr("groups.close", "CLOSE"), false);
-		String help = PlannerText.tr("groups.match_help", "MATCH: resource must balance inside this group") + "   |   "
-			+ PlannerText.tr("groups.ignore_help", "IGNORE: resource may flow to the parent group");
+		String help = selectedGroup == null
+			? PlannerText.tr("groups.root_link_help", "AUTO: prefer recycling   |   MATCH: force exact recycling   |   IGNORE: keep flows separate")
+			: PlannerText.tr("groups.match_help", "MATCH: resource must balance inside this group") + "   |   "
+				+ PlannerText.tr("groups.ignore_help", "IGNORE: resource may flow to the parent group");
 		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(help, modalWidth - 20)), x + 10, footerHelpY, 0xFF80808C);
 
 		if (groupRenameField != null) {
@@ -1381,8 +1371,6 @@ public class ProductionPlannerScreen extends Screen {
 		activeDropdownBounds = EMPTY;
 		machineOptionHitboxes = List.of();
 		voltageOptionHitboxes = List.of();
-		coilOptionHitboxes = List.of();
-		machineSettingOptionHitboxes = List.of();
 		if (!isDropdownOpen()) {
 			return;
 		}
@@ -1391,8 +1379,6 @@ public class ProductionPlannerScreen extends Screen {
 		try {
 			if (coilMenuOpen && machineConfigEntry != null) {
 				renderCoilDropdown(context, mouseX, mouseY);
-			} else if (machineSettingMenuSpec != null && machineConfigEntry != null) {
-				renderMachineSettingDropdown(context, mouseX, mouseY);
 			} else if (machineConfigEntry != null) {
 				renderMachineConfig(context, mouseX, mouseY);
 			} else if (machineMenuEntry != null) {
@@ -1549,10 +1535,12 @@ public class ProductionPlannerScreen extends Screen {
 		int cy = y + MENU_HEADER_HEIGHT + 4;
 		if (coils) {
 			context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("machine.coils", "Coils") + ":"), x + 8, cy + 5, 0xFFC8C8D0);
-			configCoilValue = new Bounds(x + 90, cy, menuWidth - 98, 20);
-			EmiStack coilIcon = GtceuHeatingCoilCatalog.iconForName(machineConfigEntry.getCoilName());
-			drawSelectorValueBox(context, configCoilValue, mouseX, mouseY, machineConfigEntry.getCoilName(),
-				machineConfigEntry.getCoilTier() > 0, coilIcon);
+			configCoilMinus = new Bounds(x + 70, cy + 1, 18, 18);
+			configCoilValue = new Bounds(x + 90, cy, 136, 20);
+			configCoilPlus = new Bounds(x + 228, cy + 1, 18, 18);
+			drawButton(context, configCoilMinus, mouseX, mouseY, "-", false);
+			drawValueBox(context, configCoilValue, mouseX, mouseY, machineConfigEntry.getCoilName(), machineConfigEntry.getCoilTier() > 0);
+			drawButton(context, configCoilPlus, mouseX, mouseY, "+", false);
 			cy += 26;
 		}
 		if (parallelControl) {
@@ -1568,44 +1556,21 @@ public class ProductionPlannerScreen extends Screen {
 			cy += 26;
 		}
 		for (MachineSettingSpec spec : specialSettings) {
-			if (spec.type() == MachineSettingType.CHOICE) {
-				int valueWidth = Math.min(166, Math.max(112, menuWidth / 2));
-				int valueX = x + menuWidth - valueWidth - 8;
-				String label = PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ":";
-				label = textRenderer.trimToWidth(label, Math.max(40, valueX - x - 16));
-				context.drawTextWithShadow(EmiPort.literal(label), x + 8, cy + 5, 0xFFC8C8D0);
-				Bounds value = new Bounds(valueX, cy, valueWidth, 20);
-				int currentValue = machineConfigEntry.getMachineSettingValue(spec);
-				drawSelectorValueBox(context, value, mouseX, mouseY, spec.displayValue(currentValue),
-					currentValue != spec.defaultValue(), spec.choiceIcon(currentValue));
-				specialControls.add(new MachineSettingControl(spec, EMPTY, value, EMPTY));
-			} else if (spec.type() == MachineSettingType.TOGGLE) {
-				int valueWidth = 84;
-				int valueX = x + menuWidth - valueWidth - 8;
-				String label = PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ":";
-				label = textRenderer.trimToWidth(label, Math.max(40, valueX - x - 16));
-				context.drawTextWithShadow(EmiPort.literal(label), x + 8, cy + 5, 0xFFC8C8D0);
-				Bounds value = new Bounds(valueX, cy, valueWidth, 20);
-				int currentValue = machineConfigEntry.getMachineSettingValue(spec);
-				drawValueBox(context, value, mouseX, mouseY, spec.displayValue(currentValue), currentValue != 0);
-				specialControls.add(new MachineSettingControl(spec, EMPTY, value, EMPTY));
-			} else {
-				int plusX = x + menuWidth - 36;
-				int valueWidth = 84;
-				int valueX = plusX - valueWidth - 2;
-				int minusX = valueX - 20;
-				String label = PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ":";
-				label = textRenderer.trimToWidth(label, Math.max(40, minusX - x - 16));
-				context.drawTextWithShadow(EmiPort.literal(label), x + 8, cy + 5, 0xFFC8C8D0);
-				Bounds minus = new Bounds(minusX, cy + 1, 18, 18);
-				Bounds value = new Bounds(valueX, cy, valueWidth, 20);
-				Bounds plus = new Bounds(plusX, cy + 1, 18, 18);
-				drawButton(context, minus, mouseX, mouseY, "-", false);
-				drawValueBox(context, value, mouseX, mouseY, machineConfigEntry.getMachineSettingDisplayValue(spec),
-					machineConfigEntry.getMachineSettingValue(spec) != spec.defaultValue());
-				drawButton(context, plus, mouseX, mouseY, "+", false);
-				specialControls.add(new MachineSettingControl(spec, minus, value, plus));
-			}
+			int plusX = x + menuWidth - 36;
+			int valueWidth = 84;
+			int valueX = plusX - valueWidth - 2;
+			int minusX = valueX - 20;
+			String label = PlannerText.tr(spec.labelKey(), spec.englishLabel()) + ":";
+			label = textRenderer.trimToWidth(label, Math.max(40, minusX - x - 16));
+			context.drawTextWithShadow(EmiPort.literal(label), x + 8, cy + 5, 0xFFC8C8D0);
+			Bounds minus = new Bounds(minusX, cy + 1, 18, 18);
+			Bounds value = new Bounds(valueX, cy, valueWidth, 20);
+			Bounds plus = new Bounds(plusX, cy + 1, 18, 18);
+			drawButton(context, minus, mouseX, mouseY, "-", false);
+			drawValueBox(context, value, mouseX, mouseY, machineConfigEntry.getMachineSettingDisplayValue(spec),
+				machineConfigEntry.getMachineSettingValue(spec) != spec.defaultValue());
+			drawButton(context, plus, mouseX, mouseY, "+", false);
+			specialControls.add(new MachineSettingControl(spec, minus, value, plus));
 			cy += 26;
 		}
 		configSpecialControls = List.copyOf(specialControls);
@@ -1622,10 +1587,8 @@ public class ProductionPlannerScreen extends Screen {
 
 	private void renderCoilDropdown(EmiDrawContext context, int mouseX, int mouseY) {
 		int count = ProductionPlanner.maxCoilTier() + 1;
-		int visible = Math.min(MENU_MAX_ROWS, count);
-		coilMenuScroll = Math.max(0, Math.min(coilMenuScroll, Math.max(0, count - visible)));
-		int menuWidth = 220;
-		int menuHeight = MENU_HEADER_HEIGHT + visible * MENU_ROW_HEIGHT + 2;
+		int menuWidth = 180;
+		int menuHeight = MENU_HEADER_HEIGHT + count * MENU_ROW_HEIGHT + 2;
 		int x = Math.max(4, Math.min(coilMenuAnchor.x(), width - menuWidth - 4));
 		int y = coilMenuAnchor.bottom() + 2;
 		if (y + menuHeight > height - FOOTER_HEIGHT - 2) {
@@ -1636,94 +1599,20 @@ public class ProductionPlannerScreen extends Screen {
 		drawBorder(context, activeDropdownBounds, 0xFFD0D0D8);
 		context.fill(x + 1, y + 1, menuWidth - 2, MENU_HEADER_HEIGHT - 1, 0xFF262630);
 		context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("machine.select_coils", "Select coils")), x + 7, y + 6, 0xFFFFFFFF);
-		if (count > visible) {
-			String marker = (coilMenuScroll > 0 ? "^ " : "") + (coilMenuScroll + visible < count ? "v" : "");
-			context.drawTextWithShadow(EmiPort.literal(marker), x + menuWidth - 20, y + 6, 0xFFB8B8C0);
-		}
 		List<CoilOptionHitbox> hitboxes = new ArrayList<>();
-		for (int i = 0; i < visible; i++) {
-			int tier = coilMenuScroll + i;
-			Bounds row = new Bounds(x + 2, y + MENU_HEADER_HEIGHT + i * MENU_ROW_HEIGHT, menuWidth - 4, MENU_ROW_HEIGHT);
+		for (int tier = 0; tier < count; tier++) {
+			Bounds row = new Bounds(x + 2, y + MENU_HEADER_HEIGHT + tier * MENU_ROW_HEIGHT, menuWidth - 4, MENU_ROW_HEIGHT);
 			boolean selected = machineConfigEntry.getCoilTier() == tier;
 			boolean hovered = row.contains(mouseX, mouseY);
 			context.fill(row.x(), row.y(), row.width(), row.height(), selected ? ACTIVE_COLOR : hovered ? HOVER_COLOR : 0xFF18181F);
 			if (selected) {
 				context.fill(row.x(), row.y(), 3, row.height(), 0xFF7FD8A1);
 			}
-			String name = ProductionPlanner.coilTierName(tier);
-			EmiStack icon = GtceuHeatingCoilCatalog.iconForName(name);
-			int textX = row.x() + 8;
-			if (icon != null && !icon.isEmpty()) {
-				context.drawStack(icon, row.x() + 6, row.y() + 3, EmiIngredient.RENDER_ICON);
-				textX = row.x() + 28;
-			}
 			String suffix = tier == 0 ? " (" + PlannerText.tr("coil.base", "base") + ")" : " (+" + tier + ")";
-			int labelRight = selected ? row.right() - 24 : row.right() - 6;
-			String label = textRenderer.trimToWidth(name + suffix, Math.max(8, labelRight - textX));
-			context.drawTextWithShadow(EmiPort.literal(label), textX, row.y() + 7, 0xFFFFFFFF);
-			if (selected) {
-				context.drawTextWithShadow(EmiPort.literal("\u2713"), row.right() - 16, row.y() + 7, 0xFF7FD8A1);
-			}
+			context.drawTextWithShadow(EmiPort.literal(ProductionPlanner.coilTierName(tier) + suffix), row.x() + 8, row.y() + 7, 0xFFFFFFFF);
 			hitboxes.add(new CoilOptionHitbox(row, tier));
 		}
 		coilOptionHitboxes = hitboxes;
-	}
-
-	private void renderMachineSettingDropdown(EmiDrawContext context, int mouseX, int mouseY) {
-		MachineSettingSpec spec = machineSettingMenuSpec;
-		if (spec == null || spec.type() != MachineSettingType.CHOICE || spec.choices().isEmpty()) {
-			machineSettingMenuSpec = null;
-			activeDropdownBounds = EMPTY;
-			return;
-		}
-		int count = spec.choices().size();
-		int visible = Math.min(MENU_MAX_ROWS, count);
-		machineSettingMenuScroll = Math.max(0, Math.min(machineSettingMenuScroll, Math.max(0, count - visible)));
-		int menuWidth = 252;
-		int menuHeight = MENU_HEADER_HEIGHT + visible * MENU_ROW_HEIGHT + 2;
-		int x = Math.max(4, Math.min(machineSettingMenuAnchor.x(), width - menuWidth - 4));
-		int y = machineSettingMenuAnchor.bottom() + 2;
-		if (y + menuHeight > height - FOOTER_HEIGHT - 2) {
-			y = Math.max(HEADER_HEIGHT + 2, machineSettingMenuAnchor.y() - menuHeight - 2);
-		}
-		activeDropdownBounds = new Bounds(x, y, menuWidth, menuHeight);
-		context.fill(x, y, menuWidth, menuHeight, 0xFF111118);
-		drawBorder(context, activeDropdownBounds, 0xFFD0D0D8);
-		context.fill(x + 1, y + 1, menuWidth - 2, MENU_HEADER_HEIGHT - 1, 0xFF262630);
-		String settingName = PlannerText.tr(spec.labelKey(), spec.englishLabel());
-		String title = PlannerText.tr("machine.select_setting", "Select %s", settingName);
-		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(title, menuWidth - 34)), x + 7, y + 6, 0xFFFFFFFF);
-		if (count > visible) {
-			String marker = (machineSettingMenuScroll > 0 ? "^ " : "") + (machineSettingMenuScroll + visible < count ? "v" : "");
-			context.drawTextWithShadow(EmiPort.literal(marker), x + menuWidth - 20, y + 6, 0xFFB8B8C0);
-		}
-
-		int currentValue = machineConfigEntry.getMachineSettingValue(spec);
-		List<MachineSettingOptionHitbox> hitboxes = new ArrayList<>();
-		for (int i = 0; i < visible; i++) {
-			int value = machineSettingMenuScroll + i;
-			Bounds row = new Bounds(x + 2, y + MENU_HEADER_HEIGHT + i * MENU_ROW_HEIGHT, menuWidth - 4, MENU_ROW_HEIGHT);
-			boolean selected = currentValue == value;
-			boolean hovered = row.contains(mouseX, mouseY);
-			context.fill(row.x(), row.y(), row.width(), row.height(), selected ? ACTIVE_COLOR : hovered ? HOVER_COLOR : 0xFF18181F);
-			if (selected) {
-				context.fill(row.x(), row.y(), 3, row.height(), 0xFF7FD8A1);
-			}
-			EmiStack icon = spec.choiceIcon(value);
-			int textX = row.x() + 8;
-			if (icon != null && !icon.isEmpty()) {
-				context.drawStack(icon, row.x() + 6, row.y() + 3, EmiIngredient.RENDER_ICON);
-				textX = row.x() + 28;
-			}
-			int labelRight = selected ? row.right() - 24 : row.right() - 6;
-			String label = textRenderer.trimToWidth(spec.displayValue(value), Math.max(8, labelRight - textX));
-			context.drawTextWithShadow(EmiPort.literal(label), textX, row.y() + 7, 0xFFFFFFFF);
-			if (selected) {
-				context.drawTextWithShadow(EmiPort.literal("\u2713"), row.right() - 16, row.y() + 7, 0xFF7FD8A1);
-			}
-			hitboxes.add(new MachineSettingOptionHitbox(row, spec, value));
-		}
-		machineSettingOptionHitboxes = hitboxes;
 	}
 
 	private boolean isDropdownOpen() {
@@ -1749,12 +1638,7 @@ public class ProductionPlannerScreen extends Screen {
 		configSpecialControls = List.of();
 		coilMenuOpen = false;
 		coilMenuAnchor = EMPTY;
-		coilMenuScroll = 0;
 		coilOptionHitboxes = List.of();
-		machineSettingMenuSpec = null;
-		machineSettingMenuAnchor = EMPTY;
-		machineSettingMenuScroll = 0;
-		machineSettingOptionHitboxes = List.of();
 		activeDropdownBounds = EMPTY;
 		machineOptionHitboxes = List.of();
 		voltageOptionHitboxes = List.of();
@@ -1815,22 +1699,6 @@ public class ProductionPlannerScreen extends Screen {
 			}
 			return;
 		}
-		if (machineSettingMenuSpec != null && machineConfigEntry != null) {
-			MachineSettingSpec spec = machineSettingMenuSpec;
-			for (MachineSettingOptionHitbox option : machineSettingOptionHitboxes) {
-				if (option.bounds.contains(mouseX, mouseY)) {
-					List<String> lines = new ArrayList<>();
-					lines.add(spec.displayValue(option.value));
-					int temperature = GtceuHeatingCoilCatalog.temperatureForName(spec.displayValue(option.value));
-					if (temperature > 0) {
-						lines.add(PlannerText.tr("gtceu.ebf.coil_heat", "Coil temperature") + ": " + temperature + "K");
-					}
-					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
-					return;
-				}
-			}
-			return;
-		}
 		if (machineConfigEntry != null) {
 			MachineProfile profile = machineConfigEntry.getMachineProfile();
 			if (configCoilValue.contains(mouseX, mouseY)) {
@@ -1839,7 +1707,7 @@ public class ProductionPlannerScreen extends Screen {
 					PlannerText.tr("coil.tier_above_cupronickel", "Tier above Cupronickel") + ": " + machineConfigEntry.getCoilTier(),
 					PlannerText.tr("machine.detected_bonus", "Detected bonus") + ": -" + formatExactRate(perTier) + "% " + PlannerText.tr("machine.duration_eu_per_tier", "duration/EU per tier (multiplicative)"),
 					PlannerText.tr("machine.current_multiplier", "Current multiplier") + ": x" + formatExactRate(machineConfigEntry.getCoilMultiplier()),
-					PlannerText.tr("tooltip.select_or_wheel", "Click to select; mouse wheel to cycle"));
+					PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"));
 				return;
 			}
 			if (configParallelValue.contains(mouseX, mouseY)) {
@@ -1866,13 +1734,7 @@ public class ProductionPlannerScreen extends Screen {
 						lines.add(PlannerText.tr("machine.throughput_multiplier", "Current throughput multiplier") + ": x"
 							+ formatExactRate(throughputMultiplier));
 					}
-					if (spec.type() == MachineSettingType.CHOICE) {
-						lines.add(PlannerText.tr("tooltip.select_or_wheel", "Click to select; mouse wheel to cycle"));
-					} else if (spec.type() == MachineSettingType.TOGGLE) {
-						lines.add(PlannerText.tr("tooltip.click_toggle", "Click to toggle"));
-					} else {
-						lines.add(PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"));
-					}
+					lines.add(PlannerText.tr("tooltip.use_wheel", "Use +/- or mouse wheel"));
 					drawTooltip(context, mouseX, mouseY, lines.toArray(String[]::new));
 					return;
 				}
@@ -2232,10 +2094,6 @@ public class ProductionPlannerScreen extends Screen {
 					double balancedRate = activeLine.getEffectiveRate(entry);
 					List<String> lines = new ArrayList<>();
 					lines.add(PlannerText.tr("tooltip.balanced_crafts", "Balanced crafts") + "/" + displayTimeUnit.suffix + ": " + formatExactDisplayRate(balancedRate));
-					LoadInfo loadInfo = getLoadInfo(activeLine, entry);
-					if (loadInfo.available()) {
-						lines.add(PlannerText.tr("load.tooltip", "Machine load") + ": " + formatExactRate(loadInfo.percent()) + "% - " + loadInfo.state().displayName());
-					}
 					if (isCompactLayout() && entry.getProcessedDurationSeconds() > 0.0D) {
 						lines.add(PlannerText.tr("tooltip.duration", "Duration") + ": " + formatExactRate(entry.getProcessedDurationSeconds()) + " s");
 					}
@@ -2294,6 +2152,11 @@ public class ProductionPlannerScreen extends Screen {
 				}
 				if (flow.approximate) {
 					tooltip.add(line(PlannerText.tr("flow.expected", "Expected value: chance or alternative ingredient involved")));
+				}
+				if (hitbox.rootLink) {
+					LinkMode mode = activeLine.getLinkMode(null, flow.stack);
+					tooltip.add(line(PlannerText.tr("flow.link_mode", "Cycle mode") + ": " + linkModeLabel(mode)));
+					tooltip.add(line(PlannerText.tr("flow.link_mode_hint", "Middle-click: AUTO -> MATCH -> IGNORE")));
 				}
 				if (hitbox.goalMode == TargetMode.OUTPUT) {
 					tooltip.add(line(isTarget(ProductionPlanner.getOrCreateActiveLine(), flow.stack)
@@ -2429,7 +2292,12 @@ public class ProductionPlannerScreen extends Screen {
 		}
 		for (GroupLinkHitbox hitbox : groupLinkHitboxes) {
 			if (button == 0 && hitbox.bounds.contains(mx, my)) {
-				ProductionPlanner.setGroupLinkMode(line, selectedGroup, hitbox.stack, hitbox.mode.toggled());
+				boolean rebalance = line.isBalanceEnabled();
+				LinkMode next = selectedGroup == null ? hitbox.mode.nextRoot() : hitbox.mode.nextGroup();
+				ProductionPlanner.setGroupLinkMode(line, selectedGroup, hitbox.stack, next);
+				if (rebalance) {
+					ProductionPlanner.balanceLine(line);
+				}
 				return true;
 			}
 		}
@@ -2523,30 +2391,19 @@ public class ProductionPlannerScreen extends Screen {
 				activeDropdownBounds = EMPTY;
 				return true;
 			}
-			if (machineSettingMenuSpec != null && machineConfigEntry != null) {
-				if (button == 0) {
-					for (MachineSettingOptionHitbox option : machineSettingOptionHitboxes) {
-						if (option.bounds.contains(mx, my)) {
-							ProductionPlanner.setMachineSetting(machineConfigEntry, option.spec, option.value);
-							machineSettingMenuSpec = null;
-							activeDropdownBounds = EMPTY;
-							return true;
-						}
-					}
-				}
-				if (activeDropdownBounds.contains(mx, my) || machineSettingMenuAnchor.contains(mx, my)) {
+			if (machineConfigEntry != null) {
+				if (button == 0 && configCoilMinus.contains(mx, my)) {
+					ProductionPlanner.cycleCoilTier(machineConfigEntry, -1);
 					return true;
 				}
-				machineSettingMenuSpec = null;
-				activeDropdownBounds = EMPTY;
-				return true;
-			}
-			if (machineConfigEntry != null) {
+				if (button == 0 && configCoilPlus.contains(mx, my)) {
+					ProductionPlanner.cycleCoilTier(machineConfigEntry, 1);
+					return true;
+				}
 				if ((button == 0 || button == 1) && configCoilValue.contains(mx, my)) {
 					if (button == 0) {
 						coilMenuOpen = true;
 						coilMenuAnchor = configCoilValue;
-						coilMenuScroll = Math.max(0, machineConfigEntry.getCoilTier() - MENU_MAX_ROWS / 2);
 						activeDropdownBounds = EMPTY;
 					} else {
 						ProductionPlanner.cycleCoilTier(machineConfigEntry, -1);
@@ -2562,27 +2419,16 @@ public class ProductionPlannerScreen extends Screen {
 					return true;
 				}
 				for (MachineSettingControl control : configSpecialControls) {
-					MachineSettingSpec spec = control.spec;
-					boolean selector = spec.type() == MachineSettingType.CHOICE;
-					boolean stepped = spec.type() == MachineSettingType.INTEGER || spec.type() == MachineSettingType.CYCLE;
-					if (stepped && control.minus.contains(mx, my) && (button == 0 || button == 1)) {
-						ProductionPlanner.cycleMachineSetting(machineConfigEntry, spec, -1);
+					if (control.minus.contains(mx, my) && (button == 0 || button == 1)) {
+						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, -1);
 						return true;
 					}
-					if (stepped && control.plus.contains(mx, my) && (button == 0 || button == 1)) {
-						ProductionPlanner.cycleMachineSetting(machineConfigEntry, spec, 1);
+					if (control.plus.contains(mx, my) && (button == 0 || button == 1)) {
+						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, 1);
 						return true;
 					}
 					if (control.value.contains(mx, my) && (button == 0 || button == 1)) {
-						if (selector && button == 0) {
-							machineSettingMenuSpec = spec;
-							machineSettingMenuAnchor = control.value;
-							int current = machineConfigEntry.getMachineSettingValue(spec);
-							machineSettingMenuScroll = Math.max(0, current - MENU_MAX_ROWS / 2);
-							activeDropdownBounds = EMPTY;
-						} else {
-							ProductionPlanner.cycleMachineSetting(machineConfigEntry, spec, button == 0 ? 1 : -1);
-						}
+						ProductionPlanner.cycleMachineSetting(machineConfigEntry, control.spec, button == 0 ? 1 : -1);
 						return true;
 					}
 				}
@@ -2745,6 +2591,15 @@ public class ProductionPlannerScreen extends Screen {
 			buildSummaryTransferStatus = "";
 			return true;
 		}
+		if (button == 0 && graphViewButton.contains(mx, my)) {
+			closeDropdowns();
+			closeSearch();
+			groupsOpen = false;
+			toolsOpen = false;
+			ProductionPlanner.save();
+			MinecraftClient.getInstance().setScreen(new ProductionPlannerGraphScreen(this));
+			return true;
+		}
 		if (toolsOpen && toolsMenuBounds.contains(mx, my)) {
 			return true;
 		}
@@ -2784,6 +2639,15 @@ public class ProductionPlannerScreen extends Screen {
 		for (FlowHitbox hitbox : flowHitboxes) {
 			if (!hitbox.bounds.contains(mx, my)) {
 				continue;
+			}
+			if (hitbox.rootLink && button == 2) {
+				boolean rebalance = line.isBalanceEnabled();
+				LinkMode mode = line.getLinkMode(null, hitbox.flow.stack);
+				ProductionPlanner.setGroupLinkMode(line, null, hitbox.flow.stack, mode.nextRoot());
+				if (rebalance) {
+					ProductionPlanner.balanceLine(line);
+				}
+				return true;
 			}
 			if (button == 0) {
 				double defaultRate = (hitbox.flow.stack.getKey() instanceof Fluid ? 1000.0D : 1.0D) / displayTimeUnit.multiplier;
@@ -3198,19 +3062,6 @@ public class ProductionPlannerScreen extends Screen {
 			return true;
 		}
 		if (isDropdownOpen() && activeDropdownBounds.contains(mx, my)) {
-			int menuDirection = (int) -Math.signum(amount);
-			if (coilMenuOpen && machineConfigEntry != null) {
-				int count = ProductionPlanner.maxCoilTier() + 1;
-				int visible = Math.min(MENU_MAX_ROWS, count);
-				coilMenuScroll = Math.max(0, Math.min(coilMenuScroll + menuDirection, Math.max(0, count - visible)));
-				return true;
-			}
-			if (machineSettingMenuSpec != null && machineConfigEntry != null) {
-				int count = machineSettingMenuSpec.choices().size();
-				int visible = Math.min(MENU_MAX_ROWS, count);
-				machineSettingMenuScroll = Math.max(0, Math.min(machineSettingMenuScroll + menuDirection, Math.max(0, count - visible)));
-				return true;
-			}
 			if (machineConfigEntry != null) {
 				int direction = (int) Math.signum(amount);
 				if (configCoilValue.contains(mx, my) || configCoilMinus.contains(mx, my) || configCoilPlus.contains(mx, my)) {
@@ -3229,7 +3080,7 @@ public class ProductionPlannerScreen extends Screen {
 				}
 				return true;
 			}
-			int direction = menuDirection;
+			int direction = (int) -Math.signum(amount);
 			if (machineMenuEntry != null) {
 				int size = ProductionPlanner.getCompatibleMachineProfiles(machineMenuEntry).size();
 				machineMenuScroll = Math.max(0, Math.min(machineMenuScroll + direction, Math.max(0, size - MENU_MAX_ROWS)));
@@ -4155,43 +4006,6 @@ public class ProductionPlannerScreen extends Screen {
 		return stack.getKey() instanceof Fluid ? "mB/" + displayTimeUnit.suffix : "/" + displayTimeUnit.suffix;
 	}
 
-	private LoadInfo getLoadInfo(Line line, Entry entry) {
-		if (line == null || entry == null || !line.isBalanceEnabled()) {
-			return LoadInfo.none();
-		}
-		double requiredRate = line.getEffectiveRate(entry);
-		if (!Double.isFinite(requiredRate) || requiredRate <= EPSILON) {
-			return LoadInfo.none();
-		}
-		MachineSizing sizing = entry.getMachineSizing(requiredRate);
-		if (!sizing.available() || !Double.isFinite(sizing.capacityRate()) || sizing.capacityRate() <= EPSILON) {
-			return LoadInfo.none();
-		}
-		double percent = Math.max(0.0D, requiredRate / sizing.capacityRate() * 100.0D);
-		boolean propagatedBottleneck = line.hasMachineCapacityShortfall()
-			&& entry.getMachineProfileName().equals(line.getBottleneckName())
-			&& percent >= 99.0D;
-		LoadState state = !sizing.sufficient() || percent > 100.0D + EPSILON || propagatedBottleneck
-			? LoadState.BOTTLENECK
-			: percent >= LOAD_MEDIUM_THRESHOLD ? LoadState.MEDIUM : LoadState.SAFE;
-		return new LoadInfo(true, Math.min(percent, 99999.0D), state);
-	}
-
-	private void drawLoadValueBox(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY, String label,
-			boolean active, LoadInfo loadInfo) {
-		if (loadInfo == null || !loadInfo.available()) {
-			drawValueBox(context, bounds, mouseX, mouseY, label, active);
-			return;
-		}
-		boolean hovered = bounds.contains(mouseX, mouseY);
-		int color = hovered ? HOVER_COLOR : loadInfo.state().boxColor();
-		context.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color);
-		drawBorder(context, bounds, hovered ? 0xFFD0D0D8 : loadInfo.state().accentColor());
-		context.fill(bounds.x(), bounds.y(), 3, bounds.height(), loadInfo.state().accentColor());
-		String trimmed = textRenderer.trimToWidth(label, Math.max(4, bounds.width() - 7));
-		context.drawCenteredText(EmiPort.literal(trimmed), bounds.x() + bounds.width() / 2 + 1, bounds.y() + 6, 0xFFFFFFFF);
-	}
-
 	private void drawValueBox(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY, String label, boolean active) {
 		drawValueBox(context, bounds, mouseX, mouseY, label, active, 0xFFFFFFFF);
 	}
@@ -4203,23 +4017,6 @@ public class ProductionPlannerScreen extends Screen {
 		drawBorder(context, bounds, hovered ? 0xFFD0D0D8 : BORDER_COLOR);
 		String trimmed = textRenderer.trimToWidth(label, Math.max(4, bounds.width() - 4));
 		context.drawCenteredText(EmiPort.literal(trimmed), bounds.x() + bounds.width() / 2, bounds.y() + 6, textColor);
-	}
-
-	private void drawSelectorValueBox(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY, String label,
-			boolean active, EmiStack icon) {
-		boolean hovered = bounds.contains(mouseX, mouseY);
-		int color = active ? 0xFF263B36 : hovered ? HOVER_COLOR : 0xFF222229;
-		context.fill(bounds.x(), bounds.y(), bounds.width(), bounds.height(), color);
-		drawBorder(context, bounds, hovered ? 0xFFD0D0D8 : BORDER_COLOR);
-		int textX = bounds.x() + 4;
-		if (icon != null && !icon.isEmpty()) {
-			context.drawStack(icon, bounds.x() + 3, bounds.y() + 2, EmiIngredient.RENDER_ICON);
-			textX = bounds.x() + 22;
-		}
-		int arrowX = bounds.right() - 10;
-		String trimmed = textRenderer.trimToWidth(label, Math.max(4, arrowX - textX - 3));
-		context.drawTextWithShadow(EmiPort.literal(trimmed), textX, bounds.y() + 6, 0xFFFFFFFF);
-		context.drawTextWithShadow(EmiPort.literal("v"), arrowX, bounds.y() + 6, 0xFFB8B8C0);
 	}
 
 	private void drawMachineValueBox(EmiDrawContext context, Bounds bounds, int mouseX, int mouseY, MachineProfile profile, boolean active) {
@@ -4319,55 +4116,6 @@ public class ProductionPlannerScreen extends Screen {
 	private record BuildSummaryHitbox(Bounds bounds, BuildSummaryRow row) {
 	}
 
-	private record LoadInfo(boolean available, double percent, LoadState state) {
-		private static LoadInfo none() {
-			return new LoadInfo(false, 0.0D, LoadState.NONE);
-		}
-	}
-
-	private enum LoadState {
-		NONE,
-		SAFE,
-		MEDIUM,
-		BOTTLENECK;
-
-		private int rowBackground() {
-			return switch (this) {
-				case SAFE -> LOAD_SAFE_BG;
-				case MEDIUM -> LOAD_MEDIUM_BG;
-				case BOTTLENECK -> LOAD_BOTTLENECK_BG;
-				case NONE -> 0xFF111118;
-			};
-		}
-
-		private int boxColor() {
-			return switch (this) {
-				case SAFE -> LOAD_SAFE_BOX;
-				case MEDIUM -> LOAD_MEDIUM_BOX;
-				case BOTTLENECK -> LOAD_BOTTLENECK_BOX;
-				case NONE -> 0xFF222229;
-			};
-		}
-
-		private int accentColor() {
-			return switch (this) {
-				case SAFE -> LOAD_SAFE_ACCENT;
-				case MEDIUM -> LOAD_MEDIUM_ACCENT;
-				case BOTTLENECK -> LOAD_BOTTLENECK_ACCENT;
-				case NONE -> BORDER_COLOR;
-			};
-		}
-
-		private String displayName() {
-			return switch (this) {
-				case SAFE -> PlannerText.tr("load.status.safe", "Healthy");
-				case MEDIUM -> PlannerText.tr("load.status.medium", "High load");
-				case BOTTLENECK -> PlannerText.tr("load.status.bottleneck", "BOTTLENECK");
-				case NONE -> "";
-			};
-		}
-	}
-
 	private enum EditKind {
 		RATE, MACHINES, PARALLEL, DURATION
 	}
@@ -4379,9 +4127,6 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private record CoilOptionHitbox(Bounds bounds, int tier) {
-	}
-
-	private record MachineSettingOptionHitbox(Bounds bounds, MachineSettingSpec spec, int value) {
 	}
 
 	private record MachineSettingControl(MachineSettingSpec spec, Bounds minus, Bounds value, Bounds plus) {
@@ -4472,11 +4217,17 @@ public class ProductionPlannerScreen extends Screen {
 		private final Bounds bounds;
 		private final Flow flow;
 		private final TargetMode goalMode;
+		private final boolean rootLink;
 
 		private FlowHitbox(Bounds bounds, Flow flow, TargetMode goalMode) {
+			this(bounds, flow, goalMode, false);
+		}
+
+		private FlowHitbox(Bounds bounds, Flow flow, TargetMode goalMode, boolean rootLink) {
 			this.bounds = bounds;
 			this.flow = flow;
 			this.goalMode = goalMode;
+			this.rootLink = rootLink;
 		}
 	}
 
