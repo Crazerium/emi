@@ -53,6 +53,7 @@ public final class ProductionPlanner {
 	private static final List<Line> LINES = new ArrayList<>();
 	private static final Map<String, MachineRuntimeInfo> MACHINE_RUNTIME_CACHE = new LinkedHashMap<>();
 	private static final Map<String, String> PREFERRED_MACHINE_PROFILES = new LinkedHashMap<>();
+	private static final List<RecipePathRule> RECIPE_PATH_RULES = new ArrayList<>();
 	private static final int MAX_FAVORITE_CHAIN_RECIPES = 128;
 	private static final int UNDO_HISTORY_LIMIT = 50;
 	private static final List<JsonObject> UNDO_HISTORY = new ArrayList<>();
@@ -87,7 +88,9 @@ public final class ProductionPlanner {
 		LINES.clear();
 		activeIndex = -1;
 		PREFERRED_MACHINE_PROFILES.clear();
+		RECIPE_PATH_RULES.clear();
 		JsonObject root = EmiProductionPlannerPersistence.load();
+		loadRecipePathRules(root);
 		if (root.has("preferred_machines") && root.get("preferred_machines").isJsonObject()) {
 			for (Map.Entry<String, JsonElement> preference : root.getAsJsonObject("preferred_machines").entrySet()) {
 				try {
@@ -295,6 +298,162 @@ public final class ProductionPlanner {
 		}
 	}
 
+	private static void loadRecipePathRules(JsonObject root) {
+		if (root == null || !root.has("recipe_paths") || !root.get("recipe_paths").isJsonArray()) {
+			return;
+		}
+		for (JsonElement element : root.getAsJsonArray("recipe_paths")) {
+			if (!element.isJsonObject()) {
+				continue;
+			}
+			try {
+				JsonObject object = element.getAsJsonObject();
+				if (!object.has("stack")) {
+					continue;
+				}
+				EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(object.get("stack"));
+				if (!(ingredient instanceof EmiStack stack) || stack.isEmpty()) {
+					continue;
+				}
+				RecipePathRule rule = new RecipePathRule(normalizeStack(stack));
+				if (object.has("preferred_recipe")) {
+					Identifier recipeId = EmiPort.id(object.get("preferred_recipe").getAsString());
+					RecipePathMode mode = object.has("mode")
+						? RecipePathMode.fromSerialized(object.get("mode").getAsString())
+						: RecipePathMode.PREFER;
+					if (mode == RecipePathMode.PREFER || mode == RecipePathMode.LOCK) {
+						rule.preferredRecipeId = recipeId;
+						rule.preferredMode = mode;
+					}
+				}
+				if (object.has("avoid") && object.get("avoid").isJsonArray()) {
+					for (JsonElement avoided : object.getAsJsonArray("avoid")) {
+						if (avoided.isJsonPrimitive() && avoided.getAsJsonPrimitive().isString()) {
+							rule.avoidedRecipeIds.add(EmiPort.id(avoided.getAsString()));
+						}
+					}
+				}
+				if (rule.hasContent()) {
+					RECIPE_PATH_RULES.add(rule);
+				}
+			} catch (Throwable ignored) {
+			}
+		}
+	}
+
+	public static synchronized RecipePathMode getRecipePathMode(EmiStack output, Identifier recipeId) {
+		ensureLoaded();
+		if (output == null || output.isEmpty() || recipeId == null) {
+			return RecipePathMode.NONE;
+		}
+		RecipePathRule rule = findRecipePathRule(output);
+		if (rule == null) {
+			return RecipePathMode.NONE;
+		}
+		if (recipeId.equals(rule.preferredRecipeId)) {
+			return rule.preferredMode == RecipePathMode.LOCK ? RecipePathMode.LOCK : RecipePathMode.PREFER;
+		}
+		return rule.avoidedRecipeIds.contains(recipeId) ? RecipePathMode.AVOID : RecipePathMode.NONE;
+	}
+
+	public static synchronized RecipePathMode cycleRecipePathMode(EmiStack output, Identifier recipeId) {
+		ensureLoaded();
+		if (output == null || output.isEmpty() || recipeId == null) {
+			return RecipePathMode.NONE;
+		}
+		RecipePathRule rule = findRecipePathRule(output);
+		if (rule == null) {
+			rule = new RecipePathRule(normalizeStack(output));
+			RECIPE_PATH_RULES.add(rule);
+		}
+		RecipePathMode current = getRecipePathMode(output, recipeId);
+		RecipePathMode next;
+		switch (current) {
+			case NONE -> {
+				rule.preferredRecipeId = recipeId;
+				rule.preferredMode = RecipePathMode.PREFER;
+				rule.avoidedRecipeIds.remove(recipeId);
+				next = RecipePathMode.PREFER;
+			}
+			case PREFER -> {
+				rule.preferredRecipeId = recipeId;
+				rule.preferredMode = RecipePathMode.LOCK;
+				rule.avoidedRecipeIds.remove(recipeId);
+				next = RecipePathMode.LOCK;
+			}
+			case LOCK -> {
+				if (recipeId.equals(rule.preferredRecipeId)) {
+					rule.preferredRecipeId = null;
+					rule.preferredMode = RecipePathMode.NONE;
+				}
+				rule.avoidedRecipeIds.add(recipeId);
+				next = RecipePathMode.AVOID;
+			}
+			case AVOID -> {
+				rule.avoidedRecipeIds.remove(recipeId);
+				next = RecipePathMode.NONE;
+			}
+			default -> next = RecipePathMode.NONE;
+		}
+		if (!rule.hasContent()) {
+			RECIPE_PATH_RULES.remove(rule);
+		}
+		save();
+		return next;
+	}
+
+	public static synchronized EmiRecipe getPreferredRecipePath(EmiStack output) {
+		ensureLoaded();
+		RecipePathRule rule = findRecipePathRule(output);
+		if (rule == null || rule.preferredRecipeId == null) {
+			return null;
+		}
+		return resolveRecipePathRecipe(rule.preferredRecipeId);
+	}
+
+	public static synchronized boolean isRecipePathLocked(EmiStack output) {
+		ensureLoaded();
+		RecipePathRule rule = findRecipePathRule(output);
+		return rule != null && rule.preferredRecipeId != null && rule.preferredMode == RecipePathMode.LOCK;
+	}
+
+	public static synchronized boolean isRecipePathAvoided(EmiStack output, Identifier recipeId) {
+		ensureLoaded();
+		RecipePathRule rule = findRecipePathRule(output);
+		return rule != null && recipeId != null && rule.avoidedRecipeIds.contains(recipeId);
+	}
+
+	private static RecipePathRule findRecipePathRule(EmiStack output) {
+		if (output == null || output.isEmpty()) {
+			return null;
+		}
+		for (RecipePathRule rule : RECIPE_PATH_RULES) {
+			if (rule != null && sameRecipePathStack(rule.stack, output)) {
+				return rule;
+			}
+		}
+		return null;
+	}
+
+	private static boolean sameRecipePathStack(EmiStack a, EmiStack b) {
+		if (a == null || b == null || a.isEmpty() || b.isEmpty()) {
+			return false;
+		}
+		try {
+			if (a.isEqual(b)) {
+				return true;
+			}
+		} catch (Throwable ignored) {
+		}
+		try {
+			Object aKey = a.getKey();
+			Object bKey = b.getKey();
+			return aKey != null && aKey.equals(bKey);
+		} catch (Throwable ignored) {
+		}
+		return false;
+	}
+
 	public static synchronized boolean addRecipe(EmiRecipe recipe) {
 		ensureLoaded();
 		if (recipe == null || recipe.getId() == null) {
@@ -478,22 +637,112 @@ public final class ProductionPlanner {
 		}
 	}
 
-	private static EmiRecipe findFavoritedRecipeFor(EmiIngredient input, Set<Identifier> excluded) {
+	private static EmiRecipe findFavoritedRecipeFor(EmiIngredient input, Set<Identifier> visited) {
 		if (input == null || input.isEmpty()) {
 			return null;
 		}
 
-		EmiRecipe defaultRecipe = findDefaultRecipeFor(input, excluded);
+		List<RecipePathRule> pathRules = findRecipePathRules(input);
+		// Do not treat already-expanded recipes as unavailable choices. The caller uses
+		// `visited` to stop recursion after a recipe is selected. If we exclude a
+		// visited preferred/default recipe here, PREFER can incorrectly fall back to
+		// a second producer for the same resource (for example Rolling Machine +
+		// hammer crafting for Bronze Plate). Only explicit AVOID rules belong in the
+		// candidate exclusion set.
+		Set<Identifier> effectiveExcluded = mergeRecipePathExclusions(null, pathRules);
+		RecipePathRule preferredRule = choosePreferredRecipePathRule(pathRules);
+		if (preferredRule != null && preferredRule.preferredRecipeId != null) {
+			EmiRecipe preferredRecipe = resolveRecipePathRecipe(preferredRule.preferredRecipeId);
+			if (isUsableDependencyRecipe(preferredRecipe, input, effectiveExcluded)) {
+				return preferredRecipe;
+			}
+			if (preferredRule.preferredMode == RecipePathMode.LOCK) {
+				return null;
+			}
+		}
+
+		EmiRecipe defaultRecipe = findDefaultRecipeFor(input, effectiveExcluded);
 		if (defaultRecipe != null) {
 			return defaultRecipe;
 		}
 
 		int currentPage = EmiFavorites.currentFavoritePage();
-		EmiRecipe currentPageRecipe = findFavoritedRecipeFor(input, currentPage, excluded);
+		EmiRecipe currentPageRecipe = findFavoritedRecipeFor(input, currentPage, effectiveExcluded);
 		if (currentPageRecipe != null) {
 			return currentPageRecipe;
 		}
-		return findFavoritedRecipeFor(input, -1, excluded);
+		return findFavoritedRecipeFor(input, -1, effectiveExcluded);
+	}
+
+	private static List<RecipePathRule> findRecipePathRules(EmiIngredient ingredient) {
+		if (ingredient == null || ingredient.isEmpty() || RECIPE_PATH_RULES.isEmpty()) {
+			return List.of();
+		}
+		List<RecipePathRule> matches = new ArrayList<>();
+		for (RecipePathRule rule : RECIPE_PATH_RULES) {
+			if (rule != null && ingredientMatches(ingredient, rule.stack)) {
+				matches.add(rule);
+			}
+		}
+		return matches;
+	}
+
+	private static RecipePathRule choosePreferredRecipePathRule(List<RecipePathRule> rules) {
+		RecipePathRule preferred = null;
+		for (RecipePathRule rule : rules) {
+			if (rule == null || rule.preferredRecipeId == null) {
+				continue;
+			}
+			if (rule.preferredMode == RecipePathMode.LOCK) {
+				return rule;
+			}
+			if (preferred == null) {
+				preferred = rule;
+			}
+		}
+		return preferred;
+	}
+
+	private static Set<Identifier> mergeRecipePathExclusions(Set<Identifier> excluded, List<RecipePathRule> rules) {
+		boolean hasAvoided = false;
+		for (RecipePathRule rule : rules) {
+			if (rule != null && !rule.avoidedRecipeIds.isEmpty()) {
+				hasAvoided = true;
+				break;
+			}
+		}
+		if (!hasAvoided) {
+			return excluded;
+		}
+		Set<Identifier> merged = new HashSet<>();
+		if (excluded != null) {
+			merged.addAll(excluded);
+		}
+		for (RecipePathRule rule : rules) {
+			if (rule != null) {
+				merged.addAll(rule.avoidedRecipeIds);
+			}
+		}
+		return merged;
+	}
+
+	private static EmiRecipe resolveRecipePathRecipe(Identifier recipeId) {
+		if (recipeId == null) {
+			return null;
+		}
+		try {
+			EmiRecipe recipe = EmiApi.getRecipeManager().getRecipe(recipeId);
+			if (recipe != null) {
+				return recipe;
+			}
+			for (EmiRecipe candidate : EmiApi.getRecipeManager().getRecipes()) {
+				if (candidate != null && recipeId.equals(candidate.getId())) {
+					return candidate;
+				}
+			}
+		} catch (Throwable ignored) {
+		}
+		return null;
 	}
 
 	private static EmiRecipe findDefaultRecipeFor(EmiIngredient input, Set<Identifier> excluded) {
@@ -1155,6 +1404,7 @@ public final class ProductionPlanner {
 			return;
 		}
 		double outputMultiplier = machineSettingOutputMultiplier(entry);
+		Set<EmiStack> startupOnly = new HashSet<>();
 		for (EmiIngredient ingredient : recipe.getInputs()) {
 			if (ingredient == null || ingredient.isEmpty()) {
 				continue;
@@ -1163,13 +1413,28 @@ public final class ProductionPlanner {
 			if (stack == null || stack.isEmpty()) {
 				continue;
 			}
+			ResourceRole role = getInputResourceRole(recipe, ingredient);
 			double amount = ingredient.getAmount() * Math.max(0.0D, ingredient.getChance());
-			ResourceVector vector = collection.computeIfAbsent(normalizeStack(stack), k -> new ResourceVector(k, n));
-			vector.net[index] -= amount;
-			vector.hasInput = true;
+			// Tools and exact returned inputs are one-time machine inventory, not a steady-state material flow.
+			if (role == ResourceRole.CONSUMED || role == ResourceRole.CONTAINER) {
+				ResourceVector vector = collection.computeIfAbsent(normalizeStack(stack), k -> new ResourceVector(k, n));
+				vector.net[index] -= amount;
+				vector.hasInput = true;
+			} else {
+				startupOnly.add(normalizeStack(stack));
+			}
+			// Crafting containers are frequently represented as an input remainder rather than an explicit recipe output.
+			EmiStack remainder = getInputRemainder(ingredient);
+			if (remainder != null && !remainder.isEmpty() && !sameStack(stack, remainder)
+					&& !recipeHasOutput(recipe, remainder)) {
+				double remainderAmount = amount * Math.max(1L, remainder.getAmount());
+				ResourceVector vector = collection.computeIfAbsent(normalizeStack(remainder), k -> new ResourceVector(k, n));
+				vector.net[index] += remainderAmount;
+				vector.hasOutput = true;
+			}
 		}
 		for (EmiStack stack : recipe.getOutputs()) {
-			if (stack == null || stack.isEmpty()) {
+			if (stack == null || stack.isEmpty() || startupOnly.contains(normalizeStack(stack))) {
 				continue;
 			}
 			double amount = stack.getAmount() * Math.max(0.0D, stack.getChance()) * outputMultiplier;
@@ -1177,6 +1442,145 @@ public final class ProductionPlanner {
 			vector.net[index] += amount;
 			vector.hasOutput = true;
 		}
+	}
+
+	/**
+	 * Classifies an ordinary recipe input for planner semantics. EMI's getCatalysts() list describes
+	 * recipe-associated workstations, so real reusable resources are inferred from the actual input,
+	 * its remainder, or an exact matching recipe output.
+	 */
+	public static ResourceRole getInputResourceRole(EmiRecipe recipe, EmiIngredient ingredient) {
+		if (ingredient == null || ingredient.isEmpty()) {
+			return ResourceRole.CONSUMED;
+		}
+		EmiStack stack = firstStack(ingredient);
+		if (stack == null || stack.isEmpty()) {
+			return ResourceRole.CONSUMED;
+		}
+		if (hasGtToolAlternative(ingredient)) {
+			return ResourceRole.TOOL;
+		}
+		EmiStack remainder = getInputRemainder(ingredient);
+		if (remainder != null && !remainder.isEmpty()) {
+			return sameStack(stack, remainder) ? ResourceRole.RETURNED : ResourceRole.CONTAINER;
+		}
+		if (recipeReturnsIngredient(recipe, ingredient)) {
+			return ResourceRole.CATALYST;
+		}
+		return ResourceRole.CONSUMED;
+	}
+
+	public static boolean isImplicitReusableInput(EmiIngredient ingredient) {
+		if (ingredient == null || ingredient.isEmpty()) {
+			return false;
+		}
+		boolean found = false;
+		for (EmiStack stack : ingredient.getEmiStacks()) {
+			if (stack == null || stack.isEmpty()) {
+				continue;
+			}
+			found = true;
+			if (!EmiCraftingToolCompat.isReusable(stack)) {
+				return false;
+			}
+		}
+		return found;
+	}
+
+	private static boolean hasGtToolAlternative(EmiIngredient ingredient) {
+		if (ingredient == null || ingredient.isEmpty()) {
+			return false;
+		}
+		for (EmiStack stack : ingredient.getEmiStacks()) {
+			if (stack != null && !stack.isEmpty() && EmiCraftingToolCompat.isGtTool(stack)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static EmiStack startupRepresentative(EmiIngredient ingredient, ResourceRole role) {
+		if (ingredient == null || ingredient.isEmpty()) {
+			return EmiStack.EMPTY;
+		}
+		if (role == ResourceRole.TOOL) {
+			for (EmiStack stack : ingredient.getEmiStacks()) {
+				if (stack != null && !stack.isEmpty() && EmiCraftingToolCompat.isGtTool(stack)) {
+					return stack;
+				}
+			}
+		}
+		return firstStack(ingredient);
+	}
+
+	public static EmiStack getInputRemainder(EmiIngredient ingredient) {
+		if (ingredient == null || ingredient.isEmpty() || ingredient.getEmiStacks().size() != 1) {
+			return EmiStack.EMPTY;
+		}
+		EmiStack stack = firstStack(ingredient);
+		if (stack == null || stack.isEmpty()) {
+			return EmiStack.EMPTY;
+		}
+		try {
+			EmiStack remainder = stack.getRemainder();
+			return remainder == null ? EmiStack.EMPTY : remainder;
+		} catch (Throwable ignored) {
+			return EmiStack.EMPTY;
+		}
+	}
+
+	private static boolean recipeReturnsIngredient(EmiRecipe recipe, EmiIngredient ingredient) {
+		if (recipe == null || ingredient == null || ingredient.isEmpty() || ingredient.getEmiStacks().size() != 1) {
+			return false;
+		}
+		EmiStack input = firstStack(ingredient);
+		if (input == null || input.isEmpty()) {
+			return false;
+		}
+		double required = ingredient.getAmount() * Math.max(0.0D, ingredient.getChance());
+		if (required <= 0.0D) {
+			return false;
+		}
+		double returned = 0.0D;
+		for (EmiStack output : recipe.getOutputs()) {
+			if (output != null && !output.isEmpty() && sameStack(input, output)) {
+				returned += output.getAmount() * Math.max(0.0D, output.getChance());
+			}
+		}
+		double tolerance = Math.max(1.0E-9D, Math.max(required, returned) * 1.0E-6D);
+		return Math.abs(returned - required) <= tolerance;
+	}
+
+	public static boolean isStartupOnlyOutput(EmiRecipe recipe, EmiStack output) {
+		if (recipe == null || output == null || output.isEmpty()) {
+			return false;
+		}
+		for (EmiIngredient ingredient : recipe.getInputs()) {
+			if (ingredient == null || ingredient.isEmpty()) {
+				continue;
+			}
+			EmiStack input = firstStack(ingredient);
+			if (input == null || input.isEmpty() || !sameStack(input, output)) {
+				continue;
+			}
+			ResourceRole role = getInputResourceRole(recipe, ingredient);
+			if (role == ResourceRole.CATALYST || role == ResourceRole.TOOL || role == ResourceRole.RETURNED) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean recipeHasOutput(EmiRecipe recipe, EmiStack target) {
+		if (recipe == null || target == null || target.isEmpty()) {
+			return false;
+		}
+		for (EmiStack output : recipe.getOutputs()) {
+			if (output != null && !output.isEmpty() && sameStack(output, target)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static void mergeResourceCollections(Map<EmiStack, ResourceVector> target, Map<EmiStack, ResourceVector> source, int n) {
@@ -2272,7 +2676,39 @@ public final class ProductionPlanner {
 			}
 			root.add("preferred_machines", preferredMachines);
 		}
+		JsonArray recipePaths = serializeRecipePathRules();
+		if (recipePaths.size() > 0) {
+			root.add("recipe_paths", recipePaths);
+		}
 		return root;
+	}
+
+	private static JsonArray serializeRecipePathRules() {
+		JsonArray array = new JsonArray();
+		for (RecipePathRule rule : RECIPE_PATH_RULES) {
+			if (rule == null || rule.stack == null || rule.stack.isEmpty() || !rule.hasContent()) {
+				continue;
+			}
+			JsonObject object = new JsonObject();
+			object.add("stack", EmiIngredientSerializer.getSerialized(normalizeStack(rule.stack)));
+			if (rule.preferredRecipeId != null && (rule.preferredMode == RecipePathMode.PREFER || rule.preferredMode == RecipePathMode.LOCK)) {
+				object.addProperty("preferred_recipe", rule.preferredRecipeId.toString());
+				object.addProperty("mode", rule.preferredMode.serialized());
+			}
+			if (!rule.avoidedRecipeIds.isEmpty()) {
+				JsonArray avoided = new JsonArray();
+				for (Identifier recipeId : rule.avoidedRecipeIds) {
+					if (recipeId != null) {
+						avoided.add(recipeId.toString());
+					}
+				}
+				if (avoided.size() > 0) {
+					object.add("avoid", avoided);
+				}
+			}
+			array.add(object);
+		}
+		return array;
 	}
 
 	private static JsonArray serializeLinks(Map<EmiStack, LinkMode> links, LinkMode defaultMode) {
@@ -2733,6 +3169,485 @@ public final class ProductionPlanner {
 			PlannerMachineRule machineRule, boolean modeled, List<String> notes) {
 	}
 
+	/**
+	 * Returns one-time resources needed to prime the currently configured Line. The result is
+	 * deliberately separate from steady-state External Inputs: catalysts/tools are not consumed,
+	 * while CYCLE_SEED rows estimate the inventory that has to exist before a closed recycle can start.
+	 */
+	public static synchronized List<StartupResource> getStartupResources(Line line) {
+		if (line == null) {
+			return List.of();
+		}
+		Map<StartupKey, MutableStartupResource> startup = new LinkedHashMap<>();
+		Map<EmiStack, MutableCycleResource> cycles = new LinkedHashMap<>();
+		for (Entry entry : line.entries) {
+			EmiRecipe recipe = entry == null ? null : entry.getRecipe();
+			double rate = entry == null ? 0.0D : line.getEffectiveRate(entry);
+			if (recipe == null || rate <= 1.0E-12D) {
+				continue;
+			}
+			double concurrency = startupConcurrency(entry, rate);
+			for (EmiIngredient ingredient : recipe.getInputs()) {
+				if (ingredient == null || ingredient.isEmpty()) {
+					continue;
+				}
+				ResourceRole role = getInputResourceRole(recipe, ingredient);
+				EmiStack stack = startupRepresentative(ingredient, role);
+				if (stack == null || stack.isEmpty()) {
+					continue;
+				}
+				double perBatch = ingredientAmount(ingredient);
+				if (perBatch <= 0.0D) {
+					continue;
+				}
+				boolean approximate = isApproximate(ingredient);
+				if (role == ResourceRole.TOOL || role == ResourceRole.RETURNED || role == ResourceRole.CATALYST) {
+					addStartup(startup, stack, role, perBatch, perBatch * concurrency, approximate);
+				}
+				if (role == ResourceRole.CONSUMED || role == ResourceRole.CONTAINER) {
+					MutableCycleResource cycle = cycles.computeIfAbsent(normalizeStack(stack), MutableCycleResource::new);
+					cycle.inputRate += perBatch * rate;
+					cycle.minimumSeed = Math.max(cycle.minimumSeed, perBatch);
+					cycle.recommendedBuffer += perBatch * concurrency;
+					cycle.approximate |= approximate;
+					cycle.sources++;
+					if (role == ResourceRole.CONTAINER) {
+						cycle.transformedContainerInput = true;
+					}
+				}
+				EmiStack remainder = getInputRemainder(ingredient);
+				if (remainder != null && !remainder.isEmpty() && !sameStack(stack, remainder)) {
+					double remainderPerBatch = perBatch * Math.max(1L, remainder.getAmount());
+					MutableCycleResource cycle = cycles.computeIfAbsent(normalizeStack(remainder), MutableCycleResource::new);
+					cycle.returnedContainer = true;
+					cycle.approximate |= approximate;
+					if (!recipeHasOutput(recipe, remainder)) {
+						cycle.outputRate += remainderPerBatch * rate;
+					}
+				}
+			}
+			double outputMultiplier = machineSettingOutputMultiplier(entry);
+			for (EmiStack output : recipe.getOutputs()) {
+				if (output == null || output.isEmpty() || isStartupOnlyOutput(recipe, output)) {
+					continue;
+				}
+				MutableCycleResource cycle = cycles.computeIfAbsent(normalizeStack(output), MutableCycleResource::new);
+				cycle.outputRate += output.getAmount() * Math.max(0.0D, output.getChance()) * outputMultiplier * rate;
+				cycle.approximate |= Math.abs(output.getChance() - 1.0F) > 0.0001F;
+			}
+		}
+
+		// First identify resources that are truly closed at steady state. Returned containers remain
+		// mandatory startup inventory; ordinary recycle intermediates are passed to the priming solver
+		// below so we do not incorrectly tell the player to pre-fill every intermediate in one loop.
+		Map<EmiStack, MutableCycleResource> closed = new LinkedHashMap<>();
+		for (MutableCycleResource cycle : cycles.values()) {
+			if (cycle.inputRate <= 1.0E-9D || cycle.outputRate <= 1.0E-9D || line.hasTarget(cycle.stack)
+					|| line.getLinkMode(null, cycle.stack) == LinkMode.IGNORE) {
+				continue;
+			}
+			double tolerance = Math.max(1.0E-6D, Math.max(cycle.inputRate, cycle.outputRate) * 1.0E-4D);
+			if (Math.abs(cycle.inputRate - cycle.outputRate) > tolerance) {
+				continue;
+			}
+			// A filled container that turns into another container state is not a second priming token.
+			// Prefer the returned/empty container state when both sides form the same circulation loop.
+			if (cycle.transformedContainerInput && !cycle.returnedContainer) {
+				continue;
+			}
+			if (cycle.returnedContainer) {
+				addStartup(startup, cycle.stack, ResourceRole.CONTAINER, cycle.minimumSeed,
+					Math.max(cycle.minimumSeed, cycle.recommendedBuffer), cycle.approximate, cycle.sources);
+			} else {
+				closed.put(cycle.stack, cycle);
+			}
+		}
+
+		Map<EmiStack, Double> selectedSeeds = selectCyclePrimingSeeds(line, closed.keySet());
+		for (Map.Entry<EmiStack, Double> seed : selectedSeeds.entrySet()) {
+			MutableCycleResource cycle = closed.get(seed.getKey());
+			if (cycle == null) {
+				continue;
+			}
+			double minimum = Math.max(1.0E-12D, seed.getValue());
+			addStartup(startup, cycle.stack, ResourceRole.CYCLE_SEED, minimum,
+				Math.max(minimum, cycle.recommendedBuffer), cycle.approximate, cycle.sources);
+		}
+
+		List<StartupResource> result = new ArrayList<>();
+		for (MutableStartupResource value : startup.values()) {
+			result.add(new StartupResource(value.stack, value.role, value.minimum, Math.max(value.minimum, value.recommended),
+				value.approximate, Math.max(1, value.sources)));
+		}
+		return Collections.unmodifiableList(result);
+	}
+
+	/**
+	 * Chooses priming resources for closed recycle loops. A steady-state loop can contain many
+	 * internal intermediates, but normally only one (or a small subset) needs to exist initially.
+	 * We simulate one startup firing of each active recipe while treating non-loop inputs as
+	 * externally available. At a deadlock we try each missing loop input and choose the seed that
+	 * unlocks the largest downstream chain. This keeps the result deterministic and avoids the old
+	 * "seed every internal resource" over-estimate while remaining safe for multi-input loops.
+	 */
+	private static Map<EmiStack, Double> selectCyclePrimingSeeds(Line line, Set<EmiStack> closedResources) {
+		Map<EmiStack, Double> selected = new LinkedHashMap<>();
+		if (line == null || closedResources == null || closedResources.isEmpty()) {
+			return selected;
+		}
+		List<CycleStartupStep> steps = buildCycleStartupSteps(line, closedResources);
+		if (steps.isEmpty()) {
+			return selected;
+		}
+
+		// Prefer a single-resource prime when one resource can bootstrap the whole recycle by
+		// repeatedly running an upstream recipe. This matters for chains such as
+		// Salt -> Sodium + Chlorine -> Tetrachlorosilane -> ... -> Salt: one batch of Salt
+		// is not enough, but several Salt batches are; we should report that larger Salt seed
+		// instead of asking the player to pre-fill Sodium and Chlorine separately.
+		Map<EmiStack, Double> singleSeed = selectSingleCyclePrimingSeed(steps, closedResources);
+		if (!singleSeed.isEmpty()) {
+			return singleSeed;
+		}
+
+		Map<EmiStack, Double> inventory = new LinkedHashMap<>();
+		boolean[] fired = new boolean[steps.size()];
+		propagateCycleStartup(steps, inventory, fired);
+		int guard = Math.max(8, closedResources.size() * 3 + steps.size() * 2);
+		while (countFired(fired) < steps.size() && guard-- > 0) {
+			EmiStack bestStack = null;
+			double bestAmount = 0.0D;
+			int bestGain = -1;
+			for (EmiStack resource : closedResources) {
+				double missing = minimumMissingForBlockedStep(resource, steps, inventory, fired);
+				if (missing <= 1.0E-12D) {
+					continue;
+				}
+				Map<EmiStack, Double> trialInventory = new LinkedHashMap<>(inventory);
+				trialInventory.merge(resource, missing, Double::sum);
+				boolean[] trialFired = fired.clone();
+				int before = countFired(trialFired);
+				propagateCycleStartup(steps, trialInventory, trialFired);
+				int gain = countFired(trialFired) - before;
+				if (gain > bestGain) {
+					bestGain = gain;
+					bestStack = resource;
+					bestAmount = missing;
+				}
+			}
+			if (bestStack == null) {
+				break;
+			}
+			selected.merge(bestStack, bestAmount, Double::sum);
+			inventory.merge(bestStack, bestAmount, Double::sum);
+			int before = countFired(fired);
+			propagateCycleStartup(steps, inventory, fired);
+			if (countFired(fired) == before && bestGain <= 0) {
+				// We still made the seed explicit; the next iteration may need a second independent token.
+				continue;
+			}
+		}
+		return selected;
+	}
+
+	private static List<CycleStartupStep> buildCycleStartupSteps(Line line, Set<EmiStack> closedResources) {
+		List<CycleStartupStep> steps = new ArrayList<>();
+		for (Entry entry : line.entries) {
+			EmiRecipe recipe = entry == null ? null : entry.getRecipe();
+			if (recipe == null || line.getEffectiveRate(entry) <= 1.0E-12D) {
+				continue;
+			}
+			Map<EmiStack, Double> inputs = new LinkedHashMap<>();
+			Map<EmiStack, Double> outputs = new LinkedHashMap<>();
+			for (EmiIngredient ingredient : recipe.getInputs()) {
+				if (ingredient == null || ingredient.isEmpty()) {
+					continue;
+				}
+				ResourceRole role = getInputResourceRole(recipe, ingredient);
+				if (role != ResourceRole.CONSUMED && role != ResourceRole.CONTAINER) {
+					continue;
+				}
+				EmiStack input = firstStack(ingredient);
+				if (input != null && !input.isEmpty()) {
+					EmiStack key = normalizeStack(input);
+					if (closedResources.contains(key)) {
+						inputs.merge(key, ingredientAmount(ingredient), Double::sum);
+					}
+				}
+				EmiStack remainder = getInputRemainder(ingredient);
+				if (remainder != null && !remainder.isEmpty() && (input == null || !sameStack(input, remainder))
+						&& !recipeHasOutput(recipe, remainder)) {
+					EmiStack key = normalizeStack(remainder);
+					if (closedResources.contains(key)) {
+						outputs.merge(key, ingredientAmount(ingredient) * Math.max(1L, remainder.getAmount()), Double::sum);
+					}
+				}
+			}
+			double outputMultiplier = machineSettingOutputMultiplier(entry);
+			for (EmiStack output : recipe.getOutputs()) {
+				if (output == null || output.isEmpty() || isStartupOnlyOutput(recipe, output)) {
+					continue;
+				}
+				EmiStack key = normalizeStack(output);
+				if (closedResources.contains(key)) {
+					outputs.merge(key, output.getAmount() * Math.max(0.0D, output.getChance()) * outputMultiplier, Double::sum);
+				}
+			}
+			if (!inputs.isEmpty() || !outputs.isEmpty()) {
+				steps.add(new CycleStartupStep(inputs, outputs));
+			}
+		}
+		return steps;
+	}
+
+	private static void propagateCycleStartup(List<CycleStartupStep> steps, Map<EmiStack, Double> inventory, boolean[] fired) {
+		boolean progress;
+		do {
+			progress = false;
+			for (int i = 0; i < steps.size(); i++) {
+				if (fired[i]) {
+					continue;
+				}
+				CycleStartupStep step = steps.get(i);
+				if (!canFireCycleStartupStep(step, inventory)) {
+					continue;
+				}
+				for (Map.Entry<EmiStack, Double> input : step.inputs.entrySet()) {
+					inventory.merge(input.getKey(), -input.getValue(), Double::sum);
+				}
+				for (Map.Entry<EmiStack, Double> output : step.outputs.entrySet()) {
+					inventory.merge(output.getKey(), output.getValue(), Double::sum);
+				}
+				fired[i] = true;
+				progress = true;
+			}
+		} while (progress);
+	}
+
+	private static boolean canFireCycleStartupStep(CycleStartupStep step, Map<EmiStack, Double> inventory) {
+		for (Map.Entry<EmiStack, Double> input : step.inputs.entrySet()) {
+			if (inventory.getOrDefault(input.getKey(), 0.0D) + 1.0E-9D < input.getValue()) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private static double minimumMissingForBlockedStep(EmiStack resource, List<CycleStartupStep> steps,
+			Map<EmiStack, Double> inventory, boolean[] fired) {
+		double best = Double.POSITIVE_INFINITY;
+		double have = inventory.getOrDefault(resource, 0.0D);
+		for (int i = 0; i < steps.size(); i++) {
+			if (fired[i]) {
+				continue;
+			}
+			Double required = steps.get(i).inputs.get(resource);
+			if (required == null) {
+				continue;
+			}
+			double missing = required - have;
+			if (missing > 1.0E-12D) {
+				best = Math.min(best, missing);
+			}
+		}
+		return Double.isFinite(best) ? best : 0.0D;
+	}
+
+	private static int countFired(boolean[] fired) {
+		int count = 0;
+		for (boolean value : fired) {
+			if (value) {
+				count++;
+			}
+		}
+		return count;
+	}
+
+	private static Map<EmiStack, Double> selectSingleCyclePrimingSeed(List<CycleStartupStep> steps,
+			Set<EmiStack> closedResources) {
+		EmiStack bestResource = null;
+		double bestAmount = 0.0D;
+		double bestUnits = Double.POSITIVE_INFINITY;
+		for (EmiStack resource : closedResources) {
+			double unit = cycleSeedUnit(resource, steps);
+			if (unit <= 1.0E-12D) {
+				continue;
+			}
+			double amount = minimumSingleResourceSeed(resource, unit, steps);
+			if (!Double.isFinite(amount) || amount <= 1.0E-12D) {
+				continue;
+			}
+			double units = amount / unit;
+			if (units + 1.0E-9D < bestUnits) {
+				bestUnits = units;
+				bestResource = resource;
+				bestAmount = amount;
+			}
+		}
+		if (bestResource == null) {
+			return Map.of();
+		}
+		Map<EmiStack, Double> result = new LinkedHashMap<>();
+		result.put(bestResource, bestAmount);
+		return result;
+	}
+
+	private static double cycleSeedUnit(EmiStack resource, List<CycleStartupStep> steps) {
+		double unit = Double.POSITIVE_INFINITY;
+		for (CycleStartupStep step : steps) {
+			Double required = step.inputs.get(resource);
+			if (required != null && required > 1.0E-12D) {
+				unit = Math.min(unit, required);
+			}
+		}
+		return Double.isFinite(unit) ? unit : 0.0D;
+	}
+
+	private static double minimumSingleResourceSeed(EmiStack resource, double unit, List<CycleStartupStep> steps) {
+		int high = 1;
+		final int maxUnits = 4096;
+		while (high <= maxUnits && !canPrimeCycleFromSingleResource(resource, unit * high, steps)) {
+			high *= 2;
+		}
+		if (high > maxUnits) {
+			return Double.POSITIVE_INFINITY;
+		}
+		int low = Math.max(1, high / 2 + 1);
+		int best = high;
+		while (low <= high) {
+			int mid = low + (high - low) / 2;
+			if (canPrimeCycleFromSingleResource(resource, unit * mid, steps)) {
+				best = mid;
+				high = mid - 1;
+			} else {
+				low = mid + 1;
+			}
+		}
+		return unit * best;
+	}
+
+	private static boolean canPrimeCycleFromSingleResource(EmiStack resource, double amount,
+			List<CycleStartupStep> steps) {
+		Map<EmiStack, Double> inventory = new LinkedHashMap<>();
+		inventory.put(resource, amount);
+		boolean[] fired = new boolean[steps.size()];
+		int maxOperations = Math.max(256, steps.size() * 512);
+		for (int operation = 0; operation < maxOperations; operation++) {
+			if (countFired(fired) >= steps.size()) {
+				return true;
+			}
+
+			int next = -1;
+			for (int i = 0; i < steps.size(); i++) {
+				if (!fired[i] && canFireCycleStartupStep(steps.get(i), inventory)) {
+					next = i;
+					break;
+				}
+			}
+			if (next >= 0) {
+				fireCycleStartupStep(steps.get(next), inventory);
+				fired[next] = true;
+				continue;
+			}
+
+			Map<EmiStack, Double> deficits = cycleStartupDeficits(steps, inventory, fired);
+			int helper = findCycleStartupHelper(steps, inventory, deficits);
+			if (helper < 0) {
+				return false;
+			}
+			fireCycleStartupStep(steps.get(helper), inventory);
+			fired[helper] = true;
+		}
+		return countFired(fired) >= steps.size();
+	}
+
+	private static Map<EmiStack, Double> cycleStartupDeficits(List<CycleStartupStep> steps,
+			Map<EmiStack, Double> inventory, boolean[] fired) {
+		Map<EmiStack, Double> deficits = new LinkedHashMap<>();
+		for (int i = 0; i < steps.size(); i++) {
+			if (fired[i]) {
+				continue;
+			}
+			for (Map.Entry<EmiStack, Double> input : steps.get(i).inputs.entrySet()) {
+				double missing = input.getValue() - inventory.getOrDefault(input.getKey(), 0.0D);
+				if (missing > 1.0E-12D) {
+					deficits.merge(input.getKey(), missing, Math::max);
+				}
+			}
+		}
+		return deficits;
+	}
+
+	private static int findCycleStartupHelper(List<CycleStartupStep> steps, Map<EmiStack, Double> inventory,
+			Map<EmiStack, Double> deficits) {
+		int best = -1;
+		double bestScore = 1.0E-12D;
+		for (int i = 0; i < steps.size(); i++) {
+			CycleStartupStep step = steps.get(i);
+			if (!canFireCycleStartupStep(step, inventory)) {
+				continue;
+			}
+			double score = 0.0D;
+			for (Map.Entry<EmiStack, Double> deficit : deficits.entrySet()) {
+				double produced = step.outputs.getOrDefault(deficit.getKey(), 0.0D);
+				double consumed = step.inputs.getOrDefault(deficit.getKey(), 0.0D);
+				double net = produced - consumed;
+				if (net > 1.0E-12D) {
+					score += Math.min(1.0D, net / Math.max(1.0E-12D, deficit.getValue()));
+				} else if (net < -1.0E-12D) {
+					score -= 0.25D * Math.min(1.0D, -net / Math.max(1.0E-12D, deficit.getValue()));
+				}
+			}
+			if (score > bestScore) {
+				bestScore = score;
+				best = i;
+			}
+		}
+		return best;
+	}
+
+	private static void fireCycleStartupStep(CycleStartupStep step, Map<EmiStack, Double> inventory) {
+		for (Map.Entry<EmiStack, Double> input : step.inputs.entrySet()) {
+			inventory.merge(input.getKey(), -input.getValue(), Double::sum);
+		}
+		for (Map.Entry<EmiStack, Double> output : step.outputs.entrySet()) {
+			inventory.merge(output.getKey(), output.getValue(), Double::sum);
+		}
+	}
+
+	private static double startupConcurrency(Entry entry, double rate) {
+		double required = entry.getRequiredEffectiveParallel(rate);
+		double throughput = Math.max(0.000001D, entry.getMachineSettingThroughputMultiplier());
+		double physical = required > 0.0D && Double.isFinite(required) ? required / throughput : 1.0D;
+		return Math.max(1.0D, Math.ceil(physical - 1.0E-12D));
+	}
+
+	private static double ingredientAmount(EmiIngredient ingredient) {
+		return ingredient == null ? 0.0D : ingredient.getAmount() * Math.max(0.0D, ingredient.getChance());
+	}
+
+	private static boolean isApproximate(EmiIngredient ingredient) {
+		return ingredient != null && (Math.abs(ingredient.getChance() - 1.0F) > 0.0001F || ingredient.getEmiStacks().size() > 1);
+	}
+
+	private static void addStartup(Map<StartupKey, MutableStartupResource> startup, EmiStack stack, ResourceRole role,
+			double minimum, double recommended, boolean approximate) {
+		addStartup(startup, stack, role, minimum, recommended, approximate, 1);
+	}
+
+	private static void addStartup(Map<StartupKey, MutableStartupResource> startup, EmiStack stack, ResourceRole role,
+			double minimum, double recommended, boolean approximate, int sources) {
+		if (stack == null || stack.isEmpty() || role == null || minimum <= 0.0D) {
+			return;
+		}
+		StartupKey key = new StartupKey(normalizeStack(stack), role);
+		MutableStartupResource value = startup.computeIfAbsent(key, k -> new MutableStartupResource(k.stack(), k.role()));
+		value.minimum += minimum;
+		value.recommended += Math.max(minimum, recommended);
+		value.approximate |= approximate;
+		value.sources += Math.max(1, sources);
+	}
+
 	public static final class Line {
 		private String name;
 		private final List<Entry> entries = new ArrayList<>();
@@ -2852,6 +3767,68 @@ public final class ProductionPlanner {
 		public String getBottleneckName() {
 			return bottleneckName == null ? "" : bottleneckName;
 		}
+	}
+
+	public enum ResourceRole {
+		CONSUMED,
+		CATALYST,
+		TOOL,
+		RETURNED,
+		CONTAINER,
+		CYCLE_SEED
+	}
+
+	public enum RecipePathMode {
+		NONE("none", ""),
+		PREFER("prefer", "PREF"),
+		LOCK("lock", "LOCK"),
+		AVOID("avoid", "AVOID");
+
+		private final String serialized;
+		private final String label;
+
+		RecipePathMode(String serialized, String label) {
+			this.serialized = serialized;
+			this.label = label;
+		}
+
+		public String serialized() {
+			return serialized;
+		}
+
+		public String label() {
+			return label;
+		}
+
+		private static RecipePathMode fromSerialized(String value) {
+			if (value != null) {
+				for (RecipePathMode mode : values()) {
+					if (mode.serialized.equalsIgnoreCase(value) || mode.name().equalsIgnoreCase(value)) {
+						return mode;
+					}
+				}
+			}
+			return PREFER;
+		}
+	}
+
+	private static final class RecipePathRule {
+		private final EmiStack stack;
+		private Identifier preferredRecipeId;
+		private RecipePathMode preferredMode = RecipePathMode.NONE;
+		private final Set<Identifier> avoidedRecipeIds = new LinkedHashSet<>();
+
+		private RecipePathRule(EmiStack stack) {
+			this.stack = normalizeStack(stack);
+		}
+
+		private boolean hasContent() {
+			return preferredRecipeId != null || !avoidedRecipeIds.isEmpty();
+		}
+	}
+
+	public record StartupResource(EmiStack stack, ResourceRole role, double minimum, double recommended,
+			boolean approximate, int sources) {
 	}
 
 	public enum LinkMode {
@@ -3531,6 +4508,42 @@ public final class ProductionPlanner {
 			return 0L;
 		}
 		return value > Long.MAX_VALUE / 4L ? Long.MAX_VALUE : value * 4L;
+	}
+
+	private record StartupKey(EmiStack stack, ResourceRole role) {
+	}
+
+	private record CycleStartupStep(Map<EmiStack, Double> inputs, Map<EmiStack, Double> outputs) {
+	}
+
+	private static final class MutableStartupResource {
+		private final EmiStack stack;
+		private final ResourceRole role;
+		private double minimum;
+		private double recommended;
+		private boolean approximate;
+		private int sources;
+
+		private MutableStartupResource(EmiStack stack, ResourceRole role) {
+			this.stack = stack;
+			this.role = role;
+		}
+	}
+
+	private static final class MutableCycleResource {
+		private final EmiStack stack;
+		private double inputRate;
+		private double outputRate;
+		private double minimumSeed;
+		private double recommendedBuffer;
+		private boolean approximate;
+		private boolean returnedContainer;
+		private boolean transformedContainerInput;
+		private int sources;
+
+		private MutableCycleResource(EmiStack stack) {
+			this.stack = stack;
+		}
 	}
 
 	private static final class ResourceVector {

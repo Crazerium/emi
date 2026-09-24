@@ -34,6 +34,7 @@ import dev.emi.emi.planner.ProductionPlanner.Group;
 import dev.emi.emi.planner.ProductionPlanner.Line;
 import dev.emi.emi.planner.ProductionPlanner.LinkMode;
 import dev.emi.emi.planner.ProductionPlanner.MachineSizing;
+import dev.emi.emi.planner.ProductionPlanner.ResourceRole;
 import dev.emi.emi.planner.ProductionPlanner.Target;
 import dev.emi.emi.planner.ProductionPlanner.TargetMode;
 import dev.emi.emi.runtime.EmiDrawContext;
@@ -248,6 +249,11 @@ public class ProductionPlannerGraphScreen extends Screen {
 			if (ingredient == null || ingredient.isEmpty()) {
 				continue;
 			}
+			ResourceRole role = ProductionPlanner.getInputResourceRole(recipe, ingredient);
+			if (role != ResourceRole.CONSUMED && role != ResourceRole.CONTAINER) {
+				// TOOL/CATALYST/RETURNED are startup inventory, not a per-second graph flow.
+				continue;
+			}
 			EmiStack stack = firstStack(ingredient);
 			if (stack == null || stack.isEmpty()) {
 				continue;
@@ -260,9 +266,18 @@ public class ProductionPlannerGraphScreen extends Screen {
 			boolean approximate = Math.abs(chance - 1.0D) > 0.0001D || ingredient.getEmiStacks().size() > 1;
 			ResourcePool pool = pools.computeIfAbsent(normalize(stack), ResourcePool::new);
 			pool.consumers.add(new FlowPart(node, amount, approximate));
+
+			// Keep transformed containers/cells visible as a real steady-state circulation path.
+			EmiStack remainder = ProductionPlanner.getInputRemainder(ingredient);
+			if (remainder != null && !remainder.isEmpty() && !sameResource(stack, remainder)
+					&& !recipeOutputsResource(recipe, remainder)) {
+				double returnedAmount = amount * Math.max(1L, remainder.getAmount());
+				ResourcePool returnedPool = pools.computeIfAbsent(normalize(remainder), ResourcePool::new);
+				returnedPool.producers.add(new FlowPart(node, returnedAmount, approximate));
+			}
 		}
 		for (EmiStack output : recipe.getOutputs()) {
-			if (output == null || output.isEmpty()) {
+			if (output == null || output.isEmpty() || ProductionPlanner.isStartupOnlyOutput(recipe, output)) {
 				continue;
 			}
 			double chance = Math.max(0.0D, output.getChance());
@@ -274,6 +289,19 @@ public class ProductionPlannerGraphScreen extends Screen {
 			ResourcePool pool = pools.computeIfAbsent(normalize(output), ResourcePool::new);
 			pool.producers.add(new FlowPart(node, amount, approximate));
 		}
+	}
+
+	private boolean recipeOutputsResource(EmiRecipe recipe, EmiStack target) {
+		for (EmiStack output : recipe.getOutputs()) {
+			if (output != null && !output.isEmpty() && sameResource(output, target)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean sameResource(EmiStack a, EmiStack b) {
+		return a != null && b != null && !a.isEmpty() && !b.isEmpty() && normalize(a).equals(normalize(b));
 	}
 
 	private void mergePools(Map<EmiStack, ResourcePool> into, Map<EmiStack, ResourcePool> child) {
