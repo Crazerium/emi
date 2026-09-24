@@ -26,9 +26,11 @@ import com.google.gson.JsonObject;
 import dev.emi.emi.EmiPort;
 import dev.emi.emi.api.EmiApi;
 import dev.emi.emi.api.recipe.EmiRecipe;
+import dev.emi.emi.api.recipe.EmiRecipeCategory;
 import dev.emi.emi.api.stack.EmiIngredient;
 import dev.emi.emi.api.stack.EmiStack;
 import dev.emi.emi.api.stack.serializer.EmiIngredientSerializer;
+import dev.emi.emi.api.widget.WidgetHolder;
 import dev.emi.emi.bom.BoM;
 import dev.emi.emi.planner.compat.PlannerMachineCompatRegistry;
 import dev.emi.emi.platform.EmiAgnos;
@@ -267,6 +269,9 @@ public final class ProductionPlanner {
 								}
 							}
 							entry.groupId = entryObject.has("group_id") ? sanitizeGroupId(line, entryObject.get("group_id").getAsInt()) : 0;
+							if (entryObject.has("recipe_snapshot") && entryObject.get("recipe_snapshot").isJsonObject()) {
+								entry.recipeSnapshot = RecipeSnapshot.fromJson(entryObject.getAsJsonObject("recipe_snapshot"));
+							}
 							if (!entry.voltageOverride) {
 								applyLineStandardVoltage(line, entry);
 							}
@@ -593,6 +598,7 @@ public final class ProductionPlanner {
 			applyPreferredMachine(replacement);
 		}
 		replacement.automatic = source.automatic && replacement.getDurationTicks() > 0.0D;
+		replacement.recipeSnapshot = captureRecipeSnapshot(replacement);
 		return replacement;
 	}
 
@@ -616,6 +622,7 @@ public final class ProductionPlanner {
 		applyLineStandardVoltage(line, entry);
 		applyPreferredMachine(entry);
 		entry.automatic = entry.getDetectedDurationTicks() > 0.0D;
+		entry.recipeSnapshot = captureRecipeSnapshot(entry);
 		line.entries.add(entry);
 		return entry;
 	}
@@ -2509,6 +2516,761 @@ public final class ProductionPlanner {
 	public record LineTransferResult(boolean success, String message, int lineIndex) {
 	}
 
+
+	public static synchronized List<RecipeChange> getRecipeChanges(Line line) {
+		ensureLoaded();
+		if (line == null || !LINES.contains(line)) {
+			return List.of();
+		}
+		List<RecipeChange> changes = new ArrayList<>();
+		boolean capturedBaseline = false;
+		for (Entry entry : line.entries) {
+			EmiRecipe currentRecipe = entry.getRecipe();
+			if (currentRecipe == null) {
+				List<String> details = new ArrayList<>();
+				details.add(PlannerText.tr("migration.detail.missing", "Recipe is no longer available in the current EMI recipe registry"));
+				if (entry.recipeSnapshot != null && !entry.recipeSnapshot.outputSummary.isEmpty()) {
+					details.add(PlannerText.tr("migration.detail.last_output", "Saved output") + ": " + entry.recipeSnapshot.outputSummary);
+				}
+				changes.add(new RecipeChange(entry, RecipeChangeKind.MISSING,
+					entry.recipeSnapshot != null && !entry.recipeSnapshot.displayName.isBlank() ? entry.recipeSnapshot.displayName : entry.recipeId.toString(),
+					entry.recipeId.toString(), details));
+				continue;
+			}
+			RecipeSnapshot current = captureRecipeSnapshot(entry);
+			if (entry.recipeSnapshot == null) {
+				entry.recipeSnapshot = current;
+				capturedBaseline = true;
+				continue;
+			}
+			List<String> details = compareRecipeSnapshots(entry.recipeSnapshot, current);
+			if (!details.isEmpty()) {
+				String name = current != null && !current.displayName.isBlank()
+					? current.displayName
+					: entry.recipeSnapshot.displayName;
+				changes.add(new RecipeChange(entry, RecipeChangeKind.CHANGED, name, entry.recipeId.toString(), details));
+			}
+		}
+		if (capturedBaseline) {
+			save();
+		}
+		return List.copyOf(changes);
+	}
+
+	public static synchronized boolean acceptRecipeChange(Line line, Entry entry) {
+		ensureLoaded();
+		if (line == null || entry == null || !line.entries.contains(entry) || entry.getRecipe() == null) {
+			return false;
+		}
+		RecipeSnapshot current = captureRecipeSnapshot(entry);
+		if (current == null) {
+			return false;
+		}
+		entry.recipeSnapshot = current;
+		invalidateBalance(line);
+		save();
+		return true;
+	}
+
+	public static synchronized int acceptAllRecipeChanges(Line line) {
+		ensureLoaded();
+		if (line == null || !LINES.contains(line)) {
+			return 0;
+		}
+		int accepted = 0;
+		for (Entry entry : line.entries) {
+			if (entry.getRecipe() == null) {
+				continue;
+			}
+			RecipeSnapshot current = captureRecipeSnapshot(entry);
+			if (current != null && (entry.recipeSnapshot == null || !compareRecipeSnapshots(entry.recipeSnapshot, current).isEmpty())) {
+				entry.recipeSnapshot = current;
+				accepted++;
+			}
+		}
+		if (accepted > 0) {
+			invalidateBalance(line);
+			save();
+		}
+		return accepted;
+	}
+
+	/**
+	 * Estimates the immediate effect of a changed recipe while keeping the row's current
+	 * machine configuration. The saved snapshot supplies the old duration/EU/t/output amount;
+	 * the live recipe supplies the new values. This deliberately does not re-run the whole LP
+	 * solver, so the preview remains useful before the user accepts the migration.
+	 */
+	public static synchronized List<String> getRecipeChangeImpact(Line line, RecipeChange change) {
+		ensureLoaded();
+		if (line == null || change == null || change.kind() != RecipeChangeKind.CHANGED) {
+			return List.of();
+		}
+		Entry current = change.entry();
+		if (current == null || !line.entries.contains(current) || current.recipeSnapshot == null || current.getRecipe() == null) {
+			return List.of();
+		}
+		Entry saved = copyEntryForMigrationImpact(current, current.recipeSnapshot, false);
+		List<String> impact = new ArrayList<>();
+
+		double oldCapacity = configuredCraftCapacity(saved);
+		double newCapacity = configuredCraftCapacity(current);
+		double oldOutputAmount = snapshotPrimaryOutputAmount(current.recipeSnapshot);
+		double newOutputAmount = recipePrimaryOutputAmount(current.getRecipe());
+		if (oldCapacity > 0.0D && newCapacity > 0.0D && oldOutputAmount > 0.0D && newOutputAmount > 0.0D) {
+			double oldOutputRate = oldCapacity * oldOutputAmount;
+			double newOutputRate = newCapacity * newOutputAmount;
+			if (!sameImpactValue(oldOutputRate, newOutputRate)) {
+				impact.add(PlannerText.tr("migration.impact.output_capacity", "Same setup primary output: %s/s -> %s/s",
+					formatMigrationImpact(oldOutputRate), formatMigrationImpact(newOutputRate)));
+			}
+		}
+
+		double plannedRate = line.getEffectiveRate(current);
+		if (plannedRate > 0.0D && Double.isFinite(plannedRate)) {
+			Entry oldAuto = copyEntryForMigrationImpact(current, current.recipeSnapshot, true);
+			Entry newAuto = copyEntryForMigrationImpact(current, null, true);
+			MachineSizing oldSizing = oldAuto.getMachineSizing(plannedRate);
+			MachineSizing newSizing = newAuto.getMachineSizing(plannedRate);
+			if (oldSizing.available() && newSizing.available()
+					&& (oldSizing.machines() != newSizing.machines() || oldSizing.parallel() != newSizing.parallel())) {
+				impact.add(PlannerText.tr("migration.impact.autosize",
+					"Auto-size at %s crafts/s: MACH %s PAR %s -> MACH %s PAR %s",
+					formatMigrationImpact(plannedRate), oldSizing.machines(), oldSizing.parallel(), newSizing.machines(), newSizing.parallel()));
+			}
+
+			double oldPower = saved.getAveragePowerEUt(plannedRate);
+			double newPower = current.getAveragePowerEUt(plannedRate);
+			if (oldPower > 0.0D && newPower > 0.0D && !sameImpactValue(oldPower, newPower)) {
+				impact.add(PlannerText.tr("migration.impact.power", "Average power at current rate: %s -> %s EU/t",
+					formatMigrationImpact(oldPower), formatMigrationImpact(newPower)));
+			}
+		}
+
+		if (impact.isEmpty()) {
+			impact.add(PlannerText.tr("migration.impact.none",
+				"No immediate throughput/power impact with the current row configuration"));
+		}
+		return List.copyOf(impact);
+	}
+
+
+	/**
+	 * Builds a whole-line migration preview without mutating the saved Line. The comparison keeps the
+	 * currently planned craft rates, but evaluates every row twice: once with its saved recipe snapshot
+	 * and once with the live recipe registry. Machine counts are re-sized in both views, while material
+	 * flows are aggregated with the same reusable-resource semantics used by the Planner.
+	 */
+	public static synchronized List<String> getLineRecipeChangeImpact(Line line) {
+		ensureLoaded();
+		if (line == null || !LINES.contains(line)) {
+			return List.of();
+		}
+		MigrationPlanMetrics saved = captureMigrationPlanMetrics(line, true);
+		MigrationPlanMetrics current = captureMigrationPlanMetrics(line, false);
+		List<String> lines = new ArrayList<>();
+
+		if (saved.totalMachines >= 0L && current.totalMachines >= 0L && saved.totalMachines != current.totalMachines) {
+			lines.add(PlannerText.tr("migration.line_impact.machines", "Required machines: %s -> %s",
+				formatMigrationCount(saved.totalMachines), formatMigrationCount(current.totalMachines)));
+		}
+		if (saved.knownPowerEntries > 0 && current.knownPowerEntries > 0 && !sameImpactValue(saved.averagePowerEUt, current.averagePowerEUt)) {
+			String oldPower = formatMigrationImpact(saved.averagePowerEUt) + (saved.unknownPowerEntries > 0 ? "+?" : "");
+			String newPower = formatMigrationImpact(current.averagePowerEUt) + (current.unknownPowerEntries > 0 ? "+?" : "");
+			lines.add(PlannerText.tr("migration.line_impact.power", "Average power: %s -> %s EU/t", oldPower, newPower));
+		}
+
+		if (!line.targets.isEmpty()) {
+			Target target = line.targets.get(0);
+			double oldTarget = migrationTargetFlow(saved, target);
+			double newTarget = migrationTargetFlow(current, target);
+			String suffix = migrationFlowUnit(target.stack);
+			if (!sameImpactValue(oldTarget, newTarget)) {
+				lines.add(PlannerText.tr("migration.line_impact.target", "Primary target %s: %s -> %s%s",
+					target.stack.getName().getString(), formatMigrationImpact(oldTarget), formatMigrationImpact(newTarget), suffix));
+			} else {
+				lines.add(PlannerText.tr("migration.line_impact.target_same", "Primary target %s: %s%s (unchanged)",
+					target.stack.getName().getString(), formatMigrationImpact(newTarget), suffix));
+			}
+		}
+
+		String externalDelta = largestMigrationFlowDelta(saved.externalInputs, current.externalInputs);
+		String outputDelta = largestMigrationFlowDelta(saved.netOutputs, current.netOutputs);
+		if (!externalDelta.isBlank()) {
+			lines.add(PlannerText.tr("migration.line_impact.external", "External input: %s", externalDelta));
+		}
+		if (!outputDelta.isBlank()) {
+			lines.add(PlannerText.tr("migration.line_impact.net", "Net output: %s", outputDelta));
+		}
+		if (externalDelta.isBlank() && outputDelta.isBlank()) {
+			lines.add(PlannerText.tr("migration.line_impact.flows_same", "Material flows are unchanged at the current planned craft rates"));
+		}
+		if (current.missingRecipeRows > 0) {
+			lines.add(PlannerText.tr("migration.line_impact.missing", "%s current recipe row(s) are missing and are excluded from the new-side totals",
+				current.missingRecipeRows));
+		}
+		return List.copyOf(lines);
+	}
+
+	private static MigrationPlanMetrics captureMigrationPlanMetrics(Line line, boolean savedSide) {
+		Map<EmiStack, MutableMigrationFlow> flows = new LinkedHashMap<>();
+		long totalMachines = 0L;
+		int unknownSizing = 0;
+		double averagePowerEUt = 0.0D;
+		int knownPowerEntries = 0;
+		int unknownPowerEntries = 0;
+		int missingRecipeRows = 0;
+
+		for (Entry source : line.entries) {
+			double rate = line.getEffectiveRate(source);
+			if (!Double.isFinite(rate) || rate <= 1.0E-12D) {
+				continue;
+			}
+			RecipeSnapshot snapshot = source.recipeSnapshot;
+			EmiRecipe recipe = savedSide && snapshot != null ? snapshotRecipe(source, snapshot) : source.getRecipe();
+			if (recipe == null) {
+				missingRecipeRows++;
+				continue;
+			}
+
+			Entry sizingEntry = copyEntryForMigrationImpact(source, savedSide ? snapshot : null, true);
+			MachineSizing sizing = sizingEntry.getMachineSizing(rate);
+			if (sizing.available()) {
+				totalMachines = saturatedAdd(totalMachines, sizing.machines());
+			} else {
+				unknownSizing++;
+			}
+			if (sizingEntry.getRecipeEUt() > 0L && sizingEntry.getProcessedDurationTicks() > 0.0D) {
+				averagePowerEUt += sizingEntry.getAveragePowerEUt(rate);
+				knownPowerEntries++;
+			} else {
+				unknownPowerEntries++;
+			}
+			addMigrationRecipeFlows(flows, recipe, rate);
+		}
+
+		Map<EmiStack, Double> external = new LinkedHashMap<>();
+		Map<EmiStack, Double> outputs = new LinkedHashMap<>();
+		Map<EmiStack, Double> signedNet = new LinkedHashMap<>();
+		for (MutableMigrationFlow flow : flows.values()) {
+			boolean rootIgnored = !line.hasTarget(flow.stack) && line.getLinkMode(null, flow.stack) == LinkMode.IGNORE;
+			double externalAmount = rootIgnored ? flow.input : Math.max(0.0D, flow.input - flow.output);
+			double outputAmount = rootIgnored ? flow.output : Math.max(0.0D, flow.output - flow.input);
+			if (externalAmount > 1.0E-9D) {
+				external.put(flow.stack, externalAmount);
+			}
+			if (outputAmount > 1.0E-9D) {
+				outputs.put(flow.stack, outputAmount);
+			}
+			signedNet.put(flow.stack, flow.output - flow.input);
+		}
+		return new MigrationPlanMetrics(totalMachines, unknownSizing, averagePowerEUt, knownPowerEntries,
+			unknownPowerEntries, missingRecipeRows, Map.copyOf(external), Map.copyOf(outputs), Map.copyOf(signedNet));
+	}
+
+	private static EmiRecipe snapshotRecipe(Entry entry, RecipeSnapshot snapshot) {
+		if (snapshot == null) {
+			return entry == null ? null : entry.getRecipe();
+		}
+		List<EmiIngredient> inputs = deserializeSnapshotIngredients(snapshot.inputSignatures);
+		List<EmiStack> outputs = deserializeSnapshotOutputs(snapshot.outputSignatures);
+		EmiRecipe live = entry == null ? null : entry.getRecipe();
+		EmiRecipeCategory category = live == null ? null : live.getCategory();
+		Identifier id = entry == null ? null : entry.recipeId;
+		return new SnapshotEmiRecipe(category, id, inputs, outputs);
+	}
+
+	private static List<EmiIngredient> deserializeSnapshotIngredients(List<String> signatures) {
+		if (signatures == null || signatures.isEmpty()) {
+			return List.of();
+		}
+		List<EmiIngredient> result = new ArrayList<>();
+		for (String signature : signatures) {
+			try {
+				JsonElement serialized = EmiPersistentData.GSON.fromJson(signature, JsonElement.class);
+				EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(serialized);
+				if (ingredient != null && !ingredient.isEmpty()) {
+					result.add(ingredient);
+				}
+			} catch (Throwable ignored) {
+			}
+		}
+		return List.copyOf(result);
+	}
+
+	private static List<EmiStack> deserializeSnapshotOutputs(List<String> signatures) {
+		if (signatures == null || signatures.isEmpty()) {
+			return List.of();
+		}
+		List<EmiStack> result = new ArrayList<>();
+		for (String signature : signatures) {
+			try {
+				JsonElement serialized = EmiPersistentData.GSON.fromJson(signature, JsonElement.class);
+				EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(serialized);
+				EmiStack stack = firstStack(ingredient);
+				if (stack != null && !stack.isEmpty()) {
+					result.add(stack.copy().setAmount(ingredient.getAmount()).setChance(ingredient.getChance()));
+				}
+			} catch (Throwable ignored) {
+			}
+		}
+		return List.copyOf(result);
+	}
+
+	private static void addMigrationRecipeFlows(Map<EmiStack, MutableMigrationFlow> flows, EmiRecipe recipe, double rate) {
+		Set<EmiStack> startupOnly = new HashSet<>();
+		for (EmiIngredient ingredient : recipe.getInputs()) {
+			if (ingredient == null || ingredient.isEmpty()) {
+				continue;
+			}
+			EmiStack stack = firstStack(ingredient);
+			if (stack == null || stack.isEmpty()) {
+				continue;
+			}
+			ResourceRole role = getInputResourceRole(recipe, ingredient);
+			double amount = ingredient.getAmount() * Math.max(0.0D, ingredient.getChance()) * rate;
+			if (role == ResourceRole.CONSUMED || role == ResourceRole.CONTAINER) {
+				MutableMigrationFlow flow = flows.computeIfAbsent(normalizeStack(stack), MutableMigrationFlow::new);
+				flow.input += amount;
+			} else {
+				startupOnly.add(normalizeStack(stack));
+			}
+			EmiStack remainder = getInputRemainder(ingredient);
+			if (remainder != null && !remainder.isEmpty() && !sameStack(stack, remainder) && !recipeHasOutput(recipe, remainder)) {
+				MutableMigrationFlow flow = flows.computeIfAbsent(normalizeStack(remainder), MutableMigrationFlow::new);
+				flow.output += amount * Math.max(1L, remainder.getAmount());
+			}
+		}
+		for (EmiStack output : recipe.getOutputs()) {
+			if (output == null || output.isEmpty() || startupOnly.contains(normalizeStack(output))) {
+				continue;
+			}
+			MutableMigrationFlow flow = flows.computeIfAbsent(normalizeStack(output), MutableMigrationFlow::new);
+			flow.output += output.getAmount() * Math.max(0.0D, output.getChance()) * rate;
+		}
+	}
+
+	private static double migrationTargetFlow(MigrationPlanMetrics metrics, Target target) {
+		if (metrics == null || target == null || target.stack == null || target.stack.isEmpty()) {
+			return 0.0D;
+		}
+		double signed = metrics.signedNet.getOrDefault(normalizeStack(target.stack), 0.0D);
+		return Math.max(0.0D, target.mode == TargetMode.INPUT ? -signed : signed);
+	}
+
+	private static String largestMigrationFlowDelta(Map<EmiStack, Double> oldFlows, Map<EmiStack, Double> newFlows) {
+		LinkedHashSet<EmiStack> stacks = new LinkedHashSet<>();
+		stacks.addAll(oldFlows.keySet());
+		stacks.addAll(newFlows.keySet());
+		EmiStack best = null;
+		double bestScale = 0.0D;
+		double bestOld = 0.0D;
+		double bestNew = 0.0D;
+		for (EmiStack stack : stacks) {
+			double oldValue = oldFlows.getOrDefault(stack, 0.0D);
+			double newValue = newFlows.getOrDefault(stack, 0.0D);
+			if (sameImpactValue(oldValue, newValue)) {
+				continue;
+			}
+			double scale = Math.abs(newValue - oldValue);
+			if (best == null || scale > bestScale) {
+				best = stack;
+				bestScale = scale;
+				bestOld = oldValue;
+				bestNew = newValue;
+			}
+		}
+		if (best == null) {
+			return "";
+		}
+		return best.getName().getString() + ": " + formatMigrationImpact(bestOld) + " -> "
+			+ formatMigrationImpact(bestNew) + migrationFlowUnit(best);
+	}
+
+	private static String migrationFlowUnit(EmiStack stack) {
+		try {
+			return stack != null && stack.getKey() instanceof net.minecraft.fluid.Fluid ? " mB/s" : "/s";
+		} catch (Throwable ignored) {
+			return "/s";
+		}
+	}
+
+	private static String formatMigrationCount(long value) {
+		if (value >= 1_000_000_000L) {
+			return value / 1_000_000_000L + "G";
+		}
+		if (value >= 1_000_000L) {
+			return trimMigrationDecimal(String.format(Locale.ROOT, "%.3f", value / 1_000_000.0D)) + "M";
+		}
+		if (value >= 1_000L) {
+			return trimMigrationDecimal(String.format(Locale.ROOT, "%.3f", value / 1_000.0D)) + "K";
+		}
+		return Long.toString(value);
+	}
+
+	private static long saturatedAdd(long a, long b) {
+		if (b <= 0L) {
+			return a;
+		}
+		return Long.MAX_VALUE - a < b ? Long.MAX_VALUE : a + b;
+	}
+
+	private static Entry copyEntryForMigrationImpact(Entry source, RecipeSnapshot snapshot, boolean clearFixedSizing) {
+		Entry copy = new Entry(source.recipeId, source.rate, source.automatic, source.machines, source.parallel,
+			source.durationOverrideTicks, source.balanceRate, source.machineProfileId, source.voltageTier, source.voltageOverride,
+			source.ocMode, source.coilTier, clearFixedSizing ? false : source.machinesFixed, clearFixedSizing ? false : source.parallelFixed);
+		copy.machineSettings.putAll(source.machineSettings);
+		copy.groupId = source.groupId;
+		if (snapshot != null) {
+			copy.detectedDurationTicks = snapshot.durationTicks;
+			copy.detectedRecipeEUt = snapshot.eut;
+		} else {
+			copy.detectedDurationTicks = source.getDetectedDurationTicks();
+			copy.detectedRecipeEUt = source.getRecipeEUt();
+		}
+		return copy;
+	}
+
+	private static double configuredCraftCapacity(Entry entry) {
+		if (entry == null) {
+			return 0.0D;
+		}
+		double seconds = entry.getProcessedDurationSeconds();
+		if (seconds <= 0.0D || !Double.isFinite(seconds)) {
+			return 0.0D;
+		}
+		return entry.machines * (double) entry.parallel * entry.getMachineSettingThroughputMultiplier() / seconds;
+	}
+
+	private static double snapshotPrimaryOutputAmount(RecipeSnapshot snapshot) {
+		if (snapshot == null || snapshot.outputSignatures.isEmpty()) {
+			return 0.0D;
+		}
+		try {
+			JsonElement serialized = EmiPersistentData.GSON.fromJson(snapshot.outputSignatures.get(0), JsonElement.class);
+			EmiIngredient ingredient = EmiIngredientSerializer.getDeserialized(serialized);
+			return ingredient == null || ingredient.isEmpty() ? 0.0D : ingredient.getAmount();
+		} catch (Throwable ignored) {
+			return 0.0D;
+		}
+	}
+
+	private static double recipePrimaryOutputAmount(EmiRecipe recipe) {
+		if (recipe == null) {
+			return 0.0D;
+		}
+		for (EmiStack output : recipe.getOutputs()) {
+			if (output != null && !output.isEmpty()) {
+				return output.getAmount();
+			}
+		}
+		return 0.0D;
+	}
+
+	private static boolean sameImpactValue(double a, double b) {
+		double scale = Math.max(1.0D, Math.max(Math.abs(a), Math.abs(b)));
+		return Math.abs(a - b) <= scale * 1.0E-6D;
+	}
+
+	private static String formatMigrationImpact(double value) {
+		if (!Double.isFinite(value)) {
+			return "?";
+		}
+		double abs = Math.abs(value);
+		if (abs >= 1_000_000_000D) {
+			return trimMigrationDecimal(String.format(Locale.ROOT, "%.3f", value / 1_000_000_000D)) + "G";
+		}
+		if (abs >= 1_000_000D) {
+			return trimMigrationDecimal(String.format(Locale.ROOT, "%.3f", value / 1_000_000D)) + "M";
+		}
+		if (abs >= 1_000D) {
+			return trimMigrationDecimal(String.format(Locale.ROOT, "%.3f", value / 1_000D)) + "K";
+		}
+		return trimMigrationDecimal(String.format(Locale.ROOT, abs >= 10.0D ? "%.2f" : "%.4f", value));
+	}
+
+	private static String trimMigrationDecimal(String text) {
+		return text.replaceAll("0+$", "").replaceAll("\\.$", "");
+	}
+
+	private static RecipeSnapshot captureRecipeSnapshot(Entry entry) {
+		if (entry == null) {
+			return null;
+		}
+		EmiRecipe recipe = entry.getRecipe();
+		if (recipe == null) {
+			return null;
+		}
+		String category = "";
+		try {
+			if (recipe.getCategory() != null && recipe.getCategory().getId() != null) {
+				category = recipe.getCategory().getId().toString();
+			}
+		} catch (Throwable ignored) {
+		}
+		List<String> inputSignatures = new ArrayList<>();
+		List<String> inputLabels = new ArrayList<>();
+		for (EmiIngredient ingredient : recipe.getInputs()) {
+			if (ingredient == null || ingredient.isEmpty()) {
+				continue;
+			}
+			inputSignatures.add(snapshotIngredientSignature(ingredient));
+			inputLabels.add(snapshotIngredientLabel(ingredient));
+		}
+		List<String> outputSignatures = new ArrayList<>();
+		List<String> outputLabels = new ArrayList<>();
+		for (EmiStack output : recipe.getOutputs()) {
+			if (output == null || output.isEmpty()) {
+				continue;
+			}
+			outputSignatures.add(snapshotIngredientSignature(output));
+			outputLabels.add(snapshotIngredientLabel(output));
+		}
+		String displayName = !outputLabels.isEmpty()
+			? stripSnapshotAmount(outputLabels.get(0))
+			: recipe.getId() == null ? "" : recipe.getId().toString();
+		double currentDurationTicks = RecipeTimingResolver.resolveDurationTicks(recipe);
+		long currentEUt = RecipePowerResolver.resolveRecipeEUt(recipe);
+		return new RecipeSnapshot(category, currentDurationTicks, currentEUt,
+			List.copyOf(inputSignatures), List.copyOf(outputSignatures),
+			String.join(", ", inputLabels), String.join(", ", outputLabels), displayName);
+	}
+
+	private static List<String> compareRecipeSnapshots(RecipeSnapshot saved, RecipeSnapshot current) {
+		if (saved == null || current == null) {
+			return List.of();
+		}
+		List<String> details = new ArrayList<>();
+		if (!saved.inputSignatures.equals(current.inputSignatures)) {
+			details.add(PlannerText.tr("migration.detail.inputs", "Inputs") + ": "
+				+ snapshotSummary(saved.inputSummary) + " -> " + snapshotSummary(current.inputSummary));
+		}
+		if (!saved.outputSignatures.equals(current.outputSignatures)) {
+			details.add(PlannerText.tr("migration.detail.outputs", "Outputs") + ": "
+				+ snapshotSummary(saved.outputSummary) + " -> " + snapshotSummary(current.outputSummary));
+		}
+		if (!sameSnapshotDouble(saved.durationTicks, current.durationTicks)) {
+			details.add(PlannerText.tr("migration.detail.duration", "Duration") + ": "
+				+ formatSnapshotTicks(saved.durationTicks) + " -> " + formatSnapshotTicks(current.durationTicks));
+		}
+		if (saved.eut != current.eut) {
+			details.add(PlannerText.tr("migration.detail.eut", "EU/t") + ": " + saved.eut + " -> " + current.eut);
+		}
+		if (!saved.categoryId.equals(current.categoryId)) {
+			details.add(PlannerText.tr("migration.detail.category", "Category") + ": "
+				+ snapshotSummary(saved.categoryId) + " -> " + snapshotSummary(current.categoryId));
+		}
+		return details;
+	}
+
+	private static boolean sameSnapshotDouble(double a, double b) {
+		if (a <= 0.0D && b <= 0.0D) {
+			return true;
+		}
+		return Math.abs(a - b) <= 0.0001D;
+	}
+
+	private static String snapshotIngredientSignature(EmiIngredient ingredient) {
+		try {
+			JsonElement serialized = EmiIngredientSerializer.getSerialized(ingredient);
+			return EmiPersistentData.GSON.toJson(serialized);
+		} catch (Throwable ignored) {
+			return snapshotIngredientLabel(ingredient);
+		}
+	}
+
+	private static String snapshotIngredientLabel(EmiIngredient ingredient) {
+		if (ingredient == null || ingredient.isEmpty()) {
+			return "?";
+		}
+		EmiStack first = firstStack(ingredient);
+		String name = first == null || first.isEmpty() ? "?" : first.getName().getString();
+		double amount = ingredient.getAmount();
+		String amountText = Math.abs(amount - Math.rint(amount)) < 0.000001D
+			? Long.toString(Math.max(0L, Math.round(amount)))
+			: String.format(Locale.ROOT, "%.3f", amount).replaceAll("0+$", "").replaceAll("\\.$", "");
+		int alternatives = ingredient.getEmiStacks().size();
+		String alt = alternatives > 1 ? " (+" + (alternatives - 1) + " alt)" : "";
+		return name + " x" + amountText + alt;
+	}
+
+	private static String stripSnapshotAmount(String label) {
+		if (label == null) {
+			return "";
+		}
+		int marker = label.lastIndexOf(" x");
+		return marker > 0 ? label.substring(0, marker) : label;
+	}
+
+	private static String snapshotSummary(String value) {
+		return value == null || value.isBlank() ? PlannerText.tr("migration.unknown", "unknown") : value;
+	}
+
+	private static String formatSnapshotTicks(double ticks) {
+		if (ticks <= 0.0D || !Double.isFinite(ticks)) {
+			return PlannerText.tr("migration.unknown", "unknown");
+		}
+		double seconds = ticks / TICKS_PER_SECOND;
+		String text = Math.abs(seconds - Math.rint(seconds)) < 0.000001D
+			? Long.toString(Math.round(seconds))
+			: String.format(Locale.ROOT, "%.3f", seconds).replaceAll("0+$", "").replaceAll("\\.$", "");
+		return text + " s";
+	}
+
+	public enum RecipeChangeKind {
+		CHANGED,
+		MISSING
+	}
+
+	public record RecipeChange(Entry entry, RecipeChangeKind kind, String recipeName, String recipeId, List<String> details) {
+		public boolean isMissing() {
+			return kind == RecipeChangeKind.MISSING;
+		}
+	}
+
+
+	private record MigrationPlanMetrics(long totalMachines, int unknownSizing, double averagePowerEUt,
+			int knownPowerEntries, int unknownPowerEntries, int missingRecipeRows,
+			Map<EmiStack, Double> externalInputs, Map<EmiStack, Double> netOutputs,
+			Map<EmiStack, Double> signedNet) {
+	}
+
+	private static final class MutableMigrationFlow {
+		private final EmiStack stack;
+		private double input;
+		private double output;
+
+		private MutableMigrationFlow(EmiStack stack) {
+			this.stack = stack;
+		}
+	}
+
+	private static final class SnapshotEmiRecipe implements EmiRecipe {
+		private final EmiRecipeCategory category;
+		private final Identifier id;
+		private final List<EmiIngredient> inputs;
+		private final List<EmiStack> outputs;
+
+		private SnapshotEmiRecipe(EmiRecipeCategory category, Identifier id, List<EmiIngredient> inputs, List<EmiStack> outputs) {
+			this.category = category;
+			this.id = id;
+			this.inputs = inputs == null ? List.of() : inputs;
+			this.outputs = outputs == null ? List.of() : outputs;
+		}
+
+		@Override
+		public EmiRecipeCategory getCategory() {
+			return category;
+		}
+
+		@Override
+		public Identifier getId() {
+			return id;
+		}
+
+		@Override
+		public List<EmiIngredient> getInputs() {
+			return inputs;
+		}
+
+		@Override
+		public List<EmiStack> getOutputs() {
+			return outputs;
+		}
+
+		@Override
+		public int getDisplayWidth() {
+			return 0;
+		}
+
+		@Override
+		public int getDisplayHeight() {
+			return 0;
+		}
+
+		@Override
+		public void addWidgets(WidgetHolder widgets) {
+		}
+	}
+
+	private static final class RecipeSnapshot {
+		private final String categoryId;
+		private final double durationTicks;
+		private final long eut;
+		private final List<String> inputSignatures;
+		private final List<String> outputSignatures;
+		private final String inputSummary;
+		private final String outputSummary;
+		private final String displayName;
+
+		private RecipeSnapshot(String categoryId, double durationTicks, long eut,
+				List<String> inputSignatures, List<String> outputSignatures,
+				String inputSummary, String outputSummary, String displayName) {
+			this.categoryId = categoryId == null ? "" : categoryId;
+			this.durationTicks = durationTicks;
+			this.eut = eut;
+			this.inputSignatures = inputSignatures == null ? List.of() : List.copyOf(inputSignatures);
+			this.outputSignatures = outputSignatures == null ? List.of() : List.copyOf(outputSignatures);
+			this.inputSummary = inputSummary == null ? "" : inputSummary;
+			this.outputSummary = outputSummary == null ? "" : outputSummary;
+			this.displayName = displayName == null ? "" : displayName;
+		}
+
+		private JsonObject toJson() {
+			JsonObject object = new JsonObject();
+			object.addProperty("category", categoryId);
+			object.addProperty("duration_ticks", durationTicks);
+			object.addProperty("eut", eut);
+			object.addProperty("input_summary", inputSummary);
+			object.addProperty("output_summary", outputSummary);
+			object.addProperty("display_name", displayName);
+			JsonArray inputs = new JsonArray();
+			for (String signature : inputSignatures) {
+				inputs.add(signature);
+			}
+			object.add("inputs", inputs);
+			JsonArray outputs = new JsonArray();
+			for (String signature : outputSignatures) {
+				outputs.add(signature);
+			}
+			object.add("outputs", outputs);
+			return object;
+		}
+
+		private static RecipeSnapshot fromJson(JsonObject object) {
+			if (object == null) {
+				return null;
+			}
+			try {
+				String category = object.has("category") ? object.get("category").getAsString() : "";
+				double duration = object.has("duration_ticks") ? object.get("duration_ticks").getAsDouble() : -1.0D;
+				long eut = object.has("eut") ? object.get("eut").getAsLong() : 0L;
+				String inputSummary = object.has("input_summary") ? object.get("input_summary").getAsString() : "";
+				String outputSummary = object.has("output_summary") ? object.get("output_summary").getAsString() : "";
+				String displayName = object.has("display_name") ? object.get("display_name").getAsString() : "";
+				List<String> inputs = new ArrayList<>();
+				if (object.has("inputs") && object.get("inputs").isJsonArray()) {
+					for (JsonElement element : object.getAsJsonArray("inputs")) {
+						if (element.isJsonPrimitive()) {
+							inputs.add(element.getAsString());
+						}
+					}
+				}
+				List<String> outputs = new ArrayList<>();
+				if (object.has("outputs") && object.get("outputs").isJsonArray()) {
+					for (JsonElement element : object.getAsJsonArray("outputs")) {
+						if (element.isJsonPrimitive()) {
+							outputs.add(element.getAsString());
+						}
+					}
+				}
+				return new RecipeSnapshot(category, duration, eut, inputs, outputs, inputSummary, outputSummary, displayName);
+			} catch (Throwable ignored) {
+				return null;
+			}
+		}
+	}
+
 	public static synchronized void save() {
 		ensureLoaded();
 		JsonObject root = serializeState();
@@ -2627,6 +3389,12 @@ public final class ProductionPlanner {
 			for (Entry entry : line.entries) {
 				JsonObject entryObject = new JsonObject();
 				entryObject.addProperty("recipe", entry.recipeId.toString());
+				if (entry.recipeSnapshot == null && entry.getRecipe() != null) {
+					entry.recipeSnapshot = captureRecipeSnapshot(entry);
+				}
+				if (entry.recipeSnapshot != null) {
+					entryObject.add("recipe_snapshot", entry.recipeSnapshot.toJson());
+				}
 				entryObject.addProperty("rate", entry.rate);
 				entryObject.addProperty("mode", entry.automatic ? "auto" : "manual");
 				entryObject.addProperty("machines", entry.machines);
@@ -4091,6 +4859,7 @@ public final class ProductionPlanner {
 		private boolean machinesFixed;
 		private boolean parallelFixed;
 		private int groupId;
+		private RecipeSnapshot recipeSnapshot;
 		private double detectedDurationTicks = Double.NaN;
 		private long detectedRecipeEUt = Long.MIN_VALUE;
 

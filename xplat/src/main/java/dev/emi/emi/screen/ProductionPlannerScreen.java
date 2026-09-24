@@ -35,6 +35,8 @@ import dev.emi.emi.planner.ProductionPlanner.MachineSizing;
 import dev.emi.emi.planner.ProductionPlanner.OcMode;
 import dev.emi.emi.planner.ProductionPlanner.ResourceRole;
 import dev.emi.emi.planner.ProductionPlanner.RecipePathMode;
+import dev.emi.emi.planner.ProductionPlanner.RecipeChange;
+import dev.emi.emi.planner.ProductionPlanner.RecipeChangeKind;
 import dev.emi.emi.planner.ProductionPlanner.StartupResource;
 import dev.emi.emi.planner.ProductionPlanner.Target;
 import dev.emi.emi.planner.ProductionPlanner.TargetMode;
@@ -90,6 +92,7 @@ public class ProductionPlannerScreen extends Screen {
 	private Bounds importLineButton = EMPTY;
 	private Bounds timeUnitButton = EMPTY;
 	private Bounds buildSummaryButton = EMPTY;
+	private Bounds recipeChangesButton = EMPTY;
 	private Bounds graphViewButton = EMPTY;
 	private Bounds gtoAuditButton = EMPTY;
 	private boolean toolsOpen;
@@ -185,6 +188,14 @@ public class ProductionPlannerScreen extends Screen {
 	private boolean buildSummaryFlowsView;
 	private boolean buildSummaryStartupView;
 	private String buildSummaryTransferStatus = "";
+	private boolean recipeChangesOpen;
+	private int recipeChangesScroll;
+	private Bounds recipeChangesModalBounds = EMPTY;
+	private Bounds recipeChangesCloseButton = EMPTY;
+	private Bounds recipeChangesAcceptAllButton = EMPTY;
+	private Bounds recipeChangesListArea = EMPTY;
+	private List<RecipeChangeHitbox> recipeChangeHitboxes = List.of();
+	private String recipeChangesStatus = "";
 
 
 	public ProductionPlannerScreen(HandledScreen<?> old) {
@@ -221,7 +232,7 @@ public class ProductionPlannerScreen extends Screen {
 		renderTableHeader(context);
 		renderRows(context, line, mouseX, mouseY, delta);
 		renderFooter(context, line, mouseX, mouseY);
-		if (toolsOpen && !buildSummaryOpen && !groupsOpen) {
+		if (toolsOpen && !buildSummaryOpen && !groupsOpen && !recipeChangesOpen) {
 			renderToolsMenu(context, mouseX, mouseY);
 		}
 		if (editField != null) {
@@ -230,7 +241,9 @@ public class ProductionPlannerScreen extends Screen {
 		if (targetRateField != null) {
 			targetRateField.render(raw, mouseX, mouseY, delta);
 		}
-		if (buildSummaryOpen) {
+		if (recipeChangesOpen) {
+			renderRecipeChangesModal(context, line, mouseX, mouseY);
+		} else if (buildSummaryOpen) {
 			renderBuildSummaryModal(context, line, mouseX, mouseY);
 		} else if (groupsOpen) {
 			renderGroupsModal(context, line, mouseX, mouseY, delta);
@@ -248,7 +261,7 @@ public class ProductionPlannerScreen extends Screen {
 				renderTooltip(context, mouseX, mouseY);
 			}
 		}
-		if (searchOpen && !buildSummaryOpen) {
+		if (searchOpen && !buildSummaryOpen && !recipeChangesOpen) {
 			renderSearchOverlay(context, raw, line, mouseX, mouseY, delta);
 		}
 	}
@@ -621,6 +634,7 @@ public class ProductionPlannerScreen extends Screen {
 		importLineButton = EMPTY;
 		timeUnitButton = EMPTY;
 		buildSummaryButton = EMPTY;
+		recipeChangesButton = EMPTY;
 		graphViewButton = EMPTY;
 		String label = line.getStandardVoltageTier() < 0 ? PlannerText.tr("footer.recipe_min", "Recipe Min") : line.getStandardVoltageName();
 		drawValueBox(context, standardVoltageBounds, mouseX, mouseY, label, line.getStandardVoltageTier() >= 0,
@@ -647,9 +661,9 @@ public class ProductionPlannerScreen extends Screen {
 	}
 
 	private void renderToolsMenu(EmiDrawContext context, int mouseX, int mouseY) {
-		int menuWidth = 136;
+		int menuWidth = 148;
 		int rowHeight = 22;
-		int menuHeight = rowHeight * 5 + 4;
+		int menuHeight = rowHeight * 6 + 4;
 		int x = Math.max(4, Math.min(toolsButton.x(), width - menuWidth - 4));
 		int y = Math.max(HEADER_HEIGHT + 4, toolsButton.y() - menuHeight - 2);
 		toolsMenuBounds = new Bounds(x, y, menuWidth, menuHeight);
@@ -661,12 +675,121 @@ public class ProductionPlannerScreen extends Screen {
 		importLineButton = new Bounds(x + 2, y + 2 + rowHeight, menuWidth - 4, rowHeight);
 		timeUnitButton = new Bounds(x + 2, y + 2 + rowHeight * 2, menuWidth - 4, rowHeight);
 		buildSummaryButton = new Bounds(x + 2, y + 2 + rowHeight * 3, menuWidth - 4, rowHeight);
-		graphViewButton = new Bounds(x + 2, y + 2 + rowHeight * 4, menuWidth - 4, rowHeight);
+		recipeChangesButton = new Bounds(x + 2, y + 2 + rowHeight * 4, menuWidth - 4, rowHeight);
+		graphViewButton = new Bounds(x + 2, y + 2 + rowHeight * 5, menuWidth - 4, rowHeight);
 		drawButton(context, exportLineButton, mouseX, mouseY, PlannerText.tr("tools.export_line", "EXPORT LINE"), false);
 		drawButton(context, importLineButton, mouseX, mouseY, PlannerText.tr("tools.import_line", "IMPORT LINE"), false);
 		drawButton(context, timeUnitButton, mouseX, mouseY, PlannerText.tr("tools.time", "TIME") + " /" + displayTimeUnit.suffix, false);
 		drawButton(context, buildSummaryButton, mouseX, mouseY, PlannerText.tr("tools.line_report", "LINE REPORT"), false);
+		drawButton(context, recipeChangesButton, mouseX, mouseY, PlannerText.tr("tools.recipe_changes", "RECIPE CHANGES"), false);
 		drawButton(context, graphViewButton, mouseX, mouseY, PlannerText.tr("tools.graph", "GRAPH VIEW"), false);
+		context.pop();
+	}
+
+
+	private void renderRecipeChangesModal(EmiDrawContext context, Line line, int mouseX, int mouseY) {
+		context.push();
+		context.matrices().translate(0, 0, 1250);
+		context.fill(0, 0, width, height, 0x99000000);
+		int modalWidth = Math.max(520, Math.min(980, width - 48));
+		int modalHeight = Math.max(320, Math.min(600, height - 56));
+		int x = (width - modalWidth) / 2;
+		int y = (height - modalHeight) / 2;
+		recipeChangesModalBounds = new Bounds(x, y, modalWidth, modalHeight);
+		context.fill(x, y, modalWidth, modalHeight, 0xFF15151D);
+		drawBorder(context, recipeChangesModalBounds, 0xFF8A8A96);
+		context.fill(x, y, modalWidth, 30, 0xFF24242D);
+		context.drawCenteredText(EmiPort.literal(PlannerText.tr("migration.title", "Recipe Changes") + " - " + ProductionPlanner.displayName(ProductionPlanner.getActiveIndex())),
+			x + modalWidth / 2, y + 10, 0xFFFFFFFF);
+		recipeChangesCloseButton = new Bounds(x + modalWidth - 25, y + 5, 19, 19);
+		drawButton(context, recipeChangesCloseButton, mouseX, mouseY, "x", false);
+
+		List<RecipeChange> changes = ProductionPlanner.getRecipeChanges(line);
+		int changedCount = 0;
+		int missingCount = 0;
+		for (RecipeChange change : changes) {
+			if (change.kind() == RecipeChangeKind.MISSING) {
+				missingCount++;
+			} else {
+				changedCount++;
+			}
+		}
+		String summary = changes.isEmpty()
+			? PlannerText.tr("migration.none", "No recipe changes detected")
+			: PlannerText.tr("migration.summary", "%s changed, %s missing", changedCount, missingCount);
+		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(summary, modalWidth - 220)), x + 12, y + 40,
+			changes.isEmpty() ? 0xFF8ED39F : 0xFFFFCF70);
+		recipeChangesAcceptAllButton = changedCount > 0 ? new Bounds(x + modalWidth - 128, y + 34, 110, 20) : EMPTY;
+		if (changedCount > 0) {
+			drawButton(context, recipeChangesAcceptAllButton, mouseX, mouseY, PlannerText.tr("migration.accept_all", "ACCEPT ALL"), false);
+		}
+
+		List<String> lineImpact = changes.isEmpty() ? List.of() : ProductionPlanner.getLineRecipeChangeImpact(line);
+		int impactLineCount = Math.min(5, lineImpact.size());
+		int impactBlockHeight = impactLineCount > 0 ? 18 + impactLineCount * 13 : 0;
+		if (impactLineCount > 0) {
+			int impactY = y + 61;
+			context.drawTextWithShadow(EmiPort.literal(PlannerText.tr("migration.line_impact.title", "LINE IMPACT - current planned craft rates")),
+				x + 12, impactY, 0xFF70C7E0);
+			for (int i = 0; i < impactLineCount; i++) {
+				context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(lineImpact.get(i), modalWidth - 32)),
+					x + 18, impactY + 14 + i * 13, 0xFF8ED39F);
+			}
+		}
+
+		int listY = y + 62 + impactBlockHeight;
+		int listBottom = y + modalHeight - 52;
+		recipeChangesListArea = new Bounds(x + 10, listY, modalWidth - 20, Math.max(50, listBottom - listY));
+		context.fill(recipeChangesListArea.x(), recipeChangesListArea.y(), recipeChangesListArea.width(), recipeChangesListArea.height(), 0xFF101017);
+		drawBorder(context, recipeChangesListArea, BORDER_COLOR);
+		recipeChangeHitboxes = new ArrayList<>();
+
+		if (changes.isEmpty()) {
+			context.drawCenteredText(EmiPort.literal(PlannerText.tr("migration.none_detail", "Saved recipe snapshots match the current recipe registry.")),
+				recipeChangesListArea.x() + recipeChangesListArea.width() / 2, recipeChangesListArea.y() + 28, 0xFFA8A8B2);
+		} else {
+			int rowHeight = 104;
+			int visible = Math.max(1, recipeChangesListArea.height() / rowHeight);
+			recipeChangesScroll = Math.max(0, Math.min(recipeChangesScroll, Math.max(0, changes.size() - visible)));
+			for (int v = 0, i = recipeChangesScroll; v < visible && i < changes.size(); v++, i++) {
+				RecipeChange change = changes.get(i);
+				int rowY = recipeChangesListArea.y() + v * rowHeight;
+				Bounds row = new Bounds(recipeChangesListArea.x() + 2, rowY + 2, recipeChangesListArea.width() - 4, rowHeight - 4);
+				int border = change.kind() == RecipeChangeKind.MISSING ? 0xFFE06B6B : 0xFFE0B86B;
+				context.fill(row.x(), row.y(), row.width(), row.height(), 0xFF181820);
+				drawBorder(context, row, border);
+				String status = change.kind() == RecipeChangeKind.MISSING
+					? PlannerText.tr("migration.missing", "MISSING")
+					: PlannerText.tr("migration.changed", "CHANGED");
+				context.drawTextWithShadow(EmiPort.literal(status + " | " + change.recipeName()), row.x() + 8, row.y() + 7, border);
+				context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(change.recipeId(), row.width() - 136)), row.x() + 8, row.y() + 20, 0xFF858590);
+				List<String> details = change.details();
+				if (!details.isEmpty()) {
+					context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(details.get(0), row.width() - 136)), row.x() + 8, row.y() + 34, 0xFFD0D0D8);
+				}
+				if (details.size() > 1) {
+					context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(details.get(1), row.width() - 136)), row.x() + 8, row.y() + 47, 0xFFAAAAAF);
+				}
+				if (change.kind() == RecipeChangeKind.CHANGED) {
+					List<String> impact = ProductionPlanner.getRecipeChangeImpact(line, change);
+					for (int impactIndex = 0; impactIndex < Math.min(3, impact.size()); impactIndex++) {
+						String prefix = impactIndex == 0 ? PlannerText.tr("migration.impact.label", "Impact") + ": " : "  ";
+						context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(prefix + impact.get(impactIndex), row.width() - 136)),
+							row.x() + 8, row.y() + 63 + impactIndex * 13, 0xFF8ED39F);
+					}
+				}
+				Bounds action = new Bounds(row.right() - 112, row.y() + 28, 102, 20);
+				drawButton(context, action, mouseX, mouseY,
+					change.kind() == RecipeChangeKind.MISSING ? PlannerText.tr("migration.remove", "REMOVE ROW") : PlannerText.tr("migration.accept", "ACCEPT"), false);
+				recipeChangeHitboxes.add(new RecipeChangeHitbox(change, row, action));
+			}
+		}
+
+		String footer = PlannerText.tr("migration.footer", "ACCEPT stores the current recipe as the new baseline. Missing recipes must be removed or replaced.");
+		context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(footer, modalWidth - 24)), x + 12, y + modalHeight - 39, 0xFF92929C);
+		if (!recipeChangesStatus.isBlank()) {
+			context.drawTextWithShadow(EmiPort.literal(textRenderer.trimToWidth(recipeChangesStatus, modalWidth - 24)), x + 12, y + modalHeight - 24, 0xFF8ED39F);
+		}
 		context.pop();
 	}
 
@@ -1984,6 +2107,12 @@ public class ProductionPlannerScreen extends Screen {
 				PlannerText.tr("tooltip.build_summary4", "Uses the current MACH values; BALANCE sizes them automatically"));
 			return;
 		}
+		if (recipeChangesButton.contains(mouseX, mouseY)) {
+			drawTooltip(context, mouseX, mouseY, PlannerText.tr("tooltip.recipe_changes", "Recipe update check"),
+				PlannerText.tr("tooltip.recipe_changes2", "Compares saved recipe snapshots with the current modpack recipes"),
+				PlannerText.tr("tooltip.recipe_changes3", "Detects changed inputs, outputs, duration, EU/t, category and removed recipes"));
+			return;
+		}
 		if (SHOW_GTO_AUDIT && gtoAuditButton.contains(mouseX, mouseY)) {
 			drawTooltip(context, mouseX, mouseY, "Scan every GTO machine exposed as an EMI workstation",
 				"Classifies AUTO / AUTO + OVERRIDE / OVERRIDE ONLY / SUSPICIOUS NONE / NONE",
@@ -2414,6 +2543,32 @@ public class ProductionPlannerScreen extends Screen {
 		int mx = (int) mouseX;
 		int my = (int) mouseY;
 		Line currentLine = ProductionPlanner.getOrCreateActiveLine();
+		if (recipeChangesOpen) {
+			if (button == 0 && recipeChangesCloseButton.contains(mx, my)) {
+				recipeChangesOpen = false;
+				return true;
+			}
+			if (button == 0 && recipeChangesAcceptAllButton.contains(mx, my)) {
+				int accepted = ProductionPlanner.acceptAllRecipeChanges(currentLine);
+				recipeChangesStatus = PlannerText.tr("migration.accepted_count", "Accepted %s recipe change(s)", accepted);
+				recipeChangesScroll = 0;
+				return true;
+			}
+			for (RecipeChangeHitbox hitbox : recipeChangeHitboxes) {
+				if (button == 0 && hitbox.action().contains(mx, my)) {
+					RecipeChange change = hitbox.change();
+					if (change.kind() == RecipeChangeKind.MISSING) {
+						ProductionPlanner.removeEntry(currentLine, change.entry());
+						recipeChangesStatus = PlannerText.tr("migration.removed", "Removed missing recipe row");
+					} else if (ProductionPlanner.acceptRecipeChange(currentLine, change.entry())) {
+						recipeChangesStatus = PlannerText.tr("migration.accepted", "Accepted current recipe as the new baseline");
+					}
+					recipeChangesScroll = Math.max(0, recipeChangesScroll);
+					return true;
+				}
+			}
+			return true;
+		}
 		if (buildSummaryOpen) {
 			if (button == 0 && buildSummaryMachinesButton.contains(mx, my)) {
 				buildSummaryFlowsView = false;
@@ -2701,6 +2856,18 @@ public class ProductionPlannerScreen extends Screen {
 			buildSummaryStartupView = false;
 			buildSummaryScroll = 0;
 			buildSummaryTransferStatus = "";
+			return true;
+		}
+		if (button == 0 && recipeChangesButton.contains(mx, my)) {
+			closeDropdowns();
+			closeSearch();
+			groupsOpen = false;
+			buildSummaryOpen = false;
+			toolsOpen = false;
+			recipeChangesOpen = true;
+			recipeChangesScroll = 0;
+			recipeChangesStatus = "";
+			ProductionPlanner.getRecipeChanges(line);
 			return true;
 		}
 		if (button == 0 && graphViewButton.contains(mx, my)) {
@@ -3164,6 +3331,15 @@ public class ProductionPlannerScreen extends Screen {
 		try {
 		int mx = (int) mouseX;
 		int my = (int) mouseY;
+		if (recipeChangesOpen) {
+			if (recipeChangesListArea.contains(mx, my)) {
+				List<RecipeChange> changes = ProductionPlanner.getRecipeChanges(ProductionPlanner.getOrCreateActiveLine());
+				int rowHeight = 104;
+				int visible = Math.max(1, recipeChangesListArea.height() / rowHeight);
+				recipeChangesScroll = Math.max(0, Math.min(recipeChangesScroll - (int) Math.signum(amount), Math.max(0, changes.size() - visible)));
+			}
+			return true;
+		}
 		if (buildSummaryOpen) {
 			if (buildSummaryListArea.contains(mx, my)) {
 				Line line = ProductionPlanner.getOrCreateActiveLine();
@@ -3295,6 +3471,12 @@ public class ProductionPlannerScreen extends Screen {
 
 	@Override
 	public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+		if (recipeChangesOpen) {
+			if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+				recipeChangesOpen = false;
+			}
+			return true;
+		}
 		if (buildSummaryOpen) {
 			if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
 				buildSummaryOpen = false;
@@ -4339,6 +4521,10 @@ public class ProductionPlannerScreen extends Screen {
 
 	private record BuildSummaryHitbox(Bounds bounds, BuildSummaryRow row) {
 	}
+
+	private record RecipeChangeHitbox(RecipeChange change, Bounds row, Bounds action) {
+	}
+
 
 	private record StartupSummaryHitbox(Bounds bounds, StartupResource row) {
 	}
